@@ -17,6 +17,7 @@ interface SearchPageProps {
 interface Invoice {
   id: string;
   invoiceNumber: string;
+  numeroDossier: string;
   supplier: string;
   manager: string;
   costCenter: string;
@@ -52,6 +53,12 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
   // Selected supplier state
   const [selectedSupplier, setSelectedSupplier] = useState<string | null>(null);
+  
+  // Tab state for left column
+  const [activeLeftTab, setActiveLeftTab] = useState<'supplier' | 'dossier'>('supplier');
+  
+  // Selected dossier state
+  const [selectedDossier, setSelectedDossier] = useState<string | null>(null);
 
   // Search & Filter states
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -78,7 +85,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
         // Construire la requête avec filtrage par région si nécessaire
       let query = supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
+        .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
 
       // Filtrer par région si l'utilisateur n'a pas TOUT
       if (agent?.REGION && agent.REGION !== 'TOUT') {
@@ -106,6 +113,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
         const processedInvoices: Invoice[] = factures?.map((f: Record<string, unknown>) => {
           const invoiceNum = String(f['Numéro de facture'] || '').trim();
+          const dossierNum = String(f['Numéro de dossier'] || '').trim();
           const amount = parseFloat(String(f.Montant)) || 0;
           const totalPaid = paidMap.get(invoiceNum) || 0;
           const restAPayer = Math.max(0, amount - totalPaid);
@@ -116,6 +124,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
           return {
             id: String(f.ID),
             invoiceNumber: invoiceNum,
+            numeroDossier: dossierNum,
             supplier: String(f.Fournisseur || '').trim(),
             manager: String(f.Gestionnaire || '').trim(),
             costCenter: String(f['Centre de coût'] || '').trim(),
@@ -143,28 +152,31 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
     fetchData();
   }, []);
 
-  // Get list of unique suppliers with unpaid or overdue invoices - with filtering
+  // Get unique suppliers with unpaid/overdue invoices
   const getUnpaidSuppliers = () => {
-    const suppliersMap = new Map<string, { totalUnpaid: number; count: number }>();
+    // Apply all filters first
+    let filteredInvoices = invoices.filter(inv => inv.restAPayer > 0);
     
-    invoices.forEach(inv => {
-      // Filter by region if selected
-      if (selectedRegion && inv.region !== selectedRegion) return;
-      
-      // Year filter
-      if (selectedYear) {
+    // Apply year filter
+    if (selectedYear) {
+      filteredInvoices = filteredInvoices.filter(inv => {
         const invYear = new Date(inv.date).getFullYear().toString();
-        if (invYear !== selectedYear) return;
-      }
-      
-      // Date range filter
-      if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
-        const start = new Date(filterDateStart);
-        const end = new Date(filterDateEnd);
+        return invYear === selectedYear;
+      });
+    }
+    
+    // Apply date range filter
+    if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
+      const start = new Date(filterDateStart);
+      const end = new Date(filterDateEnd);
+      filteredInvoices = filteredInvoices.filter(inv => {
         const invDate = new Date(inv.date);
-        if (!(invDate >= start && invDate <= end)) return;
-      } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
-        const today = new Date();
+        return invDate >= start && invDate <= end;
+      });
+    } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
+      const today = new Date();
+      
+      filteredInvoices = filteredInvoices.filter(inv => {
         const iDate = new Date(inv.date);
         
         if (filterDateType === 'week') {
@@ -176,48 +188,156 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
           const weekEnd = new Date(weekStart);
           weekEnd.setDate(weekStart.getDate() + 6);
           weekEnd.setHours(23, 59, 59, 999);
-          if (!(iDate >= weekStart && iDate <= weekEnd)) return;
+          return iDate >= weekStart && iDate <= weekEnd;
         } else if (filterDateType === 'month') {
-          if (!(iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear())) return;
+          return iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear();
         } else if (filterDateType === 'trimester') {
           const currentTrimester = Math.floor(today.getMonth() / 3);
           const invoiceTrimester = Math.floor(iDate.getMonth() / 3);
-          if (!(invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear())) return;
+          return invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear();
         } else if (filterDateType === 'semester') {
           const currentSemester = today.getMonth() < 6 ? 0 : 1;
           const invoiceSemester = iDate.getMonth() < 6 ? 0 : 1;
-          if (!(invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear())) return;
+          return invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear();
         }
-      }
-      
-      // Include unpaid, partially paid, AND overdue invoices
-      if ((inv.status === 'NON PAYÉE' && !inv.isRejected) || inv.status === 'PARTIELLEMENT PAYÉE' || inv.status === 'ÉCHUE') {
-        const unpaidAmount = inv.status === 'NON PAYÉE' ? inv.amount : inv.restAPayer;
-        const current = suppliersMap.get(inv.supplier) || { totalUnpaid: 0, count: 0 };
-        suppliersMap.set(inv.supplier, {
-          totalUnpaid: current.totalUnpaid + unpaidAmount,
-          count: current.count + 1
+        
+        return true;
+      });
+    }
+    
+    const supplierMap = new Map<string, { supplier: string; count: number; totalAmount: number; totalPaid: number; restAPayer: number }>();
+    
+    filteredInvoices.forEach(inv => {
+      const existing = supplierMap.get(inv.supplier);
+      if (existing) {
+        existing.count += 1;
+        existing.totalAmount += inv.amount;
+        existing.totalPaid += inv.totalPaid;
+        existing.restAPayer += inv.restAPayer;
+      } else {
+        supplierMap.set(inv.supplier, {
+          supplier: inv.supplier,
+          count: 1,
+          totalAmount: inv.amount,
+          totalPaid: inv.totalPaid,
+          restAPayer: inv.restAPayer
         });
       }
     });
     
-    return Array.from(suppliersMap.entries())
-      .map(([supplier, data]) => ({ supplier, ...data }))
-      .sort((a, b) => b.totalUnpaid - a.totalUnpaid);
+    return Array.from(supplierMap.values()).sort((a, b) => b.restAPayer - a.restAPayer);
+  };
+
+  // Get unique dossier numbers from unpaid/overdue invoices
+  const getUnpaidDossiers = () => {
+    // Apply all filters first
+    let filteredInvoices = invoices.filter(inv => inv.restAPayer > 0);
+    
+    // Apply year filter
+    if (selectedYear) {
+      filteredInvoices = filteredInvoices.filter(inv => {
+        const invYear = new Date(inv.date).getFullYear().toString();
+        return invYear === selectedYear;
+      });
+    }
+    
+    // Apply date range filter
+    if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
+      const start = new Date(filterDateStart);
+      const end = new Date(filterDateEnd);
+      filteredInvoices = filteredInvoices.filter(inv => {
+        const invDate = new Date(inv.date);
+        return invDate >= start && invDate <= end;
+      });
+    } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
+      const today = new Date();
+      
+      filteredInvoices = filteredInvoices.filter(inv => {
+        const iDate = new Date(inv.date);
+        
+        if (filterDateType === 'week') {
+          const dayOfWeek = today.getDay();
+          const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+          const weekStart = new Date(today);
+          weekStart.setDate(today.getDate() + daysToMonday);
+          weekStart.setHours(0, 0, 0, 0);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekStart.getDate() + 6);
+          weekEnd.setHours(23, 59, 59, 999);
+          return iDate >= weekStart && iDate <= weekEnd;
+        } else if (filterDateType === 'month') {
+          return iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear();
+        } else if (filterDateType === 'trimester') {
+          const currentTrimester = Math.floor(today.getMonth() / 3);
+          const invoiceTrimester = Math.floor(iDate.getMonth() / 3);
+          return invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear();
+        } else if (filterDateType === 'semester') {
+          const currentSemester = today.getMonth() < 6 ? 0 : 1;
+          const invoiceSemester = iDate.getMonth() < 6 ? 0 : 1;
+          return invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear();
+        }
+        
+        return true;
+      });
+    }
+    
+    const dossierMap = new Map<string, { dossier: string; count: number; totalAmount: number; totalPaid: number; restAPayer: number }>();
+    
+    filteredInvoices.forEach(inv => {
+      // Use the dedicated dossier number field if available, otherwise extract from invoice number
+      let dossierNumber = inv.numeroDossier && inv.numeroDossier.trim() !== '' 
+        ? inv.numeroDossier 
+        : inv.invoiceNumber;
+      
+      // If invoice number contains / or -, extract the part before it (only if no dedicated dossier number)
+      if (!inv.numeroDossier || inv.numeroDossier.trim() === '') {
+        if (inv.invoiceNumber.includes('/')) {
+          dossierNumber = inv.invoiceNumber.split('/')[0];
+        } else if (inv.invoiceNumber.includes('-')) {
+          dossierNumber = inv.invoiceNumber.split('-')[0];
+        }
+      }
+      
+      const existing = dossierMap.get(dossierNumber);
+      if (existing) {
+        existing.count += 1;
+        existing.totalAmount += inv.amount;
+        existing.totalPaid += inv.totalPaid;
+        existing.restAPayer += inv.restAPayer;
+      } else {
+        dossierMap.set(dossierNumber, {
+          dossier: dossierNumber,
+          count: 1,
+          totalAmount: inv.amount,
+          totalPaid: inv.totalPaid,
+          restAPayer: inv.restAPayer
+        });
+      }
+    });
+    
+    return Array.from(dossierMap.values()).sort((a, b) => b.restAPayer - a.restAPayer);
   };
 
   // Filter invoices based on all criteria
   const getFilteredInvoices = () => {
     let filtered = [...invoices];
 
-    // Search term - recherche dans multiple champs
+    // Search term - recherche selon l'onglet actif
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(inv =>
-        inv.invoiceNumber.toLowerCase().includes(term) ||
-        inv.supplier.toLowerCase().includes(term) ||
-        inv.costCenter.toLowerCase().includes(term)
-      );
+      filtered = filtered.filter(inv => {
+        if (activeLeftTab === 'supplier') {
+          // Rechercher dans les champs de fournisseur
+          return inv.supplier.toLowerCase().includes(term) ||
+                 inv.invoiceNumber.toLowerCase().includes(term) ||
+                 inv.costCenter.toLowerCase().includes(term);
+        } else if (activeLeftTab === 'dossier') {
+          // Rechercher dans les champs de dossier
+          return inv.numeroDossier.toLowerCase().includes(term) ||
+                 inv.invoiceNumber.toLowerCase().includes(term);
+        }
+        return false;
+      });
     }
 
     // Region
@@ -228,6 +348,27 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
     // Supplier filter - only show invoices for selected supplier
     if (selectedSupplier) {
       filtered = filtered.filter(inv => inv.supplier === selectedSupplier);
+    }
+
+    // Dossier filter - only show invoices for selected dossier
+    if (selectedDossier) {
+      filtered = filtered.filter(inv => {
+        // Use the dedicated dossier number field if available
+        let dossierNumber = inv.numeroDossier && inv.numeroDossier.trim() !== '' 
+          ? inv.numeroDossier 
+          : inv.invoiceNumber;
+        
+        // If invoice number contains / or -, extract the part before it (only if no dedicated dossier number)
+        if (!inv.numeroDossier || inv.numeroDossier.trim() === '') {
+          if (inv.invoiceNumber.includes('/')) {
+            dossierNumber = inv.invoiceNumber.split('/')[0];
+          } else if (inv.invoiceNumber.includes('-')) {
+            dossierNumber = inv.invoiceNumber.split('-')[0];
+          }
+        }
+        
+        return dossierNumber === selectedDossier;
+      });
     }
 
     // Year
@@ -637,19 +778,39 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
       <div className="bg-gray-100 p-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">{menuTitle}</h1>
         
-        {/* Filter Description Subtitle - Right under title */}
-        <p className="text-xs text-gray-600 mb-4 italic">{getFilterDescription()}</p>
+
+        {/* Selected Filter Display */}
+        {(selectedSupplier || selectedDossier) && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-blue-900">Filtre actif:</span>
+              <span className="text-sm font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded">
+                {selectedSupplier ? `Fournisseur: ${selectedSupplier}` : `Dossier: ${selectedDossier}`}
+              </span>
+              <button
+                onClick={() => {
+                  setSelectedSupplier(null);
+                  setSelectedDossier(null);
+                  setSearchTerm('');
+                }}
+                className="text-xs text-blue-600 hover:text-blue-800 underline ml-auto"
+              >
+                Effacer
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Onglets et Contrôles */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-[-20px]">
           {/* Region Tabs */}
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-1 flex-wrap">
             {/* If agent has TOUT, show all region tabs */}
             {agent?.REGION === 'TOUT' ? (
               <>
                 <button
                   onClick={() => setSelectedRegion('')}
-                  className={`px-4 py-2 text-sm rounded-t-lg transition-all duration-150 ease-out ${
+                  className={`px-4 py-0 text-sm rounded-t-lg transition-all duration-150 ease-out ${
                     selectedRegion === '' ? 'font-bold text-black bg-white' : 'text-gray-600'
                   }`}
                 >
@@ -712,11 +873,10 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
             </button>
           </div>
         </div>
-
-        {/* Search bar hidden */}
+      </div>
 
         {/* White Background Container for Filters */}
-        <div className="bg-white p-4 rounded-lg mt-2">
+        <div className="bg-white p-4 rounded-lg  mt-[-20px]">
           {/* Advanced Filters */}
           <div className={`grid gap-2 ${filterDateType === 'custom' ? 'grid-cols-1 md:grid-cols-5' : 'grid-cols-1 md:grid-cols-2'}`}>
           <select
@@ -763,7 +923,6 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
           )}
           </div>
         </div>
-      </div>
 
       {/* Content - Two Column Layout */}
       {loading ? (
@@ -773,51 +932,161 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
       ) : (
         <div className="px-4 pb-4 overflow-hidden">
           <div className={`flex gap-0 transition-all duration-300 ease-out ${selectedSupplier ? 'lg:gap-4' : ''}`}>
-            {/* Left Column - 30% - List of Suppliers with Unpaid/Overdue Invoices */}
+            {/* Left Column - 30% - List with Tabs */}
             <div className={`flex-shrink-0 transition-all duration-300 ease-out ${
-              selectedSupplier 
+              (selectedSupplier || selectedDossier) 
                 ? 'w-full lg:w-1/3 lg:border-r-4 lg:border-blue-200 lg:pr-4' 
                 : 'w-full lg:w-80'
-            } border border-gray-200 rounded-lg p-4 bg-white`}>
-              <h2 className="text-lg font-bold text-gray-900 mb-4">Fournisseurs avec solde à payer</h2>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {getUnpaidSuppliers().length === 0 ? (
-                  <div className="text-center py-8 text-gray-500 text-sm">
-                    Aucun fournisseur avec factures non payées
-                  </div>
-                ) : (
-                  getUnpaidSuppliers().map((item) => (
-                    <div
-                      key={item.supplier}
-                      onClick={() => setSelectedSupplier(selectedSupplier === item.supplier ? null : item.supplier)}
-                      className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
-                        selectedSupplier === item.supplier
-                          ? 'bg-blue-600 text-white shadow-md'
-                          : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
-                      }`}
-                    >
-                      <div className="font-semibold text-sm break-words">{item.supplier}</div>
-                      <div className={`text-xs mt-1 ${
-                        selectedSupplier === item.supplier ? 'text-blue-100' : 'text-gray-600'
-                      }`}>
-                        <span>Solde à payer: <span className="font-bold">${item.totalUnpaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
-                      </div>
-                      <div className={`text-xs mt-1 ${
-                        selectedSupplier === item.supplier ? 'text-blue-100' : 'text-gray-600'
-                      }`}>
-                        <span>{item.count} facture{item.count > 1 ? 's' : ''}</span>
-                      </div>
+            } border border-gray-200 rounded-lg bg-white overflow-hidden`}>
+              
+              {/* Tabs */}
+              <div className="flex bg-gray-100 border-b">
+                <button
+                  onClick={() => {
+                    setActiveLeftTab('supplier');
+                    setSelectedDossier(null);
+                  }}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
+                    activeLeftTab === 'supplier'
+                      ? 'bg-white text-gray-900 border-b-2 border-blue-500'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Fournisseur
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveLeftTab('dossier');
+                    setSelectedSupplier(null);
+                  }}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
+                    activeLeftTab === 'dossier'
+                      ? 'bg-white text-gray-900 border-b-2 border-blue-500'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Numéro de dossier
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="p-4">
+                {activeLeftTab === 'supplier' ? (
+                  <>
+                    <h2 className="text-lg font-bold text-gray-900 mb-4">Fournisseurs avec solde à payer</h2>
+                    
+                    {/* Search bar for suppliers */}
+                    <div className="mb-4 relative">
+                      <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                      <input
+                        type="text"
+                        placeholder="Rechercher un fournisseur..."
+                        value={searchTerm}
+                        onChange={(e) => handleSearchChange(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
                     </div>
-                  ))
+                    
+                    <div className="space-y-2 max-h-80 overflow-y-auto">
+                      {getUnpaidSuppliers().length === 0 ? (
+                        <div className="text-center py-8 text-gray-500 text-sm">
+                          Aucun fournisseur avec factures non payées
+                        </div>
+                      ) : (
+                        getUnpaidSuppliers().map((item) => (
+                          <div
+                            key={item.supplier}
+                            onClick={() => {
+                              setSelectedSupplier(selectedSupplier === item.supplier ? null : item.supplier);
+                              setSelectedDossier(null);
+                            }}
+                            className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
+                              selectedSupplier === item.supplier
+                                ? 'bg-blue-600 text-white shadow-md'
+                                : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
+                            }`}
+                          >
+                            <div className="font-semibold text-sm break-words">{item.supplier}</div>
+                            <div className={`text-xs mt-1 ${
+                              selectedSupplier === item.supplier ? 'text-blue-100' : 'text-gray-600'
+                            }`}>
+                              <span>Solde à payer: <span className="font-bold">${item.restAPayer.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                            </div>
+                            <div className={`text-xs mt-1 ${
+                              selectedSupplier === item.supplier ? 'text-blue-100' : 'text-gray-600'
+                            }`}>
+                              <span>{item.count} facture{item.count > 1 ? 's' : ''}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-lg font-bold text-gray-900 mb-4">Numéros de dossier</h2>
+                    
+                    {/* Search bar for dossiers */}
+                    <div className="mb-4 relative">
+                      <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                      <input
+                        type="text"
+                        placeholder="Rechercher un numéro de dossier..."
+                        value={searchTerm}
+                        onChange={(e) => handleSearchChange(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    
+                    <div className="space-y-2 max-h-80 overflow-y-auto">
+                      {getUnpaidDossiers().length === 0 ? (
+                        <div className="text-center py-8 text-gray-500 text-sm">
+                          Aucun dossier avec factures non payées
+                        </div>
+                      ) : (
+                        getUnpaidDossiers().map((item) => (
+                          <div
+                            key={item.dossier}
+                            onClick={() => {
+                              setSelectedDossier(selectedDossier === item.dossier ? null : item.dossier);
+                              setSelectedSupplier(null);
+                            }}
+                            className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
+                              selectedDossier === item.dossier
+                                ? 'bg-blue-600 text-white shadow-md'
+                                : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
+                            }`}
+                          >
+                            <div className="font-semibold text-sm break-words">{item.dossier}</div>
+                            <div className={`text-xs mt-1 ${
+                              selectedDossier === item.dossier ? 'text-blue-100' : 'text-gray-600'
+                            }`}>
+                              <span>Solde à payer: <span className="font-bold">${item.restAPayer.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                            </div>
+                            <div className={`text-xs mt-1 ${
+                              selectedDossier === item.dossier ? 'text-blue-100' : 'text-gray-600'
+                            }`}>
+                              <span>{item.count} facture{item.count > 1 ? 's' : ''}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
 
-            {/* Right Column - 70% - Invoice Status Sections (Hidden by default, shown only when supplier selected) */}
-            {selectedSupplier && (
+            {/* Right Column - 70% - Invoice Status Sections (Hidden by default, shown only when supplier or dossier selected) */}
+            {(selectedSupplier || selectedDossier) && (
               <div className="w-full lg:w-2/3 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn">
                 <div className="p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-                  <p className="text-sm font-semibold text-blue-900">Factures pour: <span className="text-blue-700">{selectedSupplier}</span></p>
+                  <p className="text-sm font-semibold text-blue-900">
+                    Factures pour: <span className="text-blue-700">
+                      {selectedSupplier ? selectedSupplier : selectedDossier}
+                    </span>
+                    {selectedDossier && <span className="text-xs text-blue-600 ml-2">(Numéro de dossier)</span>}
+                  </p>
                 </div>
                 <div className="overflow-hidden">
                   <table className="w-full">

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { ChevronRight, Plus, Edit2, Trash2, AlertCircle, RefreshCw } from 'lucide-react';
 import { usePermission } from '../hooks/usePermission';
+import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
 import FournisseurModal from '../components/modals/FournisseurModal';
 import AgentModal from '../components/modals/AgentModal';
@@ -31,6 +32,7 @@ interface ParametersPageProps {
 
 function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPageProps) {
   const { canView, canCreate, canEdit, canDelete } = usePermission();
+  const { agent } = useAuth();
   const [suppliers, setSuppliers] = useState<Fournisseur[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [charges, setCharges] = useState<Charge[]>([]);
@@ -60,7 +62,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
     else if (subMenu === 'centres') loadCentres();
     else if (subMenu === 'comptes') loadComptes();
     else if (subMenu === 'caisses') loadCaisses();
-  }, [subMenu]);
+  }, [subMenu, agent]);
 
   const loadSuppliers = async () => {
     setLoading(true);
@@ -105,7 +107,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
     setLoading(true);
     try {
       const data = await centreDeCoutService.getAll();
-      setCentres(data || []);
+      // Filtrer les centres de coût par région de l'utilisateur connecté
+      const filteredCentres = agent?.REGION 
+        ? (data || []).filter(centre => centre.REGION === agent.REGION)
+        : (data || []);
+      setCentres(filteredCentres);
     } catch (err) {
       setError('Erreur lors du chargement des centres de coût');
       console.error(err);
@@ -115,6 +121,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteFournisseur = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('fournisseurs')) {
+      setError('Vous n\'avez pas la permission de supprimer des fournisseurs.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer ce fournisseur ?')) return;
     try {
       await fournisseurService.delete(id);
@@ -134,6 +145,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteAgent = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('utilisateurs')) {
+      setError('Vous n\'avez pas la permission de supprimer des agents.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer cet agent ?')) return;
     try {
       await agentService.delete(id);
@@ -144,6 +160,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteCharge = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('charges')) {
+      setError('Vous n\'avez pas la permission de supprimer des charges.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer cette charge ?')) return;
     try {
       await chargeService.delete(id);
@@ -154,6 +175,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteCentre = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('centres')) {
+      setError('Vous n\'avez pas la permission de supprimer des centres de coût.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer ce centre ?')) return;
     try {
       await centreDeCoutService.delete(id);
@@ -183,6 +209,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteCompte = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('comptes')) {
+      setError('Vous n\'avez pas la permission de supprimer des comptes.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer ce compte ?')) return;
     try {
       await compteService.delete(id);
@@ -206,6 +237,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   };
 
   const handleDeleteCaisse = async (id: number) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('caisses')) {
+      setError('Vous n\'avez pas la permission de supprimer des caisses.');
+      return;
+    }
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer cette caisse ?')) return;
     try {
       await caisseService.delete(id);
@@ -275,16 +311,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowFournisseurModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('fournisseurs') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowFournisseurModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -373,31 +411,35 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                           }`}>{supplier["Catégorie fournisseur"]}</td>
                           <td className="px-4 py-2 text-xs text-right">
                             <div className="flex justify-end gap-1">
-                              <button
-                                onClick={() => {
-                                  setEditingItem(supplier);
-                                  setShowFournisseurModal(true);
-                                }}
-                                className={`p-1.5 rounded transition-all duration-200 transform hover:scale-110 ${
-                                  expandedSuppliers.has(supplier.ID!)
-                                    ? 'text-blue-300 hover:text-blue-100 hover:bg-blue-700'
-                                    : 'text-blue-600 hover:text-blue-800 hover:bg-blue-50'
-                                }`}
-                                title="Éditer"
-                              >
-                                <Edit2 size={14} />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteFournisseur(supplier.ID!)}
-                                className={`p-1.5 rounded transition-all duration-200 transform hover:scale-110 ${
-                                  expandedSuppliers.has(supplier.ID!)
-                                    ? 'text-red-300 hover:text-red-100 hover:bg-red-700'
-                                    : 'text-red-600 hover:text-red-800 hover:bg-red-50'
-                                }`}
-                                title="Supprimer"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                              {canEdit('fournisseurs') && (
+                                <button
+                                  onClick={() => {
+                                    setEditingItem(supplier);
+                                    setShowFournisseurModal(true);
+                                  }}
+                                  className={`p-1.5 rounded transition-all duration-200 transform hover:scale-110 ${
+                                    expandedSuppliers.has(supplier.ID!)
+                                      ? 'text-blue-300 hover:text-blue-100 hover:bg-blue-700'
+                                      : 'text-blue-600 hover:text-blue-800 hover:bg-blue-50'
+                                  }`}
+                                  title="Éditer"
+                                >
+                                  <Edit2 size={14} />
+                                </button>
+                              )}
+                              {canDelete('fournisseurs') && (
+                                <button
+                                  onClick={() => handleDeleteFournisseur(supplier.ID!)}
+                                  className={`p-1.5 rounded transition-all duration-200 transform hover:scale-110 ${
+                                    expandedSuppliers.has(supplier.ID!)
+                                      ? 'text-red-300 hover:text-red-100 hover:bg-red-700'
+                                      : 'text-red-600 hover:text-red-800 hover:bg-red-50'
+                                  }`}
+                                  title="Supprimer"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -488,16 +530,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowChargeModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('charges') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowChargeModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -535,23 +579,27 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         <td className="px-4 py-2 text-xs text-gray-600">{charge.Bloquant}</td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingItem(charge);
-                                setShowChargeModal(true);
-                              }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Éditer"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCharge(charge.ID!)}
-                              className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Supprimer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {canEdit('charges') && (
+                              <button
+                                onClick={() => {
+                                  setEditingItem(charge);
+                                  setShowChargeModal(true);
+                                }}
+                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Éditer"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                            {canDelete('charges') && (
+                              <button
+                                onClick={() => handleDeleteCharge(charge.ID!)}
+                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Supprimer"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -594,16 +642,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowAgentModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('utilisateurs') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowAgentModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -643,23 +693,27 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         <td className="px-4 py-2 text-xs text-gray-600">{agent.email}</td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingItem(agent);
-                                setShowAgentModal(true);
-                              }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Éditer"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteAgent(agent.ID!)}
-                              className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Supprimer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {canEdit('utilisateurs') && (
+                              <button
+                                onClick={() => {
+                                  setEditingItem(agent);
+                                  setShowAgentModal(true);
+                                }}
+                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Éditer"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                            {canDelete('utilisateurs') && (
+                              <button
+                                onClick={() => handleDeleteAgent(agent.ID!)}
+                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Supprimer"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -702,16 +756,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowCentreModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('centres') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowCentreModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -749,23 +805,27 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         <td className="px-4 py-2 text-xs text-gray-600">{centre.REGION}</td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingItem(centre);
-                                setShowCentreModal(true);
-                              }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Éditer"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCentre(centre.ID!)}
-                              className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Supprimer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {canEdit('centres') && (
+                              <button
+                                onClick={() => {
+                                  setEditingItem(centre);
+                                  setShowCentreModal(true);
+                                }}
+                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Éditer"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                            {canDelete('centres') && (
+                              <button
+                                onClick={() => handleDeleteCentre(centre.ID!)}
+                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Supprimer"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -808,16 +868,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowCompteModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('comptes') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowCompteModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -877,23 +939,27 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         </td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingItem(compte);
-                                setShowCompteModal(true);
-                              }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Éditer"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCompte(compte.id!)}
-                              className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Supprimer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {canEdit('comptes') && (
+                              <button
+                                onClick={() => {
+                                  setEditingItem(compte);
+                                  setShowCompteModal(true);
+                                }}
+                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Éditer"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                            {canDelete('comptes') && (
+                              <button
+                                onClick={() => handleDeleteCompte(compte.id!)}
+                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Supprimer"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -936,16 +1002,18 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
                   </button>
-                  <button
-                    onClick={() => {
-                      setEditingItem(null);
-                      setShowCaisseModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
-                  >
-                    <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
-                    <span className="text-sm font-medium">Nouveau</span>
-                  </button>
+                  {canCreate('caisses') && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        setShowCaisseModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+                    >
+                      <Plus size={16} className="transition-transform duration-200 group-hover:rotate-90" />
+                      <span className="text-sm font-medium">Nouveau</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -983,23 +1051,27 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         <td className="px-4 py-2 text-xs text-gray-600">{caisse.Region}</td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
-                            <button
-                              onClick={() => {
-                                setEditingItem(caisse);
-                                setShowCaisseModal(true);
-                              }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Éditer"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCaisse(caisse.ID!)}
-                              className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
-                              title="Supprimer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {canEdit('caisses') && (
+                              <button
+                                onClick={() => {
+                                  setEditingItem(caisse);
+                                  setShowCaisseModal(true);
+                                }}
+                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Éditer"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                            {canDelete('caisses') && (
+                              <button
+                                onClick={() => handleDeleteCaisse(caisse.ID!)}
+                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                title="Supprimer"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

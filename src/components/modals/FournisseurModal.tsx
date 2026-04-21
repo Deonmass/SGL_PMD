@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { Fournisseur, fournisseurService } from '../../services/tableService';
 
 interface FournisseurModalProps {
@@ -10,6 +11,7 @@ interface FournisseurModalProps {
 }
 
 export default function FournisseurModal({ isOpen, fournisseur, onClose, onSave }: FournisseurModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<Fournisseur>(
     fournisseur || { Fournisseur: '', "Catégorie fournisseur": '' }
   );
@@ -27,6 +29,20 @@ export default function FournisseurModal({ isOpen, fournisseur, onClose, onSave 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    
+    // Vérification des permissions
+    if (fournisseur?.ID) {
+      if (!canEdit('fournisseurs')) {
+        setError('Vous n\'avez pas la permission de modifier des fournisseurs.');
+        return;
+      }
+    } else {
+      if (!canCreate('fournisseurs')) {
+        setError('Vous n\'avez pas la permission de créer des fournisseurs.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {

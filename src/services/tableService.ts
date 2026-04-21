@@ -597,6 +597,13 @@ export const dashboardService = {
           }
         }
 
+        // Filter by region if provided
+        if (region) {
+          if (f.Région !== region) {
+            return false;
+          }
+        }
+
         const montant = parseFloat(f.Montant) || 0;
         const statut = f.Statut?.toLowerCase() || '';
         
@@ -2240,11 +2247,18 @@ export const dashboardService = {
   // Get cost centers filtered by region
   async getCostCentersWithStatsByRegion(region: string | null, year?: string) {
     try {
-      // Load all cost centers from CENTRE_DE_COUT table
-      const { data: costCenters, error: centersError } = await supabase
+      // Load cost centers from CENTRE_DE_COUT table, filtered by region
+      let query = supabase
         .from('CENTRE_DE_COUT')
-        .select('Designation')
+        .select('ID, Designation, REGION')
         .order('Designation', { ascending: true });
+
+      // Filter by region if provided
+      if (region) {
+        query = query.eq('REGION', region);
+      }
+
+      const { data: costCenters, error: centersError } = await query;
 
       if (centersError) throw centersError;
 

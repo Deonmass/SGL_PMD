@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { Compte, compteService, fournisseurService } from '../../services/tableService';
 
 interface CompteModalProps {
@@ -10,6 +11,7 @@ interface CompteModalProps {
 }
 
 export default function CompteModal({ isOpen, compte, onClose, onSave }: CompteModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState({
     Fournisseur: '',
     Banque: '',
@@ -79,6 +81,21 @@ export default function CompteModal({ isOpen, compte, onClose, onSave }: CompteM
     e.preventDefault();
     setLoading(true);
     setError('');
+
+    // Vérification des permissions
+    if (compte?.id) {
+      if (!canEdit('comptes')) {
+        setError('Vous n\'avez pas la permission de modifier des comptes.');
+        setLoading(false);
+        return;
+      }
+    } else {
+      if (!canCreate('comptes')) {
+        setError('Vous n\'avez pas la permission de créer des comptes.');
+        setLoading(false);
+        return;
+      }
+    }
 
     try {
       if (compte?.id) {

@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase';
 import { cloudStorageService } from '../services/cloudStorage';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
 
 interface InvoiceFormProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,6 +41,7 @@ interface Charge {
 function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
   const { success, error: showError } = useToast();
   const { agent } = useAuth();
+  const { canCreate } = usePermission();
   const [formData, setFormData] = useState({
     // Informations générales
     emissionDate: '',
@@ -361,6 +363,12 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    // Vérifier la permission de créer une facture
+    if (!canCreate('factures')) {
+      showError('Vous n\'avez pas la permission de créer des factures.');
+      return;
+    }
+    
     // Valider que le fichier est fourni
     if (!formData.attachedInvoiceUrl) {
       setFormData(prev => ({
@@ -403,7 +411,8 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
         "validation DR": null,
         "validation DOP": null,
         "validation DG": null,
-        "Rejet": null
+        "Rejet": null,
+        "created_by": agent?.email || null
       };
 
       // Insérer dans la table FACTURES

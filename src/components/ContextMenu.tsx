@@ -16,7 +16,7 @@ interface ContextMenuProps {
 
 function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onClose, position, activeMenu }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { canMarkAsPaid } = usePermission();
+  const { canMarkAsPaid, canEdit, canDelete } = usePermission();
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -70,31 +70,35 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onCl
           Visualiser
         </button>
 
-        <button
-          onClick={() => {
-            onEdit(invoice);
-            onClose();
-          }}
-          className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
-        >
-          <Edit size={16} className="text-gray-600" />
-          Modifier
-        </button>
+        {canEdit('factures') && (
+          <button
+            onClick={() => {
+              onEdit(invoice);
+              onClose();
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
+          >
+            <Edit size={16} className="text-gray-600" />
+            Modifier
+          </button>
+        )}
 
         {activeMenu === 'factures-validated' ? (
           <>
-            <button
-              onClick={() => {
-                if (onAddToPaymentOrder) {
-                  onAddToPaymentOrder(invoice);
-                }
-                onClose();
-              }}
-              className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
-            >
-              <Calendar size={16} className="text-gray-600" />
-              Ajouter à l'ordre de paiement du jour
-            </button>
+            {canEdit('factures') && (
+              <button
+                onClick={() => {
+                  if (onAddToPaymentOrder) {
+                    onAddToPaymentOrder(invoice);
+                  }
+                  onClose();
+                }}
+                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
+              >
+                <Calendar size={16} className="text-gray-600" />
+                Ajouter à l'ordre de paiement du jour
+              </button>
+            )}
 
             {canMarkAsPaid() && (
               <button

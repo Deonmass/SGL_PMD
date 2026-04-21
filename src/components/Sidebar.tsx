@@ -46,7 +46,7 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
     },
     {
       id: 'search',
-      label: 'PAR FOURNISSEUR ',
+      label: 'RECHERCHE ',
       icon: Search,
     },
     {

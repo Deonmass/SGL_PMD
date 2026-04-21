@@ -11,9 +11,10 @@ interface InvoicesPageProps {
   filterType?: 'all' | 'pending' | 'validated' | 'paid' | 'partially-paid' | 'rejected' | 'overdue';
   activeMenu?: string;
   menuTitle?: string;
+  onMenuChange?: (menu: string) => void;
 }
 
-function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures' }: InvoicesPageProps) {
+function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', onMenuChange }: InvoicesPageProps) {
   const { canView, canCreate, canEdit, canDelete } = usePermission();
   const { agent } = useAuth();
   
@@ -140,7 +141,10 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures' }
             Actualiser
           </button>
           {canCreate('factures') && (
-            <button className="flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition font-semibold text-sm">
+            <button 
+              onClick={() => onMenuChange?.('factures-new')}
+              className="flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition font-semibold text-sm"
+            >
               <Plus size={18} />
               Nouvelle facture
             </button>

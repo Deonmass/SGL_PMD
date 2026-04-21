@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { Caisse, caisseService } from '../../services/tableService';
 
 interface CaisseModalProps {
@@ -10,6 +11,7 @@ interface CaisseModalProps {
 }
 
 export default function CaisseModal({ isOpen, caisse, onClose, onSave }: CaisseModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<Caisse>(
     caisse || { Designation: '', Region: '' }
   );
@@ -49,6 +51,19 @@ export default function CaisseModal({ isOpen, caisse, onClose, onSave }: CaisseM
     if (!formData.Region?.trim()) {
       setError('La région est obligatoire');
       return;
+    }
+
+    // Vérification des permissions
+    if (caisse?.ID) {
+      if (!canEdit('caisses')) {
+        setError('Vous n\'avez pas la permission de modifier des caisses.');
+        return;
+      }
+    } else {
+      if (!canCreate('caisses')) {
+        setError('Vous n\'avez pas la permission de créer des caisses.');
+        return;
+      }
     }
 
     setLoading(true);

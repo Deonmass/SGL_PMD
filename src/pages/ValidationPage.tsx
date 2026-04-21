@@ -447,14 +447,20 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
       const dgValidated = inv["validation DG"] != null && String(inv["validation DG"]).trim() !== '';
       
       let isBonAPayer = false;
-      if (drValidated && dopValidated && dgValidated) {
-        isBonAPayer = true;
-      } else if (amount <= 2500) {
+      // Nouvelles règles de validation
+      if (amount <= 2500) {
+        // Pour les factures de moins de 2500$, DR seul suffit
         isBonAPayer = drValidated;
-      } else if (amount <= 10000) {
-        isBonAPayer = drValidated && dopValidated;
+      } else if (dopValidated) {
+        // Si le DOP a signé, passe directement à "bon à payer" peu importe le montant
+        isBonAPayer = true;
       } else {
-        isBonAPayer = drValidated && dopValidated && dgValidated;
+        // Anciennes règles pour les autres cas
+        if (amount <= 10000) {
+          isBonAPayer = drValidated && dopValidated;
+        } else {
+          isBonAPayer = drValidated && dopValidated && dgValidated;
+        }
       }
       
       console.log(`Transformation ${inv["Numéro de facture"]}: montant=${amount}, bon-a-payer=${isBonAPayer}`);

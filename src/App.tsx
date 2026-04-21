@@ -102,7 +102,7 @@ function AppContent() {
 
     // Invoices
     if (activeMenu === 'factures-all') {
-      return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
     }
     if (activeMenu === 'factures-pending' || activeMenu === 'factures-pending-dop' || activeMenu === 'factures-pending-dq') {
       return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
@@ -121,7 +121,7 @@ function AppContent() {
 
     // Default to all invoices for factures menu
     if (activeMenu.startsWith('factures')) {
-      return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
     }
 
     // Parameters
@@ -158,7 +158,10 @@ function AppContent() {
 
   const handleMenuChange = (menu: string) => {
     if (menu === 'factures-new') {
-      setShowInvoiceForm(true);
+      // Vérifier la permission avant d'ouvrir le formulaire
+      if (canCreate('factures')) {
+        setShowInvoiceForm(true);
+      }
     } else {
       setShowInvoiceForm(false);
     }

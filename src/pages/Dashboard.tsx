@@ -82,16 +82,8 @@ function Dashboard({ menuTitle }: DashboardProps) {
   const [activeTab, setActiveTab] = useState(1);
   const [selectedYear, setSelectedYear] = useState('2026');
   const [selectedMonth, setSelectedMonth] = useState('all');
-  // Initialiser la région: si l'agent a une région spécifique (pas TOUT), la fixer à sa région
-  // Sinon (TOUT ou pas de région), initialiser à undefined (qui affiche toutes les régions)
-  const [selectedRegionBulletin, setSelectedRegionBulletin] = useState<string | undefined>(() => {
-    // Si agent est disponible et a une région différente de TOUT, utiliser sa région
-    if (agent?.REGION && agent.REGION !== 'TOUT') {
-      return agent.REGION;
-    }
-    // Sinon, retourner undefined (affiche toutes les régions)
-    return undefined;
-  });
+  // Initialiser à undefined - la synchronisation avec agent se fera via useEffect
+  const [selectedRegionBulletin, setSelectedRegionBulletin] = useState<string | undefined>(undefined);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [regions, setRegions] = useState<string[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -589,6 +581,19 @@ function Dashboard({ menuTitle }: DashboardProps) {
     loadDashboardData();
   }, [selectedYear, selectedMonth, selectedRegionBulletin]);
 
+  // Synchroniser selectedRegionBulletin avec la région de l'agent connecté
+  useEffect(() => {
+    if (agent?.REGION) {
+      if (agent.REGION !== 'TOUT') {
+        // Si l'agent a une région spécifique (pas TOUT), forcer cette région
+        setSelectedRegionBulletin(agent.REGION);
+      } else {
+        // Si l'agent a la région TOUT, afficher toutes les régions (undefined)
+        setSelectedRegionBulletin(undefined);
+      }
+    }
+  }, [agent?.REGION]);
+
   // Recalculate bulletin stats when region changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -909,6 +914,9 @@ function Dashboard({ menuTitle }: DashboardProps) {
 
       switch (type) {
         case 'total': {
+          // Debug log
+          console.log('DEBUG: openModal total - selectedRegionBulletin:', selectedRegionBulletin);
+          
           // Fetch all invoices from all categories
           const [nonPayee, bonAPayer, payee, partiellementPayee, echue, rejetee] = await Promise.all([
             dashboardService.getNonPayeeInvoices(selectedYear, selectedRegionBulletin),
@@ -1767,13 +1775,13 @@ function Dashboard({ menuTitle }: DashboardProps) {
       {/* Top Progress Bar */}
       <TopProgressBar isLoading={loading} />
       
-      <div className="bg-gray-200 pr-4 pl-4 pt-2 pb-0 sticky top-0 z-40 shadow-md">
-        <div className="rounded-lg mb-2">
+      <div className="bg-gray-200 pr-4 pl-4 pt-2 pb-0 sticky top-0 z-40">
+        <div className="rounded-lg mb-[-0px]">
           <div className="flex items-center justify-between">
             <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
             <div className="flex items-center gap-6">
               {/* Onglets par région */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 ">
                 {agent?.REGION === 'TOUT' && (
                   <button
                     onClick={() => setSelectedRegionBulletin(undefined)}

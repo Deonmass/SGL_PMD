@@ -25,7 +25,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   // Checker les signatures existantes depuis les données de l'invoice
   const [validations, setValidations] = useState({
     dr: invoice.emissionDate || null,
-    dop: null
+    dop: null,
+    dg: null
   });
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationType, setValidationType] = useState<'dr' | 'dop' | null>(null);
@@ -38,17 +39,24 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   // Vérifier si la facture est rejetée selon le statut réel de la BDD
   const isRejected = dbStatus === 'Rejetée';
 
-  // Vérifier si la facture est "Bon à payer" selon les règles de montant
+  // Vérifier si la facture est "Bon à payer" selon les nouvelles règles
   const isBonAPayer = () => {
     const amount = invoice.amount || 0;
-    const totalValidations = (validations.dr ? 1 : 0) + (validations.dop ? 1 : 0);
     
     if (amount <= 2500) {
-      // ≤ 2,500 USD : DR seule suffit
+      // Pour les factures de moins de 2500$, DR seul suffit
       return validations.dr ? true : false;
+    } else if (validations.dop) {
+      // Si le DOP a signé, passe directement à "bon à payer" peu importe le montant
+      return true;
     } else {
-      // > 2,500 USD : DR + DOP suffisent
-      return totalValidations >= 2;
+      // Anciennes règles pour les autres cas
+      const totalValidations = (validations.dr ? 1 : 0) + (validations.dop ? 1 : 0);
+      if (amount <= 10000) {
+        return totalValidations >= 2;
+      } else {
+        return totalValidations >= 2 && validations.dg;
+      }
     }
   };
 
@@ -68,7 +76,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
           setDbStatus(data["Statut"] || '');
           setValidations({
             dr: data["validation DR"] || null,
-            dop: data["validation DOP"] || null
+            dop: data["validation DOP"] || null,
+            dg: data["validation DG"] || null
           });
           
           // Charger les rejets (JSON)
@@ -108,7 +117,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             paymentMode: data["Mode de paiement requis"],
             urgencyLevel: data["Niveau urgence"] || invoice.urgencyLevel,
             status: data["Statut"] ? (data["Statut"].toLowerCase().includes('rejet') ? 'rejected' : 'pending') : invoice.status,
-            attachedInvoiceUrl: data["Facture attachée"]
+            attachedInvoiceUrl: data["Facture attachée"],
+            created_by: data["created_by"]
           } as any);
           
           console.log('Toutes les données chargées:', data);
@@ -136,8 +146,24 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     setIsSubmitting(true);
     
     try {
+      // Déterminer le statut selon les nouvelles règles
+      let newStatus = '';
+      const amount = invoice.amount || 0;
+      
+      if (validationType === 'dr') {
+        // Pour les factures de moins de 2500$, DR seul suffit pour passer à "Validée"
+        if (amount <= 2500) {
+          newStatus = 'Validée';
+        } else {
+          newStatus = 'En attente validation DOP';
+        }
+      } else if (validationType === 'dop') {
+        // Si le DOP signe, passe directement à "Validée"
+        newStatus = 'Validée';
+      }
+      
       const updateData: Record<string, any> = {
-        "Statut": validationType === 'dr' ? 'En attente validation DOP' : 'Validée'
+        "Statut": newStatus
       };
 
       // Ajouter la date de validation dans les colonnes existantes - format correct
@@ -278,7 +304,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-[95vw] max-w-6xl max-h-[95vh] flex flex-col">
+      <div className="bg-white rounded-lg shadow-xl w-[95vw] max-w-6xl h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4 flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -539,12 +565,23 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                     {/* COMMENTAIRES */}
                     <tr className="bg-gray-50">
                       <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        💬 Notes
+                        &#128172; Notes
                       </td>
                     </tr>
                     <tr>
                       <td className="py-2 text-xs text-gray-600 font-medium">Commentaires:</td>
                       <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.comments || '-'}</td>
+                    </tr>
+
+                    {/* CRÉATEUR */}
+                    <tr className="bg-gray-50">
+                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                        &#128100; Créateur
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 text-xs text-gray-600 font-medium">Créé par:</td>
+                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.created_by || '-'}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -639,7 +676,11 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                                   ? 'bg-blue-600 text-white hover:bg-blue-700'
                                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                               }`}
-                              title={!isValidatorDOP() ? "Vous n'avez pas la permission de valider" : "Valider"}
+                              title={
+                                !isValidatorDOP()
+                                  ? "Vous n'avez pas la permission de valider"
+                                  : "Valider"
+                              }
                             >
                               {isSubmitting && validationType === 'dop' ? (
                                 <Loader2 className="w-3 h-3 animate-spin mx-auto" />
@@ -655,7 +696,11 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                                   ? 'bg-red-600 text-white hover:bg-red-700'
                                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                               }`}
-                              title={!canRejectDOP() ? "Vous n'avez pas la permission de rejeter" : "Rejeter"}
+                              title={
+                                !canRejectDOP()
+                                  ? "Vous n'avez pas la permission de rejeter"
+                                  : "Rejeter"
+                              }
                             >
                               Rejeter
                             </button>

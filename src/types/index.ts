@@ -30,6 +30,7 @@ export interface Invoice {
   paymentMode?: string;
   attachedInvoiceUrl?: string;
   comments?: string;
+  created_by?: string;
 }
 
 export interface User {

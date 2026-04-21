@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MoreVertical, Lock, UserX, Edit2, Trash2, RefreshCw, Search, X, Loader, Plus, Shield } from 'lucide-react';
+import { MoreVertical, Lock, UserX, Edit2, Trash2, RefreshCw, Search, X, Loader, Plus, Shield, Heart } from 'lucide-react';
 import bcrypt from 'bcryptjs';
 import Swal from 'sweetalert2';
 import { supabase } from '../services/supabase';
@@ -41,13 +41,87 @@ interface ContextMenuPosition {
   y: number;
 }
 
+// Rôles prédéfinis avec leurs permissions
+const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
+  'Administrateur': {
+    dashboard: { voir: true },
+    recherche: { voir: true },
+    factures: { voir: true, creer: true, modifier: true, supprimer: true, valider: true, rejeter: true, establir_op: true, marquer_payee: true },
+    factures_pending_dr: { voir: true, valider: true, rejeter: true },
+    factures_pending_dop: { voir: true, valider: true, rejeter: true },
+    factures_rejected: { voir: true, modifier: true },
+    factures_overdue: { voir: true },
+    factures_validated: { voir: true, establir_op: true },
+    factures_payment_order: { voir: true, establir_op: true, marquer_payee: true },
+    factures_paid: { voir: true },
+    factures_partially_paid: { voir: true },
+    paramettre: { voir: true },
+    fournisseurs: { voir: true, creer: true, modifier: true, supprimer: true },
+    charges: { voir: true, creer: true, modifier: true, supprimer: true },
+    centres: { voir: true, creer: true, modifier: true, supprimer: true },
+    caisses: { voir: true, creer: true, modifier: true, supprimer: true },
+    comptes: { voir: true, creer: true, modifier: true, supprimer: true },
+    utilisateurs: { voir: true, creer: true, modifier: true, supprimer: true, reinitialiser_mdp: true, gerer_permissions: true },
+    dr_ouest: { valider: true },
+    dr_est: { valider: true },
+    dr_sud: { valider: true },
+    dop_tout: { valider: true },
+    dg_tout: { valider: true }
+  },
+  'DR': {
+    dashboard: { voir: true },
+    recherche: { voir: true },
+    factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
+    factures_pending_dr: { voir: true, valider: true, rejeter: true },
+    factures_rejected: { voir: true, modifier: false },
+    factures_overdue: { voir: true },
+    paramettre: { voir: false },
+    fournisseurs: { voir: true, creer: false, modifier: false, supprimer: false },
+    charges: { voir: false },
+    centres: { voir: false },
+    caisses: { voir: false },
+    comptes: { voir: false },
+    utilisateurs: { voir: false },
+    dr_ouest: { valider: true },
+    dr_est: { valider: false },
+    dr_sud: { valider: false },
+  },
+  'DOP': {
+    dashboard: { voir: true },
+    recherche: { voir: true },
+    factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
+    factures_pending_dop: { voir: true, valider: true, rejeter: true },
+    factures_validated: { voir: true, establir_op: false },
+    paramettre: { voir: false },
+    dop_tout: { valider: true },
+  },
+  'Utilisateur': {
+    dashboard: { voir: true },
+    recherche: { voir: true },
+    factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
+    paramettre: { voir: false },
+  },
+  'Gestionnaire': {
+    dashboard: { voir: true },
+    recherche: { voir: true },
+    factures: { voir: true, creer: true, modifier: true, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
+    paramettre: { voir: true },
+    fournisseurs: { voir: true, creer: true, modifier: true, supprimer: false },
+    charges: { voir: true, creer: true, modifier: true, supprimer: false },
+    centres: { voir: true, creer: true, modifier: true, supprimer: false },
+    caisses: { voir: true, creer: true, modifier: true, supprimer: false },
+    comptes: { voir: true, creer: true, modifier: true, supprimer: false },
+  },
+};
+
 function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
-  const { canView } = usePermission();
+  const { canView, canDelete, canEdit, canCreate } = usePermission();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [filteredAgents, setFilteredAgents] = useState<Agent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedRegion, setSelectedRegion] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedRegion, setSelectedRegion] = useState('all');
+  const [selectedRoleFilter, setSelectedRoleFilter] = useState('all');
+  const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     agent: Agent;
     position: ContextMenuPosition;
@@ -65,6 +139,9 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
   const [permissionsAgent, setPermissionsAgent] = useState<Agent | null>(null);
   const [activePermissionTab, setActivePermissionTab] = useState('dashboard-recherche');
   const [isAdminMode, setIsAdminMode] = useState(false);
+  const [showSaveRoleModal, setShowSaveRoleModal] = useState(false);
+  const [roleNameToSave, setRoleNameToSave] = useState('');
+  const [selectedRoleTemplate, setSelectedRoleTemplate] = useState<string>('');
   const [permissions, setPermissions] = useState<MenuPermissions>({
     dashboard: { voir: true },
     recherche: { voir: true },
@@ -152,6 +229,10 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       filtered = filtered.filter(a => a.REGION === selectedRegion);
     }
 
+    if (selectedRoleFilter !== 'all') {
+      filtered = filtered.filter(a => a.Role === selectedRoleFilter);
+    }
+
     if (searchTerm.trim()) {
       const lower = searchTerm.toLowerCase();
       filtered = filtered.filter(a => 
@@ -162,7 +243,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
 
     filtered.sort((a, b) => a.Nom.localeCompare(b.Nom));
     setFilteredAgents(filtered);
-  }, [agents, selectedRegion, searchTerm]);
+  }, [agents, selectedRegion, selectedRoleFilter, searchTerm]);
 
   useEffect(() => {
     fetchAgents();
@@ -183,15 +264,43 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
     filterAgents();
   }, [filterAgents]);
 
-  const getCardColors = (role: string): { borderColor: string } => {
-    const cardColorMap: Record<string, { borderColor: string }> = {
-      'Administrateur': { borderColor: '#ef4444' },
-      'Gestionnaire': { borderColor: '#3b82f6' },
-      'Validateur': { borderColor: '#22c55e' },
-      'Auditeur': { borderColor: '#a855f7' },
-      'Utilisateur': { borderColor: '#f97316' },
+  const getInitials = (name: string): string => {
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
+  const getAvatarColor = (role: string): string => {
+    const colorMap: Record<string, string> = {
+      'Administrateur': '#ef4444',
+      'DR': '#3b82f6',
+      'DG': '#8b5cf6',
+      'DOP': '#f59e0b',
+      'Finance': '#06b6d4',
+      'Manager': '#10b981',
+      'Gestionnaire': '#6366f1',
+      'Validateur': '#22c55e',
+      'Auditeur': '#a855f7',
+      'Utilisateur': '#f97316',
     };
-    return cardColorMap[role] || { borderColor: '#6b7280' };
+    return colorMap[role] || '#6b7280';
+  };
+
+  const getCardColors = (role: string): { borderColor: string; bgColor: string } => {
+    const cardColorMap: Record<string, { borderColor: string; bgColor: string }> = {
+      'Administrateur': { borderColor: '#ef4444', bgColor: '#fecaca' },
+      'DR': { borderColor: '#3b82f6', bgColor: '#bfdbfe' },
+      'DG': { borderColor: '#8b5cf6', bgColor: '#d8b4fe' },
+      'DOP': { borderColor: '#f59e0b', bgColor: '#fcd34d' },
+      'Gestionnaire': { borderColor: '#3b82f6', bgColor: '#bfdbfe' },
+      'Validateur': { borderColor: '#22c55e', bgColor: '#bbf7d0' },
+      'Auditeur': { borderColor: '#a855f7', bgColor: '#e9d5ff' },
+      'Utilisateur': { borderColor: '#f97316', bgColor: '#fed7aa' },
+    };
+    return cardColorMap[role] || { borderColor: '#6b7280', bgColor: '#e5e7eb' };
   };
 
   const handleContextMenu = (agent: Agent, e: React.MouseEvent) => {
@@ -312,6 +421,17 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
   };
 
   const handleDeleteAgent = async (agent: Agent) => {
+    // Vérification de permission avant suppression
+    if (!canDelete('utilisateurs')) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Accès refusé',
+        text: 'Vous n\'avez pas la permission de supprimer des agents.',
+        confirmButtonColor: '#3b82f6',
+      });
+      return;
+    }
+
     Swal.fire({
       title: 'Supprimer cet agent?',
       text: 'Cette action est irréversible. L\'agent et toutes ses données seront supprimés.',
@@ -358,6 +478,17 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
   const handleSaveEdit = async () => {
     if (!editingAgent) return;
 
+    // Vérification de permission avant modification
+    if (!canEdit('utilisateurs')) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Accès refusé',
+        text: 'Vous n\'avez pas la permission de modifier des agents.',
+        confirmButtonColor: '#3b82f6',
+      });
+      return;
+    }
+
     setActionLoading_( editingAgent.ID, 'edit', true);
     try {
       const { error } = await supabase
@@ -395,6 +526,17 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       };
 
   const handleAddNewUser = async () => {
+    // Vérification de permission avant création
+    if (!canCreate('utilisateurs')) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Accès refusé',
+        text: 'Vous n\'avez pas la permission de créer des agents.',
+        confirmButtonColor: '#3b82f6',
+      });
+      return;
+    }
+
     if (!newAgent.Nom || !newAgent.email) {
       Swal.fire({
         icon: 'error',
@@ -425,15 +567,14 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       if (insertError) throw insertError;
       
       if (data) {
-        setAgents([...agents, data[0]]);
+        const newAgent_ = data[0];
+        setAgents([...agents, newAgent_]);
         setShowNewUserModal(false);
         setNewAgent({ Nom: '', email: '', Role: 'Utilisateur', REGION: 'OUEST' });
-        Swal.fire({
-          icon: 'success',
-          title: 'Succès',
-          text: 'Agent ajouté avec succès',
-          confirmButtonColor: '#3b82f6',
-        });
+        
+        // Afficher immédiatement le modal de permissions
+        setPermissionsAgent(newAgent_);
+        setActivePermissionTab('dashboard-recherche');
       }
     } catch (err) {
       console.error('Error adding agent:', err);
@@ -511,6 +652,61 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       });
     } finally {
       setActionLoading_( permissionsAgent.ID, 'permissions', false);
+    }
+  };
+
+  const handleSaveRoleAsTemplate = async () => {
+    if (!roleNameToSave.trim()) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erreur',
+        text: 'Veuillez entrer un nom pour le rôle',
+        confirmButtonColor: '#3b82f6',
+      });
+      return;
+    }
+
+    try {
+      setActionLoading_( 0, 'save-role', true);
+      // Stocker dans localStorage pour la démonstration
+      // En production, cela serait stocké en base de données
+      const roles = JSON.parse(localStorage.getItem('sgl_custom_roles') || '{}');
+      roles[roleNameToSave] = permissions;
+      localStorage.setItem('sgl_custom_roles', JSON.stringify(roles));
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Succès',
+        text: `Le rôle "${roleNameToSave}" a été enregistré`,
+        confirmButtonColor: '#3b82f6',
+      });
+      
+      setShowSaveRoleModal(false);
+      setRoleNameToSave('');
+    } catch (err) {
+      console.error('Error saving role:', err);
+      Swal.fire({
+        icon: 'error',
+        title: 'Erreur',
+        text: 'Erreur lors de l\'enregistrement du rôle',
+        confirmButtonColor: '#3b82f6',
+      });
+    } finally {
+      setActionLoading_( 0, 'save-role', false);
+    }
+  };
+
+  const handleLoadRoleTemplate = (roleName: string) => {
+    if (PREDEFINED_ROLES[roleName]) {
+      setPermissions(PREDEFINED_ROLES[roleName]);
+      setSelectedRoleTemplate(roleName);
+    } else {
+      // Charger depuis localStorage
+      const customRoles = JSON.parse(localStorage.getItem('sgl_custom_roles') || '{}');
+      if (customRoles[roleName]) {
+        setPermissions(customRoles[roleName]);
+        setSelectedRoleTemplate(roleName);
+      }
     }
   };
 
@@ -702,67 +898,87 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
 
   return (
     <div className="bg-white min-h-screen">
-      {/* Header avec boutons et recherche sur la même ligne */}
-      <div className="bg-gray-200 p-2 flex justify-between items-center gap-4">
+      {/* Header */}
+      <div className="bg-gray-200 p-2">
         <h1 className="text-2xl font-bold text-gray-900">{menuTitle}</h1>
-        
-        {/* Barre de recherche */}
-        <div className="flex-1 max-w-md relative">
-          <Search size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Rechercher par nom ou email..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-          />
-        </div>
-        
-        {/* Boutons */}
-        <div className="flex gap-2">
-          <button
-            onClick={fetchAgents}
-            disabled={loading}
-            className="flex items-center justify-center p-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg transition disabled:opacity-50"
-            title="Actualiser"
-          >
-            <RefreshCw size={20} className={loading ? 'animate-spin' : ''} />
-          </button>
-          <button 
-            onClick={() => setShowNewUserModal(true)}
-            className="flex items-center justify-center p-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition"
-            title="Ajouter un agent"
-          >
-            <Plus size={20} />
-          </button>
-        </div>
       </div>
 
-      {/* Onglets par région */}
-      <div className="bg-gray-200 flex gap-2 mb-6 pr-2 pl-2 pt-2 pb-0 border-gray-200 overflow-x-auto ">
-        <button
-          onClick={() => setSelectedRegion('all')}
-          className={`px-4 py-2 text-sm font-medium transition-all whitespace-nowrap ${
-            selectedRegion === 'all'
-              ? 'bg-white text-black font-bold'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
-        >
-          Toutes ({agents.length})
-        </button>
-        {regions.filter(r => r !== 'all').map(region => (
+      {/* Onglets par région avec recherche et boutons à droite */}
+      <div className="bg-gray-200 flex justify-between items-center gap-4 pr-2 pl-2 pt-2 pb-0 border-b border-gray-300 overflow-x-auto sticky top-0 z-40">
+        {/* Onglets à gauche */}
+        <div className="flex gap-2">
           <button
-            key={region}
-            onClick={() => setSelectedRegion(region)}
+            onClick={() => setSelectedRegion('all')}
             className={`px-4 py-2 text-sm font-medium transition-all whitespace-nowrap ${
-              selectedRegion === region
-                ? 'bg-white text-black font-bold'
+              selectedRegion === 'all'
+                ? 'bg-white text-black font-bold border-b-2 border-blue-600'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Toutes ({agents.length})
+          </button>
+          {regions.filter(r => r !== 'all').map(region => (
+            <button
+              key={region}
+              onClick={() => setSelectedRegion(region)}
+              className={`px-4 py-2 text-sm font-medium transition-all whitespace-nowrap ${
+                selectedRegion === region
+                ? 'bg-white text-black font-bold border-b-2 border-blue-600'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
             {region} ({agents.filter(a => a.REGION === region).length})
           </button>
-        ))}
+          ))}
+        </div>
+        
+        {/* Barre de recherche et boutons à droite */}
+        <div className="flex items-center gap-2">
+          {/* Barre de recherche */}
+          <div className="relative">
+            <Search size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Rechercher par nom ou email..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-64 pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            />
+          </div>
+
+          {/* Select de filtrage par rôle */}
+          <select
+            value={selectedRoleFilter}
+            onChange={(e) => setSelectedRoleFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
+          >
+            <option value="all">Tous les rôles</option>
+            {[...new Set(agents.map(a => a.Role))].sort().map(role => (
+              <option key={role} value={role}>
+                {role} ({agents.filter(a => a.Role === role).length})
+              </option>
+            ))}
+          </select>
+          
+          {/* Boutons avec noms et couleurs dégradées */}
+          <button
+            onClick={fetchAgents}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white rounded-lg transition disabled:opacity-50 text-sm font-medium"
+            title="Actualiser"
+          >
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            Actualiser
+          </button>
+          <button 
+            onClick={() => setShowNewUserModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white rounded-lg transition text-sm font-medium"
+            title="Ajouter un agent"
+          >
+            <Plus size={16} />
+            Nouveau
+          </button>
+        </div>
       </div>
 
       {/* Contenu */}
@@ -778,66 +994,81 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
           Aucun agent trouvé
         </div>
       ) : (
-        <div className="pr-4 pl-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="pr-4 pl-4 pt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {filteredAgents.map((agent) => {
             const cardColors = getCardColors(agent.Role);
+            const initials = getInitials(agent.Nom);
             return (
               <div
                 key={agent.ID}
-                style={{ borderLeftColor: cardColors.borderColor }}
-                className="bg-white border-l-4 rounded-lg p-4 relative hover:shadow-lg hover:scale-105 transition h-fit flex flex-col text-gray-900"
+                className="bg-white rounded-xl shadow-md hover:shadow-xl hover:scale-105 transition-all duration-300 overflow-hidden flex flex-col text-center h-fit cursor-pointer hover:bg-gradient-to-br hover:from-blue-500 hover:via-purple-500 hover:to-pink-500 hover:text-white group"
               >
-                <button
-                  onClick={(e) => handleContextMenu(agent, e)}
-                  className="absolute top-2 right-2 p-1 hover:bg-gray-100 rounded-full transition"
-                >
-                  <MoreVertical size={16} className="text-gray-600" />
-                </button>
-
-                {/* Contenu - Haut */}
-                <div className="pr-8 flex-1">
-                  <h3 className="font-bold text-base text-gray-900 mb-2">{agent.Nom}</h3>
-
-                  <div className="space-y-2 text-xs">
-                    <div>
-                      <p className="text-gray-600 truncate">{agent.email}</p>
-                    </div>
-
-                    <div>
-                      <span className={`inline-flex px-2 py-1 rounded text-xs font-semibold bg-gray-100 text-gray-700`}>
-                        {agent.Role}
-                      </span>
-                    </div>
+                {/* Avatar Circulaire avec image de fond */}
+                <div className="pt-6 flex justify-center relative">
+                  {/* Image de fond avec effet fondu */}
+                  <div className="absolute inset-0 opacity-10">
+                    <img 
+                      src="https://images.unsplash.com/photo-1557804506-669a67965ba0?w=800&h=600&fit=crop" 
+                      alt="Background" 
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-gray-900/50 to-transparent"></div>
                   </div>
+                  
+                  <div
+                    className="w-24 h-24 rounded-full overflow-hidden shadow-md relative z-10"
+                  >
+                    <img 
+                      src="/images/user.jpeg" 
+                      alt={`${agent.Nom} avatar`}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        // Fallback: afficher les initiales si l'image ne charge pas
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                        const parent = target.parentElement;
+                        if (parent) {
+                          parent.style.backgroundColor = cardColors.borderColor;
+                          parent.innerHTML = `<div class="w-full h-full flex items-center justify-center text-white font-bold text-2xl">${initials}</div>`;
+                        }
+                      }}
+                    />
+                  </div>
+                  
+                  {/* Menu 3 points en haut à droite */}
+                  <button
+                    onClick={(e) => handleContextMenu(agent, e)}
+                    className="absolute top-2 right-2 p-2 hover:bg-gray-100 rounded-full transition z-10"
+                  >
+                    <MoreVertical size={18} className="text-gray-600 hover:text-gray-900 transition" />
+                  </button>
                 </div>
 
-                {/* Contenu - Bas */}
-                <div className="pt-3 border-t border-gray-200 space-y-2">
-                  {/* Toggle et Date sur la même ligne */}
-                  <div className="flex justify-between items-center">
-                    <button
-                      onClick={() => handleToggleStatus(agent)}
-                      disabled={actionLoading[`${agent.ID}-toggle`]}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all ${
-                        agent.statut === 'Actif' ? 'bg-green-500' : 'bg-red-500'
-                      } hover:scale-110 disabled:opacity-50`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          agent.statut === 'Actif' ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                      {actionLoading[`${agent.ID}-toggle`] && (
-                        <Loader size={12} className="absolute animate-spin text-gray-700" />
-                      )}
-                    </button>
+                {/* Contenu Principal */}
+                <div className="flex-1 px-4 py-4">
+                  <h3 className="font-bold text-lg text-gray-900 mb-1 group-hover:text-white transition-colors">{agent.Nom}</h3>
+                  <p className="text-xs text-gray-500 mb-4 truncate group-hover:text-white/90 transition-colors">{agent.email}</p>
 
-                    {/* Date dernière connexion */}
-                    {agent.Derniere_connexion && (
-                      <div className="text-xs text-gray-500">
-                        {formatDate(agent.Derniere_connexion)}
-                      </div>
-                    )}
+                  {/* Rôle, Région et Statut sur la même ligne */}
+                  <div className="flex justify-center items-center gap-2 mb-3 flex-wrap">
+                    <span 
+                      className="inline-flex px-2 py-1 rounded-md text-xs font-semibold text-white group-hover:bg-white/20 transition-colors"
+                      style={{ backgroundColor: cardColors.borderColor }}
+                    >
+                      {agent.Role}
+                    </span>
+                    <span className={`inline-flex px-2 py-1 rounded-md text-xs font-semibold text-white group-hover:bg-white/20 transition-colors ${
+                      agent.REGION === 'OUEST' ? 'bg-blue-600' :
+                      agent.REGION === 'EST' ? 'bg-green-600' :
+                      agent.REGION === 'SUD' ? 'bg-orange-600' :
+                      'bg-purple-600'
+                    }`}>
+                      {agent.REGION}
+                    </span>
+                    <div className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold bg-gray-600 text-white group-hover:bg-white/20 transition-colors">
+                      <span className={`w-2 h-2 rounded-full ${agent.statut === 'Actif' ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                      <span>{agent.statut}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -852,82 +1083,105 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
           ref={contextMenuRef}
           className="fixed bg-white rounded-lg shadow-lg border border-gray-200 z-50 min-w-[200px]"
           style={{
-            top: `${contextMenu.position.y}px`,
-            left: `${contextMenu.position.x}px`
+            top: `${Math.min(contextMenu.position.y, window.innerHeight - 300)}px`,
+            left: `${Math.min(contextMenu.position.x, window.innerWidth - 250)}px`
           }}
         >
           <div className="border-b border-gray-200 px-3 py-2 bg-gray-50">
             <p className="font-semibold text-gray-900 text-sm">{contextMenu.agent.Nom}</p>
           </div>
 
-          <button
-            onClick={() => {
-              handleShowResetPasswordModal(contextMenu.agent);
-              setContextMenu(null);
-            }}
-            disabled={actionLoading[`${contextMenu.agent.ID}-reset`]}
-            className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
-          >
-            {actionLoading[`${contextMenu.agent.ID}-reset`] ? (
-              <Loader size={14} className="animate-spin" />
-            ) : (
-              <Lock size={14} />
-            )}
-            <span>Réinitialiser MDP</span>
-          </button>
+          {canEdit('utilisateurs') && (
+            <button
+              onClick={() => {
+                handleShowResetPasswordModal(contextMenu.agent);
+                setContextMenu(null);
+              }}
+              disabled={actionLoading[`${contextMenu.agent.ID}-reset`]}
+              className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
+              title={!canEdit('utilisateurs') ? 'Vous n\'avez pas la permission' : 'Réinitialiser le mot de passe'}
+            >
+              {actionLoading[`${contextMenu.agent.ID}-reset`] ? (
+                <Loader size={14} className="animate-spin" />
+              ) : (
+                <Lock size={14} />
+              )}
+              <span>Réinitialiser MDP</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => handleToggleStatus(contextMenu.agent)}
-            disabled={actionLoading[`${contextMenu.agent.ID}-toggle`]}
-            className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
-          >
-            {actionLoading[`${contextMenu.agent.ID}-toggle`] ? (
-              <Loader size={14} className="animate-spin" />
-            ) : (
-              <UserX size={14} />
-            )}
-            <span>{contextMenu.agent.statut === 'Actif' ? 'Désactiver' : 'Activer'}</span>
-          </button>
+          {canEdit('utilisateurs') && (
+            <button
+              onClick={() => handleToggleStatus(contextMenu.agent)}
+              disabled={actionLoading[`${contextMenu.agent.ID}-toggle`]}
+              className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
+              title={!canEdit('utilisateurs') ? 'Vous n\'avez pas la permission' : 'Changer le statut'}
+            >
+              {actionLoading[`${contextMenu.agent.ID}-toggle`] ? (
+                <Loader size={14} className="animate-spin" />
+              ) : (
+                <UserX size={14} />
+              )}
+              <span>{contextMenu.agent.statut === 'Actif' ? 'Désactiver' : 'Activer'}</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => {
-              setEditingAgent(contextMenu.agent);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
-          >
-            <Edit2 size={14} />
-            <span>Mettre à jour</span>
-          </button>
+          {canEdit('utilisateurs') && (
+            <button
+              onClick={() => {
+                setEditingAgent(contextMenu.agent);
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
+              title="Modifier les informations"
+            >
+              <Edit2 size={14} />
+              <span>Mettre à jour</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => {
-              handleShowPermissionsModal(contextMenu.agent);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
-          >
-            <Shield size={14} />
-            <span>Permissions</span>
-          </button>
+          {canEdit('utilisateurs') && (
+            <button
+              onClick={() => {
+                handleShowPermissionsModal(contextMenu.agent);
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm hover:scale-105"
+              title="Gérer les permissions"
+            >
+              <Shield size={14} />
+              <span>Permissions</span>
+            </button>
+          )}
 
-          <div className="border-t border-gray-200 my-1"></div>
+          {(canEdit('utilisateurs') || canDelete('utilisateurs')) && (
+            <div className="border-t border-gray-200 my-1"></div>
+          )}
 
-          <button
-            onClick={() => {
-              handleDeleteAgent(contextMenu.agent);
-              setContextMenu(null);
-            }}
-            disabled={actionLoading[`${contextMenu.agent.ID}-delete`]}
-            className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm rounded-b-lg hover:scale-105"
-          >
-            {actionLoading[`${contextMenu.agent.ID}-delete`] ? (
-              <Loader size={14} className="animate-spin" />
-            ) : (
-              <Trash2 size={14} />
-            )}
-            <span>Supprimer</span>
-          </button>
+          {canDelete('utilisateurs') && (
+            <button
+              onClick={() => {
+                handleDeleteAgent(contextMenu.agent);
+                setContextMenu(null);
+              }}
+              disabled={actionLoading[`${contextMenu.agent.ID}-delete`]}
+              className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 text-gray-700 transition text-sm rounded-b-lg hover:scale-105"
+              title="Supprimer l'agent"
+            >
+              {actionLoading[`${contextMenu.agent.ID}-delete`] ? (
+                <Loader size={14} className="animate-spin" />
+              ) : (
+                <Trash2 size={14} />
+              )}
+              <span>Supprimer</span>
+            </button>
+          )}
+
+          {!canEdit('utilisateurs') && !canDelete('utilisateurs') && (
+            <div className="px-3 py-2 text-xs text-gray-500 text-center">
+              Vous n'avez pas les permissions
+            </div>
+          )}
         </div>
       )}
 
@@ -975,6 +1229,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
                   <option value="DR">DR</option>
                   <option value="DG">DG</option>
                   <option value="DOP">DOP</option>
+                  <option value="Finance">Finance</option>
                   <option value="Manager">Manager</option>
                   <option value="Gestionnaire">Gestionnaire</option>
                   <option value="Validateur">Validateur</option>
@@ -995,6 +1250,30 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
                     <option key={region} value={region}>{region}</option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setEditingAgent({ ...editingAgent, statut: editingAgent.statut === 'Actif' ? 'Inactif' : 'Actif' })}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      editingAgent.statut === 'Actif' ? 'bg-green-600' : 'bg-red-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        editingAgent.statut === 'Actif' ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                  <span className={`text-sm font-medium ${
+                    editingAgent.statut === 'Actif' ? 'text-green-600' : 'text-red-600'
+                  }`}>
+                    {editingAgent.statut}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -1065,6 +1344,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
                   <option value="DR">DR</option>
                   <option value="DG">DG</option>
                   <option value="DOP">DOP</option>
+                  <option value="Finance">Finance</option>
                   <option value="Manager">Manager</option>
                   <option value="Gestionnaire">Gestionnaire</option>
                   <option value="Validateur">Validateur</option>
@@ -1154,6 +1434,32 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
                 }`}
               >
                 {isAdminMode ? 'Désactiver Admin' : 'Admin'}
+              </button>
+            </div>
+
+            {/* Section Rôles prédéfinis */}
+            <div className="px-6 py-4 bg-gray-50 border-b flex gap-3 items-center flex-wrap">
+              <label className="text-sm font-medium text-gray-700">Charger un rôle:</label>
+              <select
+                value={selectedRoleTemplate}
+                onChange={(e) => handleLoadRoleTemplate(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              >
+                <option value="">-- Sélectionner un rôle --</option>
+                {Object.keys(PREDEFINED_ROLES).map(role => (
+                  <option key={role} value={role}>{role}</option>
+                ))}
+                {JSON.parse(localStorage.getItem('sgl_custom_roles') || '{}') && 
+                  Object.keys(JSON.parse(localStorage.getItem('sgl_custom_roles') || '{}')).map(role => (
+                    <option key={`custom-${role}`} value={role}>{role} (Custom)</option>
+                  ))
+                }
+              </select>
+              <button
+                onClick={() => setShowSaveRoleModal(true)}
+                className="px-4 py-2 text-sm font-medium bg-green-600 text-white hover:bg-green-700 rounded-lg transition"
+              >
+                Définir comme rôle
               </button>
             </div>
 
@@ -1271,6 +1577,56 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
                 )}
                 <Shield size={14} />
                 Enregistrer les permissions
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Sauvegarder le rôle */}
+      {showSaveRoleModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold text-gray-900">Définir comme rôle</h2>
+              <button onClick={() => setShowSaveRoleModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nom du rôle</label>
+                <input
+                  type="text"
+                  value={roleNameToSave}
+                  onChange={(e) => setRoleNameToSave(e.target.value)}
+                  placeholder="Ex: Responsable Facturation"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                />
+              </div>
+
+              <p className="text-xs text-gray-500 bg-blue-50 p-3 rounded">
+                Ce rôle pourra être réutilisé pour d'autres agents
+              </p>
+            </div>
+
+            <div className="flex gap-3 justify-end mt-6">
+              <button
+                onClick={() => setShowSaveRoleModal(false)}
+                className="px-4 py-2 text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-sm font-medium"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={handleSaveRoleAsTemplate}
+                disabled={actionLoading['0-save-role']}
+                className="px-4 py-2 text-white bg-green-600 hover:bg-green-700 rounded-lg transition text-sm font-medium flex items-center gap-2 disabled:opacity-50"
+              >
+                {actionLoading['0-save-role'] && (
+                  <Loader size={14} className="animate-spin" />
+                )}
+                Enregistrer
               </button>
             </div>
           </div>

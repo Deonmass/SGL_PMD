@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { Charge, chargeService } from '../../services/tableService';
 
 interface ChargeModalProps {
@@ -10,6 +11,7 @@ interface ChargeModalProps {
 }
 
 export default function ChargeModal({ isOpen, charge, onClose, onSave }: ChargeModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<Charge>(
     charge || { designation_Charges: '', Bloquant: 'NON' }
   );
@@ -30,6 +32,20 @@ export default function ChargeModal({ isOpen, charge, onClose, onSave }: ChargeM
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    
+    // Vérification des permissions
+    if (charge?.ID) {
+      if (!canEdit('charges')) {
+        setError('Vous n\'avez pas la permission de modifier des charges.');
+        return;
+      }
+    } else {
+      if (!canCreate('charges')) {
+        setError('Vous n\'avez pas la permission de créer des charges.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {

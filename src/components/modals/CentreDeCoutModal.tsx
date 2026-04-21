@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { CentreDeCout, centreDeCoutService } from '../../services/tableService';
 
 interface CentreDeCoutModalProps {
@@ -10,6 +11,7 @@ interface CentreDeCoutModalProps {
 }
 
 export default function CentreDeCoutModal({ isOpen, centre, onClose, onSave }: CentreDeCoutModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<CentreDeCout>(
     centre || { Designation: '', REGION: 'OUEST' }
   );
@@ -30,6 +32,20 @@ export default function CentreDeCoutModal({ isOpen, centre, onClose, onSave }: C
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    
+    // Vérification des permissions
+    if (centre?.ID) {
+      if (!canEdit('centres')) {
+        setError('Vous n\'avez pas la permission de modifier des centres de coût.');
+        return;
+      }
+    } else {
+      if (!canCreate('centres')) {
+        setError('Vous n\'avez pas la permission de créer des centres de coût.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
 import { Agent, agentService } from '../../services/tableService';
 
 interface AgentModalProps {
@@ -10,6 +11,7 @@ interface AgentModalProps {
 }
 
 export default function AgentModal({ isOpen, agent, onClose, onSave }: AgentModalProps) {
+  const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<Agent>(
     agent || { Nom: '', email: '', Role: 'Agent', REGION: 'OUEST' }
   );
@@ -19,6 +21,20 @@ export default function AgentModal({ isOpen, agent, onClose, onSave }: AgentModa
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    
+    // Vérification des permissions
+    if (agent?.ID) {
+      if (!canEdit('utilisateurs')) {
+        setError('Vous n\'avez pas la permission de modifier des agents.');
+        return;
+      }
+    } else {
+      if (!canCreate('utilisateurs')) {
+        setError('Vous n\'avez pas la permission de créer des agents.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
