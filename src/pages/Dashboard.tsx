@@ -128,9 +128,9 @@ function Dashboard({ menuTitle }: DashboardProps) {
     { id: 1, label: 'Global' },
     { id: 2, label: 'Bulletin de Liquidation' },
     { id: 3, label: 'Factures à impact opérationnel' },
-    { id: 4, label: 'Balance agé' },
+    { id: 4, label: 'Balance agée' },
     { id: 5, label: 'Centre des coûts' },
-    { id: 6, label: 'Fournisseur' }
+    { id: 6, label: 'Catégorie Fournisseurs' }
   ];
 
   const loadCostCenterData = async (costCenterRegion?: string | null) => {
@@ -1866,22 +1866,22 @@ function Dashboard({ menuTitle }: DashboardProps) {
       <TopProgressBar isLoading={loading} />
       
       <div className="bg-gray-200 pr-4 pl-4 pt-2 pb-0 sticky top-0 z-40">
-        <div className="rounded-lg mb-[-0px]">
+        <div className="rounded-lg mb-10px">
           <div className="flex items-center justify-between">
             <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
             <div className="flex items-center gap-6">
               {/* Onglets par région */}
-              <div className="flex gap-2 ">
+              <div className="flex gap-1 ">
                 {agent?.REGION === 'TOUT' && (
                   <button
                     onClick={() => setSelectedRegionBulletin(undefined)}
-                    className={`px-4 py-2 rounded-full font-semibold text-xs transition-all duration-200 ${
+                    className={`px-4 py-2 font-semibold text-xs transition-all duration-200 ${
                       selectedRegionBulletin === undefined
                         ? 'bg-red-700 text-white shadow-md'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
-                    Toutes
+                    Vue globale
                   </button>
                 )}
                 {agent?.REGION === 'TOUT' ? (
@@ -1889,10 +1889,10 @@ function Dashboard({ menuTitle }: DashboardProps) {
                     <button
                       key={region}
                       onClick={() => setSelectedRegionBulletin(region)}
-                      className={`px-4 py-2 rounded-full font-semibold text-xs transition-all duration-200 ${
+                      className={`px-4 py-2  font-semibold text-xs transition-all duration-200 ${
                         selectedRegionBulletin === region
                           ? 'bg-red-700 text-white shadow-md'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
                       {region}

@@ -1,4 +1,4 @@
-import { X, FileText, AlertTriangle, Loader2, Printer, ChevronDown, Maximize2 } from 'lucide-react';
+import { X, FileText, AlertTriangle, Loader2, Printer, Maximize2 } from 'lucide-react';
 import { Invoice } from '../types';
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../services/supabase';
@@ -32,8 +32,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [validationType, setValidationType] = useState<'dr' | 'dop' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingValidations, setIsLoadingValidations] = useState(true);
-  const [isDetailsExpanded, setIsDetailsExpanded] = useState(false);
-  const [isVisualizationExpanded, setIsVisualizationExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<'visualization' | 'details'>('visualization');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Vérifier si la facture est rejetée selon le statut réel de la BDD
@@ -223,6 +222,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     if (onRefresh) {
       onRefresh();
     }
+    // Émettre l'événement de fermeture de modal pour le rechargement automatique
+    window.dispatchEvent(new Event('modalClosed'));
     onClose();
   };
 
@@ -311,7 +312,10 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             <FileText className="text-blue-600" size={24} />
             <div>
               <h2 className="text-xl font-bold text-gray-800">Facture {invoice.invoiceNumber}</h2>
-              <p className="text-sm text-gray-600">Détails complets de la facture</p>
+              <p className="text-sm text-gray-600">
+                {currentInvoice.region && `Région: ${currentInvoice.region} • `}
+                Montant: ${(currentInvoice.amount || 0).toFixed(2)} {currentInvoice.currency || 'USD'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -335,267 +339,254 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         <div className="flex-1 overflow-hidden p-0">
           <div className="flex flex-col lg:flex-row gap-1 h-full">
             {/* Colonne gauche - 70% : Données de la facture */}
-            <div className="flex-1 lg:flex-[0.7] overflow-y-auto max-h-[calc(90vh-8rem)] space-y-4 pb-6">
-              {/* Section Visualisation de la facture - Collapsible */}
-              {currentInvoice.attachedInvoiceUrl ? (
-                <div className="bg-gray-0 rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => setIsVisualizationExpanded(!isVisualizationExpanded)}
-                    className="w-full flex items-center justify-between p-3 hover:bg-gray-100 transition-colors"
-                  >
-                    <h3 className="text-base font-semibold text-gray-800 flex items-center gap-2">
-                      <FileText size={16} className="text-blue-600" />
-                      Visualisation de la facture
-                    </h3>
-                    <ChevronDown 
-                      size={20} 
-                      className={`text-gray-600 transition-transform ${isVisualizationExpanded ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-
-                  {/* Contenu collapsible */}
-                  {isVisualizationExpanded && (
-                    <div className="p-3 border-t border-gray-200">
-                      <div className="border border-gray-300 rounded-lg overflow-hidden bg-white relative group">
-                        <iframe
-                          ref={iframeRef}
-                          src={currentInvoice.attachedInvoiceUrl}
-                          title="Invoice PDF"
-                          className="w-full h-96 border-0"
-                          allowFullScreen
-                        />
-                        <button
-                          onClick={handleFullscreen}
-                          className="absolute top-3 right-3 bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100"
-                          title="Plein écran"
-                        >
-                          <Maximize2 size={18} className="text-gray-700" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {/* Section Détails de la facture - Collapsible */}
-              <div className="bg-gray-00 rounded-lg overflow-hidden">
+            <div className="flex-1 lg:flex-[0.7] flex flex-col h-full">
+              {/* Onglets */}
+              <div className="flex bg-gray-200">
                 <button
-                  onClick={() => setIsDetailsExpanded(!isDetailsExpanded)}
-                  className="w-full flex items-center justify-between p-3 hover:bg-gray-100 transition-colors"
+                  onClick={() => setActiveTab('visualization')}
+                  className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+                    activeTab === 'visualization'
+                      ? 'text-black-600 bg-white'
+                      : 'text-gray-600 bg-gray-200'
+                  }`}
                 >
-                  <h3 className="text-base font-semibold text-gray-800 flex items-center gap-2">
-                    <FileText size={16} className="text-blue-600" />
-                    Détails de la facture
-                  </h3>
-                  <ChevronDown 
-                    size={20} 
-                    className={`text-gray-600 transition-transform ${isDetailsExpanded ? 'rotate-180' : ''}`}
-                  />
+                  Visualisation de la facture
                 </button>
+                <button
+                  onClick={() => setActiveTab('details')}
+                  className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+                    activeTab === 'details'
+                      ? 'text-black-600 bg-white'
+                      : 'text-gray-600 bg-gray-200'
+                  }`}
+                >
+                  Détails de la facture
+                </button>
+              </div>
 
-                {/* Contenu collapsible */}
-                {isDetailsExpanded && (
-                  <div className="p-3 border-t border-gray-200">
+              {/* Contenu des onglets */}
+              <div className=" bg-white flex-1 overflow-y-auto">
+                {activeTab === 'visualization' && currentInvoice.attachedInvoiceUrl && (
+                  <div className="p-4 h-full">
+                    <div className="border border-gray-300 rounded-lg overflow-hidden bg-white relative group h-full">
+                      <iframe
+                        ref={iframeRef}
+                        src={currentInvoice.attachedInvoiceUrl}
+                        title="Invoice PDF"
+                        className="w-full h-full border-0"
+                        allowFullScreen
+                      />
+                      <button
+                        onClick={handleFullscreen}
+                        className="absolute top-3 right-3 bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100"
+                        title="Plein écran"
+                      >
+                        <Maximize2 size={18} className="text-gray-700" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'details' && (
+                  <div className="p-4">
                     {/* Tableau groupé par catégories des informations de la facture */}
                     <table className="w-full">
-                  <tbody className="divide-y divide-gray-200">
-                    {/* INFORMATIONS GÉNÉRALES */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        📋 Informations générales
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium w-1/2">Numéro de facture:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900 w-1/2">{currentInvoice.invoiceNumber}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Date d'émission:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.emissionDate || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Date de réception:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.receptionDate}</td>
-                    </tr>
+                      <tbody className="divide-y divide-gray-200">
+                        {/* INFORMATIONS GÉNÉRALES */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            📋 Informations générales
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium w-1/2">Numéro de facture:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900 w-1/2">{currentInvoice.invoiceNumber}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Date d'émission:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.emissionDate || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Date de réception:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.receptionDate}</td>
+                        </tr>
 
-                    {/* FOURNISSEUR */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        🏢 Fournisseur
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Fournisseur:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.supplier}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Catégorie fournisseur:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.supplierCategory || '-'}</td>
-                    </tr>
+                        {/* FOURNISSEUR */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            🏢 Fournisseur
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Fournisseur:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.supplier}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Catégorie fournisseur:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.supplierCategory || '-'}</td>
+                        </tr>
 
-                    {/* LOCALISATION */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        📍 Localisation & Responsables
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Région:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.region}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Centre de coût:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.costCenter || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Gestionnaire:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.manager || '-'}</td>
-                    </tr>
+                        {/* LOCALISATION */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            📍 Localisation & Responsables
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Région:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.region}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Centre de coût:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.costCenter || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Gestionnaire:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.manager || '-'}</td>
+                        </tr>
 
-                    {/* DÉTAILS FACTURE */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        📄 Détails de la facture
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Type de facture:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.invoiceType || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Catégorie de charge:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.chargeCategory}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Numéro de dossier:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.fileNumber || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Motif / Description:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.motif || '-'}</td>
-                    </tr>
+                        {/* DÉTAILS FACTURE */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            📄 Détails de la facture
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Type de facture:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.invoiceType || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Catégorie de charge:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.chargeCategory}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Numéro de dossier:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.fileNumber || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Motif / Description:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.motif || '-'}</td>
+                        </tr>
 
-                    {/* MONTANTS */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        💰 Montants & Devise
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Devise:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.currency || 'USD'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Taux facture:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.exchangeRate || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Montant:</td>
-                      <td className="py-2 text-xs font-bold text-green-600">
-                        ${(currentInvoice.amount || 0).toFixed(2)} {currentInvoice.currency !== 'USD' ? `(${currentInvoice.currency})` : ''}
-                      </td>
-                    </tr>
+                        {/* MONTANTS */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            💰 Montants & Devise
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Devise:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.currency || 'USD'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Taux facture:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.exchangeRate || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Montant:</td>
+                          <td className="py-2 text-xs font-bold text-green-600">
+                            ${(currentInvoice.amount || 0).toFixed(2)} {currentInvoice.currency !== 'USD' ? `(${currentInvoice.currency})` : ''}
+                          </td>
+                        </tr>
 
-                    {/* DÉLAIS & URGENCE */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        ⏰ Délais & Urgence
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Priorité de paiement :</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.urgencyLevel || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Date d'échéance:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.dueDate || '-'}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Mode de paiement:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.paymentMode || '-'}</td>
-                    </tr>
+                        {/* DÉLAIS & URGENCE */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            ⏰ Délais & Urgence
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Priorité de paiement :</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.urgencyLevel || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Date d'échéance:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.dueDate || '-'}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Mode de paiement:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.paymentMode || '-'}</td>
+                        </tr>
 
-                    {/* FICHIERS & STATUT */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        📎 Fichiers & Statut
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Facture attachée:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">
-                        {currentInvoice.attachedInvoiceUrl ? (
-                          <a href={currentInvoice.attachedInvoiceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                            Visualiser
-                          </a>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Statut actuel:</td>
-                      <td className="py-2 text-xs font-semibold">
-                        <span className="flex items-center gap-2">
-                          {dbStatus === 'Rejetée' ? (
-                            <span className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-[11px] font-semibold">
-                              Rejetée
+                        {/* FICHIERS & STATUT */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            📎 Fichiers & Statut
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Facture attachée:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">
+                            {currentInvoice.attachedInvoiceUrl ? (
+                              <a href={currentInvoice.attachedInvoiceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                Visualiser
+                              </a>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Statut actuel:</td>
+                          <td className="py-2 text-xs font-semibold">
+                            <span className="flex items-center gap-2">
+                              {dbStatus === 'Rejetée' ? (
+                                <span className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-[11px] font-semibold">
+                                  Rejetée
+                                </span>
+                              ) : dbStatus === 'Validée' || isBonAPayer() ? (
+                                <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-[11px] font-semibold">
+                                  Bon à payer
+                                </span>
+                              ) : dbStatus?.includes('En attente validation DR') ? (
+                                <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-[11px] font-semibold">
+                                  En attente DR
+                                </span>
+                              ) : dbStatus?.includes('En attente validation DOP') ? (
+                                <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-[11px] font-semibold">
+                                  En attente DOP
+                                </span>
+                              ) : (
+                                <span className="bg-gray-200 text-gray-800 px-3 py-1 rounded-full text-[11px] font-semibold">
+                                  {dbStatus || 'Non défini'}
+                                </span>
+                              )}
                             </span>
-                          ) : dbStatus === 'Validée' || isBonAPayer() ? (
-                            <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-[11px] font-semibold">
-                              Bon à payer
-                            </span>
-                          ) : dbStatus?.includes('En attente validation DR') ? (
-                            <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-[11px] font-semibold">
-                              En attente DR
-                            </span>
-                          ) : dbStatus?.includes('En attente validation DOP') ? (
-                            <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-[11px] font-semibold">
-                              En attente DOP
-                            </span>
-                          ) : (
-                            <span className="bg-gray-200 text-gray-800 px-3 py-1 rounded-full text-[11px] font-semibold">
-                              {dbStatus || 'Non défini'}
-                            </span>
-                          )}
-                        </span>
-                      </td>
-                    </tr>
+                          </td>
+                        </tr>
 
-                    {/* COMMENTAIRES */}
-                    <tr className="bg-gray-50">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        &#128172; Notes
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Commentaires:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.comments || '-'}</td>
-                    </tr>
+                        {/* COMMENTAIRES */}
+                        <tr className="bg-gray-50">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            &#128172; Notes
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Commentaires:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.comments || '-'}</td>
+                        </tr>
 
-                    {/* CRÉATEUR */}
-                    <tr className="bg-gray-50">
-                      <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
-                        &#128100; Créateur
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 text-xs text-gray-600 font-medium">Créé par:</td>
-                      <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.created_by || '-'}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                        {/* CRÉATEUR */}
+                        <tr className="bg-gray-50">
+                          <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                            &#128100; Créateur
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="py-2 text-xs text-gray-600 font-medium">Créé par:</td>
+                          <td className="py-2 text-xs font-semibold text-gray-900">{currentInvoice.created_by || '-'}</td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
-
-              {/* Fichier attaché supprimé - sera dans le footer */}
             </div>
 
             {/* Colonne droite - 30% : Validations et rejet */}
-            <div className="flex-1 lg:flex-[0.3]">
+            <div className="flex-1 lg:flex-[0.3] mt-0">
               {/* Bloc de validation DR, DOP, DG */}
-              <div className="bg-gray-0 rounded-lg p-3 mb-3">
+              <div className="bg-gray-0 rounded-lg p-3 mb-3 ">
                 <h3 className="text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
                   <AlertTriangle size={16} className="text-blue-600" />
                   Validation
