@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../services/supabase';
 import { ordoPaiementService, caisseService, Caisse } from '../services/tableService';
 import { useToast } from '../hooks/useToast';
+import { useAuth } from '../contexts/AuthContext';
+import { refreshAllData } from '../hooks/useDataRefresh';
 
 interface PaymentData {
   datePaiement: string;
@@ -151,6 +153,7 @@ function CompteFournisseurSelect({ value, onChange, banque, fournisseur, disable
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew = false, readOnly = false, ordoPaiementId }: PaiementModalProps) {
   const { success, error: showError } = useToast();
+  const { agent } = useAuth();
   const [activeTab, setActiveTab] = useState(1);
   const [payments, setPayments] = useState<PaymentData[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -158,6 +161,12 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
   const [savedTabs, setSavedTabs] = useState<number[]>([]);
   const [caisses, setCaisses] = useState<Caisse[]>([]);
   const [invoiceDetails, setInvoiceDetails] = useState<any>(null);
+
+  // Wrapper pour onClose qui rafraîchit les données
+  const handleClose = useCallback(() => {
+    refreshAllData();
+    onClose();
+  }, [onClose]);
 
   // Charger les détails complets de la facture au montage
   useEffect(() => {
@@ -451,6 +460,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         .from('PAIEMENTS')
         .insert({
           id: `${invoice.invoiceNumber}-${index + 1}-${Date.now()}`,
+          NumeroFacture: invoice.invoiceNumber,
           datePaiement: currentPayment.datePaiement,
           referencePaiement: currentPayment.referencePaiement,
           modePaiement: currentPayment.modePaiement,
@@ -465,6 +475,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           BanqueFournisseur: currentPayment.BanqueFournisseur || '',
           BanqueSGL: currentPayment.BanqueSGL || '',
           commentaires: currentPayment.commentaires || '',
+          paiedby: agent?.email || null,
           timestamp: new Date().toISOString()
         });
 
@@ -520,8 +531,9 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       } else {
         // Tous les paiements sont faits, fermer la modale
         setTimeout(() => {
+          refreshAllData(); // Rafraîchir les données avant de fermer
           onSuccess?.();
-          onClose();
+          handleClose();
         }, 500);
       }
     } catch (error) {
@@ -558,7 +570,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="text-gray-500 hover:text-gray-700 transition-colors"
           >
             <X size={24} />
@@ -971,7 +983,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           {/* Boutons à droite */}
           <div className="flex gap-3">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-100 transition-colors"
             >
               Annuler

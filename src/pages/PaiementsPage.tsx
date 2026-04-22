@@ -97,7 +97,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPagePro
       // Grouper les paiements par numéro de facture
       const paiementsMap = new Map<string, PaiementInfo[]>();
       paiements?.forEach((p: any) => {
-        const invoiceNumber = p.id.split('-')[0];
+        const invoiceNumber = p.NumeroFacture;
         if (!paiementsMap.has(invoiceNumber)) {
           paiementsMap.set(invoiceNumber, []);
         }

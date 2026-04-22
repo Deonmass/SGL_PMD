@@ -68,6 +68,7 @@ interface InvoiceTableProps {
   onDelete?: (id: number) => void;
   onEdit?: (invoice: Invoice) => void;
   activeMenu?: string;
+  agent?: any;
 }
 
 // CSS pour l'animation de clignotement
@@ -94,7 +95,7 @@ if (typeof document !== 'undefined') {
 type SortField = 'receptionDate' | 'amount' | 'dueDate' | null;
 type SortOrder = 'asc' | 'desc';
 
-function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
+function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
   const [contextMenu, setContextMenu] = useState<{
     invoice: Invoice | null;
     position: { x: number; y: number };
@@ -221,6 +222,9 @@ function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
                 </th>
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">N° facture</th>
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Fournisseur</th>
+                {agent?.REGION === 'TOUT' && (
+                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Région</th>
+                )}
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('amount')}>
                   Montant {sortBy === 'amount' && (sortOrder === 'asc' ? '↑' : '↓')}
                 </th>
@@ -232,15 +236,12 @@ function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Priorité de paiement</th>
                 <th className="px-4 py-2 text-center text-[10px] font-bold text-gray-900 uppercase">Fichier</th>
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Validation</th>
-                {activeMenu !== 'factures-validated' && (
-                  <th className="px-4 py-2 text-right text-[10px] font-bold text-gray-900 uppercase">Actions</th>
-                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {sortedInvoices.length === 0 ? (
                 <tr key="no-invoices">
-                  <td colSpan={11} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={agent?.REGION === 'TOUT' ? 11 : 10} className="px-6 py-8 text-center text-gray-500">
                     Aucune facture trouvée
                   </td>
                 </tr>
@@ -297,16 +298,14 @@ function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
                         </button>
                       </td>
                       <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">{invoice.supplier}</td>
+                      {agent?.REGION === 'TOUT' && (
+                        <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">{invoice.region}</td>
+                      )}
                       <td className="px-4 py-2 text-[11px] font-bold text-gray-900 hover:text-gray-700 transition-colors">
-                        <div className="flex items-center gap-2">
-                          <span>{(() => {
-                            const amountInfo = formatAmount(invoice.amount || 0, invoice.currency || 'USD');
-                            return amountInfo.formatted;
-                          })()}$</span>
-                          <span className="bg-gray-400 text-white text-[9px] px-2 py-1 rounded-full font-semibold whitespace-nowrap">
-                            {invoice.currency || 'USD'}
-                          </span>
-                        </div>
+                        <span>{(() => {
+                          const amountInfo = formatAmount(invoice.amount || 0, invoice.currency || 'USD');
+                          return amountInfo.formatted;
+                        })()}$</span>
                       </td>
                       <td className="px-4 py-2 text-[11px] text-gray-900 whitespace-nowrap">
                         {invoice.fileNumber || '-'}
@@ -356,10 +355,32 @@ function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
                       {/* Barre de progression des validations */}
                       <div className="w-full">
                         {(() => {
-                          // Calculer le nombre de validations - logique corrigée
-                          // Utiliser le champ validations qui contient le nombre exact de validations (0, 1, 2, ou 3)
-                          const totalValidations = invoice.validations || 0;
-                          const percentage = (totalValidations / 3) * 100;
+                          // Calculer le pourcentage de validation selon les nouvelles règles
+                          const amount = invoice.amount || 0;
+                          // Utiliser le champ validations pour déterminer les validations individuelles
+                          const validationCount = invoice.validations || 0;
+                          const drValidated = validationCount >= 1; // Au moins DR validé
+                          const dopValidated = validationCount >= 2; // Au moins DR + DOP validés
+                          const dgValidated = validationCount >= 3; // DR + DOP + DG validés
+                          
+                          let percentage = 0;
+                          
+                          if (amount <= 2500) {
+                            // Pour les factures de moins de 2500$, DR seul suffit pour 100%
+                            percentage = drValidated ? 100 : 0;
+                          } else if (dopValidated) {
+                            // Si le DOP a signé, passe directement à 100% peu importe le montant
+                            percentage = 100;
+                          } else {
+                            // Anciennes règles pour les autres cas
+                            if (amount <= 10000) {
+                              // DR + DOP nécessaires pour 100%
+                              percentage = (drValidated && dopValidated) ? 100 : (drValidated ? 50 : 0);
+                            } else {
+                              // DR + DOP + DG nécessaires pour 100%
+                              percentage = (validationCount / 3) * 100;
+                            }
+                          }
                           
                           return (
                             <div className="flex flex-col gap-1">
@@ -387,19 +408,6 @@ function InvoiceTable({ invoices, activeMenu }: InvoiceTableProps) {
                         })()}
                       </div>
                     </td>
-                    {activeMenu !== 'factures-validated' && (
-                      <td className="px-4 py-2 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleContextMenu(e, invoice);
-                          }}
-                          className="text-gray-400 hover:text-gray-700 hover:bg-gray-200 p-1 rounded transition-all duration-200 transform hover:scale-110 hover:rotate-90"
-                        >
-                          <MoreVertical size={14} />
-                        </button>
-                      </td>
-                    )}
                   </tr>
                   );
                 })

@@ -368,7 +368,7 @@ export const dashboardService = {
       // Get all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -397,14 +397,14 @@ export const dashboardService = {
         }
       }
 
-      // Create set of invoice numbers that have payments
+      // Créer une map des paiements directement
       const facturesAvecPaiements = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
-          const paidAmount = parseFloat(p.montantPaye) || 0;
+          const invoiceNumber = p.NumeroFacture;
+          const paid = parseFloat(p.montantPaye) || 0;
           const existing = facturesAvecPaiements.get(invoiceNumber) || 0;
-          facturesAvecPaiements.set(invoiceNumber, existing + paidAmount);
+          facturesAvecPaiements.set(invoiceNumber, existing + paid);
         });
       }
 
@@ -572,7 +572,7 @@ export const dashboardService = {
       // Get all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -580,7 +580,7 @@ export const dashboardService = {
       const facturesAvecPaiements = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = facturesAvecPaiements.get(invoiceNumber) || 0;
           facturesAvecPaiements.set(invoiceNumber, existing + paidAmount);
@@ -635,7 +635,7 @@ export const dashboardService = {
       // Get all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -643,7 +643,7 @@ export const dashboardService = {
       const facturesAvecPaiements = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = facturesAvecPaiements.get(invoiceNumber) || 0;
           facturesAvecPaiements.set(invoiceNumber, existing + paidAmount);
@@ -715,7 +715,7 @@ export const dashboardService = {
       // Get all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -723,7 +723,7 @@ export const dashboardService = {
       const facturesAvecPaiements = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = facturesAvecPaiements.get(invoiceNumber) || 0;
           facturesAvecPaiements.set(invoiceNumber, existing + paidAmount);
@@ -787,33 +787,43 @@ export const dashboardService = {
   // Get fully paid invoices (have at least one payment)
   async getPayeeInvoices(year?: string, region?: string): Promise<Invoice[]> {
     try {
+      console.log('=== DEBUG GETPAYEEINVOICES ===');
       const { data: factures, error } = await supabase
         .from('FACTURES')
         .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
       
       if (error) throw error;
 
+      // Charger les paiements
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
-      // Create map of payments by invoice number
+      // Créer une map des paiements
       const facturesAvecPaiements = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
-          const paidAmount = parseFloat(p.montantPaye) || 0;
+          const invoiceNumber = p.NumeroFacture;
+          const paid = parseFloat(p.montantPaye) || 0;
           const existing = facturesAvecPaiements.get(invoiceNumber) || 0;
-          facturesAvecPaiements.set(invoiceNumber, existing + paidAmount);
+          facturesAvecPaiements.set(invoiceNumber, existing + paid);
         });
       }
 
+      console.log('=== FILTRAGE FACTURES DEBUG ===');
+      console.log('Nombre total de factures:', factures?.length || 0);
+      
       return (factures || []).filter((f: any) => {
         const receptionDate = new Date(f['Date de réception']);
+        const invoiceNumber = f['Numéro de facture'];
+        const totalPaid = facturesAvecPaiements.get(invoiceNumber) || 0;
+        
+        console.log(`Facture: ${invoiceNumber}, totalPaid=${totalPaid}, statut=${f.Statut}, région=${f['Région']}`);
         
         // Filter by year if provided
         if (year) {
           if (receptionDate.getFullYear().toString() !== year) {
+            console.log(`  -> Exclue (année): ${receptionDate.getFullYear()} != ${year}`);
             return false;
           }
         }
@@ -821,6 +831,7 @@ export const dashboardService = {
         // Filter by region if provided
         if (region) {
           if (f['Région'] !== region) {
+            console.log(`  -> Exclue (région): ${f['Région']} != ${region}`);
             return false;
           }
         }
@@ -828,11 +839,19 @@ export const dashboardService = {
         const statut = f.Statut?.toLowerCase() || '';
         
         // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+        if (statut.includes('rejet')) {
+          console.log(`  -> Exclue (rejetée): ${f.Statut}`);
+          return false;
+        }
         
         // Return invoices that have at least one payment (paid amount > 0)
-        const totalPaid = facturesAvecPaiements.get(f['Numéro de facture']) || 0;
-        return totalPaid > 0;
+        if (totalPaid > 0) {
+          console.log(`  -> INCLUE (payée): ${invoiceNumber}, totalPaid=${totalPaid}`);
+          return true;
+        } else {
+          console.log(`  -> Exclue (non payée): ${invoiceNumber}, totalPaid=${totalPaid}`);
+          return false;
+        }
       });
     } catch (err) {
       console.error('Erreur dans getPayeeInvoices():', err);
@@ -843,32 +862,45 @@ export const dashboardService = {
   // Get partially paid invoices
   async getPartiellementPayeeInvoices(year?: string, region?: string): Promise<Invoice[]> {
     try {
+      console.log('=== DEBUG GETPARTIELLEMENTPAYEEINVOICES ===');
       const { data: factures, error } = await supabase
         .from('FACTURES')
         .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
       
       if (error) throw error;
 
+      // Charger les paiements
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
-      // Create map of invoice numbers with their total paid amounts
+      // Créer une map des paiements
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
-          const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
-          paymentMap.set(invoiceNumber, paid);
+          const invoiceNumber = p.NumeroFacture;
+          const paid = parseFloat(p.montantPaye) || 0;
+          const existing = paymentMap.get(invoiceNumber) || 0;
+          paymentMap.set(invoiceNumber, existing + paid);
         });
       }
 
+      console.log('=== FILTRAGE FACTURES PARTIELLES DEBUG ===');
+      console.log('Nombre total de factures:', factures?.length || 0);
+      
       return (factures || []).filter((f: any) => {
         const receptionDate = new Date(f['Date de réception']);
+        const montant = parseFloat(f.Montant) || 0;
+        const statut = f.Statut?.toLowerCase() || '';
+        const invoiceNumber = f['Numéro de facture'];
+        const totalPaid = paymentMap.get(invoiceNumber) || 0;
+        
+        console.log(`Facture partielle: ${invoiceNumber}, montant=${montant}, totalPaid=${totalPaid}, statut=${f.Statut}, région=${f['Région']}`);
         
         // Filter by year if provided
         if (year) {
           if (receptionDate.getFullYear().toString() !== year) {
+            console.log(`  -> Exclue (année): ${receptionDate.getFullYear()} != ${year}`);
             return false;
           }
         }
@@ -876,19 +908,28 @@ export const dashboardService = {
         // Filter by region if provided
         if (region) {
           if (f['Région'] !== region) {
+            console.log(`  -> Exclue (région): ${f['Région']} != ${region}`);
             return false;
           }
         }
-
-        const montant = parseFloat(f.Montant) || 0;
-        const statut = f.Statut?.toLowerCase() || '';
-        const invoiceNumber = f['Numéro de facture'];
         
         // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+        if (statut.includes('rejet')) {
+          console.log(`  -> Exclue (rejetée): ${f.Statut}`);
+          return false;
+        }
         
-        const totalPaid = paymentMap.get(invoiceNumber) || 0;
-        return totalPaid > 0 && totalPaid < montant;
+        // Check if partially paid (paid > 0 but < total amount)
+        if (totalPaid > 0 && totalPaid < montant) {
+          console.log(`  -> INCLUE (partiellement payée): ${invoiceNumber}, totalPaid=${totalPaid}/${montant}`);
+          return true;
+        } else if (totalPaid >= montant) {
+          console.log(`  -> Exclue (totalement payée): ${invoiceNumber}, totalPaid=${totalPaid}>=${montant}`);
+          return false;
+        } else {
+          console.log(`  -> Exclue (non payée): ${invoiceNumber}, totalPaid=${totalPaid}`);
+          return false;
+        }
       });
     } catch (err) {
       console.error('Erreur dans getPartiellementPayeeInvoices():', err);
@@ -1062,7 +1103,7 @@ export const dashboardService = {
       // Get all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -1070,7 +1111,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = paymentMap.get(invoiceNumber) || 0;
           paymentMap.set(invoiceNumber, existing + paidAmount);
@@ -1208,7 +1249,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, string>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paymentDate = p.datePaiement;
           
           // Keep only the latest payment date for each invoice
@@ -1300,7 +1341,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, string>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paymentDate = p.datePaiement;
           
           const existing = paymentMap.get(invoiceNumber);
@@ -1500,7 +1541,7 @@ export const dashboardService = {
 
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       if (paiementsError) throw paiementsError;
 
@@ -1508,7 +1549,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -1625,13 +1666,13 @@ export const dashboardService = {
 
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       // Create map of invoice numbers with their total paid amounts
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -1787,7 +1828,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, string>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paymentDate = p.datePaiement;
           
           const existing = paymentMap.get(invoiceNumber);
@@ -1855,13 +1896,13 @@ export const dashboardService = {
 
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       // Create map of invoice numbers with their total paid amounts
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -1932,7 +1973,7 @@ export const dashboardService = {
 
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye, datePaiement');
+        .select('NumeroFacture, montantPaye, datePaiement');
 
       if (paiementsError) throw paiementsError;
 
@@ -1940,7 +1981,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, { totalPaid: number; paymentDate: string }>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paid = parseFloat(p.montantPaye) || 0;
           const paymentDate = p.datePaiement;
           
@@ -2048,13 +2089,13 @@ export const dashboardService = {
 
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       // Create map of invoice numbers with their total paid amounts
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -2113,7 +2154,7 @@ export const dashboardService = {
       // Load all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -2121,7 +2162,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = paymentMap.get(invoiceNumber) || 0;
           paymentMap.set(invoiceNumber, existing + paidAmount);
@@ -2272,7 +2313,7 @@ export const dashboardService = {
       // Load all payments
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -2280,7 +2321,7 @@ export const dashboardService = {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
           const paidAmount = parseFloat(p.montantPaye) || 0;
           const existing = paymentMap.get(invoiceNumber) || 0;
           paymentMap.set(invoiceNumber, existing + paidAmount);

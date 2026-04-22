@@ -102,11 +102,11 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
         const { data: paiements } = await supabase
           .from('PAIEMENTS')
-          .select('id, montantPaye');
+          .select('NumeroFacture, montantPaye');
 
         const paidMap = new Map<string, number>();
         paiements?.forEach((p: any) => {
-          const invoiceNum = String(p.id || '').split('-')[0].trim();
+          const invoiceNum = String(p.NumeroFacture || '').trim();
           const montant = parseFloat(String(p.montantPaye || 0));
           paidMap.set(invoiceNum, (paidMap.get(invoiceNum) || 0) + montant);
         });
@@ -156,6 +156,11 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
   const getUnpaidSuppliers = () => {
     // Apply all filters first
     let filteredInvoices = invoices.filter(inv => inv.restAPayer > 0);
+    
+    // Apply region filter
+    if (selectedRegion) {
+      filteredInvoices = filteredInvoices.filter(inv => inv.region === selectedRegion);
+    }
     
     // Apply year filter
     if (selectedYear) {
@@ -232,6 +237,11 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
   const getUnpaidDossiers = () => {
     // Apply all filters first
     let filteredInvoices = invoices.filter(inv => inv.restAPayer > 0);
+    
+    // Apply region filter
+    if (selectedRegion) {
+      filteredInvoices = filteredInvoices.filter(inv => inv.region === selectedRegion);
+    }
     
     // Apply year filter
     if (selectedYear) {
@@ -589,11 +599,11 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       const paidMap = new Map<string, number>();
       paiements?.forEach((p: any) => {
-        const invoiceNum = String(p.id || '').split('-')[0].trim();
+        const invoiceNum = String(p.NumeroFacture || '').trim();
         const montant = parseFloat(String(p.montantPaye || 0));
         paidMap.set(invoiceNum, (paidMap.get(invoiceNum) || 0) + montant);
       });

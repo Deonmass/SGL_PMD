@@ -55,6 +55,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
   const [selectedYear, setSelectedYear] = useState('2026');
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [allInvoices, setAllInvoices] = useState<Facture[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
 
   // Déterminer le filtre selon le menu actif
   const getStatusFilter = () => {
@@ -88,7 +89,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
     if (allInvoices.length > 0 || loading === false) {
       filterInvoices(selectedRegion, selectedYear, selectedMonth);
     }
-  }, [selectedRegion, selectedYear, selectedMonth, allInvoices]);
+  }, [selectedRegion, selectedYear, selectedMonth, allInvoices, searchTerm]);
 
   const loadInvoices = async (statusFilter: string) => {
     setLoading(true);
@@ -115,14 +116,18 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         // Charger les paiements existants pour exclure les factures avec paiements
         const { data: paiements, error: paiementsError } = await supabase
           .from('PAIEMENTS')
-          .select('id');
+          .select('NumeroFacture, montantPaye');
 
         const facturesAvecPaiements = new Set();
         if (paiements && !paiementsError) {
           paiements.forEach((p: any) => {
-            // L'ID est au format: invoiceNumber-index-timestamp
-            const invoiceNumber = p.id.split('-')[0];
-            facturesAvecPaiements.add(invoiceNumber);
+            // Vérifier si le montant payé est supérieur à 0 (même pour les paiements partiels)
+            const paidAmount = parseFloat(p.montantPaye) || 0;
+            const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
+            
+            if (paidAmount > 0 && invoiceNumber) {
+              facturesAvecPaiements.add(invoiceNumber);
+            }
           });
         }
 
@@ -144,7 +149,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
           .not('Statut', 'eq', 'Rejetée')
           .order('"Date de réception"', { ascending: false });
 
-        console.log('=== SUPABASE QUERY RESULT ===');
+        console.log('=== DEBUG VALIDÉE - FACTURE 2026-00652 ===');
         console.log('Query: ALL factures (pas de filtre sur Statut)');
         console.log('Error:', allError);
         console.log('Data received from Supabase:', allInvoicesData);
@@ -153,7 +158,11 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         if (allInvoicesData && allInvoicesData.length > 0) {
           console.log('All invoices from DB:');
           allInvoicesData.forEach(inv => {
-            console.log(`  - ${inv["Numéro de facture"]}: statut=${inv.Statut}, montant=${inv.Montant}, DR=${inv["validation DR"]}, DOP=${inv["validation DOP"]}, DG=${inv["validation DG"]}`);
+            if (inv["Numéro de facture"] === '2026-00652') {
+              console.log(`*** FACTURE CIBLE 2026-00652 ***: statut=${inv.Statut}, montant=${inv.Montant}, DR=${inv["validation DR"]}, DOP=${inv["validation DOP"]}, DG=${inv["validation DG"]}`);
+            } else {
+              console.log(`  - ${inv["Numéro de facture"]}: statut=${inv.Statut}, montant=${inv.Montant}`);
+            }
           });
         }
 
@@ -163,23 +172,28 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
           return;
         }
 
-        // Charger les paiements existants pour exclure les factures avec paiements
-        const { data: paiements, error: paiementsError } = await supabase
-          .from('PAIEMENTS')
-          .select('id');
-
-        const facturesAvecPaiements = new Set();
-        if (paiements && !paiementsError) {
-          paiements.forEach((p: any) => {
-            // L'ID est au format: invoiceNumber-index-timestamp
-            const invoiceNumber = p.id.split('-')[0];
-            facturesAvecPaiements.add(invoiceNumber);
-          });
+        // Utiliser les utilitaires de paiement centralisés
+        const { getAllPaymentsMap } = await import('../utils/paymentUtils');
+        const paymentsMap = await getAllPaymentsMap();
+        const facturesAvecPaiements = new Set(paymentsMap.keys());
+        
+        console.log('=== DEBUG PAIEMENTS POUR 2026-00652 ===');
+        console.log('Nombre de paiements trouvés:', paymentsMap.size);
+        console.log('Factures avec paiements finales:', Array.from(facturesAvecPaiements));
+        console.log('2026-00652 présente dans facturesAvecPaiements?', facturesAvecPaiements.has('2026-00652'));
+        
+        if (facturesAvecPaiements.has('2026-00652')) {
+          console.log(`*** PAIEMENT POUR 2026-00652 ***: montant=${paymentsMap.get('2026-00652')}`);
         }
 
         // Filtrer les factures qui respectent les règles de validation selon le montant
         // ET qui n'ont pas encore de paiement
         allData = (allInvoicesData || []).filter(invoice => {
+          // Debug spécial pour 2026-00652
+          if (invoice["Numéro de facture"] === '2026-00652') {
+            console.log(`*** FILTRAGE 2026-00652 ***: statut=${invoice.Statut}, dansFacturesAvecPaiements=${facturesAvecPaiements.has('2026-00652')}`);
+          }
+          
           // Exclure les factures rejetées
           if (invoice.Statut === 'Rejetée') {
             console.log(`Facture ${invoice["Numéro de facture"]}: Rejetée, exclusion`);
@@ -189,6 +203,9 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
           // Vérifier s'il y a déjà un paiement pour cette facture
           if (facturesAvecPaiements.has(invoice["Numéro de facture"])) {
             console.log(`Facture ${invoice["Numéro de facture"]}: Paiement détecté, exclusion`);
+            if (invoice["Numéro de facture"] === '2026-00652') {
+              console.log(`*** 2026-00652 EXCLUE CAR PAYÉE ***`);
+            }
             return false;
           }
 
@@ -246,14 +263,18 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         // Charger les paiements existants pour exclure les factures avec paiements
         const { data: paiements, error: paiementsError } = await supabase
           .from('PAIEMENTS')
-          .select('id');
+          .select('NumeroFacture, montantPaye');
 
         const facturesAvecPaiements = new Set();
         if (paiements && !paiementsError) {
           paiements.forEach((p: any) => {
-            // L'ID est au format: invoiceNumber-index-timestamp
-            const invoiceNumber = p.id.split('-')[0];
-            facturesAvecPaiements.add(invoiceNumber);
+            // Vérifier si le montant payé est supérieur à 0 (même pour les paiements partiels)
+            const paidAmount = parseFloat(p.montantPaye) || 0;
+            const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
+            
+            if (paidAmount > 0 && invoiceNumber) {
+              facturesAvecPaiements.add(invoiceNumber);
+            }
           });
         }
 
@@ -287,14 +308,18 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         // Charger les paiements existants pour exclure les factures avec paiements
         const { data: paiements, error: paiementsError } = await supabase
           .from('PAIEMENTS')
-          .select('id');
+          .select('NumeroFacture, montantPaye');
 
         const facturesAvecPaiements = new Set();
         if (paiements && !paiementsError) {
           paiements.forEach((p: any) => {
-            // L'ID est au format: invoiceNumber-index-timestamp
-            const invoiceNumber = p.id.split('-')[0];
-            facturesAvecPaiements.add(invoiceNumber);
+            // Vérifier si le montant payé est supérieur à 0 (même pour les paiements partiels)
+            const paidAmount = parseFloat(p.montantPaye) || 0;
+            const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
+            
+            if (paidAmount > 0 && invoiceNumber) {
+              facturesAvecPaiements.add(invoiceNumber);
+            }
           });
         }
 
@@ -334,14 +359,18 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         // Charger les paiements existants pour exclure les factures avec paiements
         const { data: paiements, error: paiementsError } = await supabase
           .from('PAIEMENTS')
-          .select('id');
+          .select('NumeroFacture, montantPaye');
 
         const facturesAvecPaiements = new Set();
         if (paiements && !paiementsError) {
           paiements.forEach((p: any) => {
-            // L'ID est au format: invoiceNumber-index-timestamp
-            const invoiceNumber = p.id.split('-')[0];
-            facturesAvecPaiements.add(invoiceNumber);
+            // Vérifier si le montant payé est supérieur à 0 (même pour les paiements partiels)
+            const paidAmount = parseFloat(p.montantPaye) || 0;
+            const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
+            
+            if (paidAmount > 0 && invoiceNumber) {
+              facturesAvecPaiements.add(invoiceNumber);
+            }
           });
         }
 
@@ -393,9 +422,28 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
   const filterInvoices = (region?: string, year?: string, month?: string) => {
     console.log('=== filterInvoices CALLED ===');
     console.log('allInvoices.length:', allInvoices.length);
-    console.log('region:', region, 'year:', year, 'month:', month);
+    console.log('region:', region, 'year:', year, 'month:', month, 'searchTerm:', searchTerm);
     
     let filtered = [...allInvoices];
+
+    // Filtre par recherche (N° dossier, fournisseur, montant, priorité)
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase().trim();
+      filtered = filtered.filter(inv => {
+        const dossierNum = (inv["Numéro de dossier"] || '').toLowerCase();
+        const invoiceNumber = (inv["Numéro de facture"] || '').toLowerCase();
+        const supplier = (inv.Fournisseur || '').toLowerCase();
+        const amount = String(inv.Montant || '');
+        const urgency = (inv["Niveau urgence"] || '').toLowerCase();
+        
+        return dossierNum.includes(term) || 
+               invoiceNumber.includes(term) || 
+               supplier.includes(term) || 
+               amount.includes(term) || 
+               urgency.includes(term);
+      });
+      console.log('Après filtre recherche:', filtered.length);
+    }
 
     // Filtre par région
     if (region && region !== 'all') {
@@ -747,6 +795,15 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
           {/* Contrôles à droite */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="N° dossier, fournisseur, montant, priorité..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="px-3 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+              />
+            </div>
+            <div className="flex items-center gap-2">
               <label className="text-sm font-medium text-gray-700">Année</label>
               <select 
                 value={selectedYear}
@@ -877,7 +934,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
 
       {/* Tableau des factures avec menu contextuel */}
       <div className="px-0 pb-4">
-        <InvoiceTable invoices={invoices} activeMenu={activeMenu} />
+        <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
       </div>
         </>
       )}

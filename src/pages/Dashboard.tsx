@@ -2,16 +2,20 @@ import { useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import InvoiceDetailModal from '../components/InvoiceDetailModal';
-import ViewInvoiceModal from '../components/ViewInvoiceModal';
 import PaiementModal from '../components/PaiementModal';
 import Top10SuppliersModal from '../components/Top10SuppliersModal';
 import TopProgressBar from '../components/TopProgressBar';
 import LoadingSpinner from '../components/LoadingSpinner';
 import MonthlyInvoiceChart from '../components/MonthlyInvoiceChart';
+import SkeletonCard from '../components/SkeletonCard';
+import SkeletonGrid from '../components/SkeletonGrid';
+import ViewInvoiceModal from '../components/ViewInvoiceModal';
 import { dashboardService, type DashboardStats, type TopSupplier, type Invoice, type MonthlyInvoiceStats } from '../services/tableService';
 import { supabase } from '../services/supabase';
 import { formatCurrency } from '../utils/formatters';
 import { useAuth } from '../contexts/AuthContext';
+import { useRealtimeDataMultiple } from '../hooks/useRealtimeData';
+import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 
 interface DashboardProps {
   activeMenu?: string;
@@ -162,7 +166,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Charger les paiements
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -170,7 +174,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -241,7 +245,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Charger les paiements
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -249,7 +253,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -319,7 +323,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Charger les paiements
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
       
       if (paiementsError) throw paiementsError;
 
@@ -327,7 +331,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -362,26 +366,35 @@ function Dashboard({ menuTitle }: DashboardProps) {
   }, [selectedSupplierForModal]);
 
   const loadDashboardData = async () => {
-    console.log('🔄 [Dashboard] loadDashboardData called with: year=', selectedYear, ', region=', selectedRegionBulletin, ', month=', selectedMonth);
+    console.log('?? [Dashboard] loadDashboardData called with: year=', selectedYear, ', region=', selectedRegionBulletin, ', month=', selectedMonth);
     setLoading(true);
     setError(null);
+    
     try {
-      const [dashStats, supplier, charges, urgency, age, supplierAge, , bulletin, monthly, availableRegions] = await Promise.all([
+      // Phase 1: Charger les données critiques d'abord (cartes principales)
+      const [dashStats, supplier, charges] = await Promise.all([
         dashboardService.getDashboardStats(selectedYear, selectedRegionBulletin),
         dashboardService.getTopSupplier(selectedYear, selectedRegionBulletin),
-        dashboardService.getBlockingChargesStats(selectedYear, selectedRegionBulletin),
+        dashboardService.getBlockingChargesStats(selectedYear, selectedRegionBulletin)
+      ]);
+      
+      // Mettre à jour les données critiques immédiatement
+      setStats(dashStats);
+      setTopSupplier(supplier);
+      setBlockingCharges(charges);
+      
+      console.log('?? [Dashboard] Critical data loaded. dashStats.totalMontant=', dashStats.totalMontant, ', chargesCount=', charges.length, ', topSupplier=', supplier?.fournisseur);
+      
+      // Phase 2: Charger les données secondaires en parallèle
+      const [urgency, age, supplierAge, bulletin, monthly, availableRegions] = await Promise.all([
         dashboardService.getInvoicesByUrgency(selectedYear, selectedRegionBulletin),
         dashboardService.getInvoicesByAge(selectedYear, selectedRegionBulletin),
         dashboardService.getSupplierAgeBreakdown(selectedYear, selectedRegionBulletin),
-        dashboardService.getStatisticsByRegion(selectedYear),
         dashboardService.getBulletinStats(selectedYear, selectedRegionBulletin),
         dashboardService.getMonthlyInvoiceStats(selectedYear, selectedRegionBulletin),
         dashboardService.getRegions()
       ]);
       
-      setStats(dashStats);
-      setTopSupplier(supplier);
-      setBlockingCharges(charges);
       setUrgencyStats(urgency);
       setAgeStats(age);
       setSupplierAgeData(supplierAge);
@@ -389,10 +402,9 @@ function Dashboard({ menuTitle }: DashboardProps) {
       setMonthlyData(monthly);
       setRegions(availableRegions);
       
-      console.log('✅ [Dashboard] Data loaded. dashStats.totalMontant=', dashStats.totalMontant, ', chargesCount=', charges.length, ', topSupplier=', supplier?.fournisseur);
-      
-      // Charger les données des centres de coûts
+      // Phase 3: Charger les données des centres de coûts (non critique)
       await loadCostCenterData();
+      
     } catch (err) {
       console.error('Erreur lors du chargement des données du dashboard:', err);
       setError('Erreur lors du chargement des données');
@@ -414,13 +426,13 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Charger les paiements
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       // Créer une map des paiements par numéro de facture
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -633,6 +645,57 @@ function Dashboard({ menuTitle }: DashboardProps) {
     calculateBulletinStats();
   }, []);
 
+  // Écouter les changements en temps réel dans les tables pertinentes
+  useRealtimeDataMultiple([
+    {
+      name: 'FACTURES',
+      options: {
+        onInsert: () => {
+          console.log('✓ Nouvelle facture détectée - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+        onUpdate: () => {
+          console.log('✓ Facture modifiée - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+        onDelete: () => {
+          console.log('✓ Facture supprimée - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+      },
+    },
+    {
+      name: 'PAIEMENTS',
+      options: {
+        onInsert: () => {
+          console.log('✓ Nouveau paiement détecté - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+        onUpdate: () => {
+          console.log('✓ Paiement modifié - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+        onDelete: () => {
+          console.log('✓ Paiement supprimé - rafraîchissement');
+          loadDashboardData();
+          calculateBulletinStats();
+        },
+      },
+    },
+  ]);
+
+  // Écouter les événements de rafraîchissement manuel
+  useDataRefresh(REFRESH_EVENTS.DASHBOARD_STATS, () => {
+    console.log('🔄 Rafraîchissement manuel des stats du dashboard');
+    loadDashboardData();
+    calculateBulletinStats();
+  });
+
   // Ensure agent's region is respected - update selectedRegionBulletin if agent's region changes
   useEffect(() => {
     if (agent?.REGION && agent.REGION !== 'TOUT') {
@@ -843,12 +906,12 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Charger les paiements pour filtrer
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });
@@ -1044,7 +1107,34 @@ function Dashboard({ menuTitle }: DashboardProps) {
     switch (activeTab) {
       case 1: // Global
         if (loading) {
-          return <div className="text-center py-8">Chargement des données...</div>;
+          return (
+            <div className="space-y-8">
+              <div className="space-y-6 pt-6">
+                {/* Skeleton pour les 4 cartes principales */}
+                <div className="grid grid-cols-4 gap-6">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </div>
+                
+                {/* Skeleton pour la deuxième rangée */}
+                <div className="grid grid-cols-3 gap-6">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </div>
+                
+                {/* Skeleton pour le graphique */}
+                <div className="bg-white rounded-lg shadow-sm p-6">
+                  <div className="animate-pulse">
+                    <div className="h-6 bg-gray-200 rounded w-1/4 mb-4"></div>
+                    <div className="h-64 bg-gray-200 rounded"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
         }
         if (error) {
           return <div className="text-center py-8 text-red-600">{error}</div>;
@@ -1434,7 +1524,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
         return (
           <div className="space-y-6">
             {loading ? (
-              <div className="text-center py-8">Chargement des données...</div>
+              <SkeletonGrid count={6} columns={3} />
             ) : blockingCharges.length === 0 ? (
               <div className="text-center py-8 text-gray-500">Aucune charge bloquante</div>
             ) : (
@@ -1883,7 +1973,34 @@ function Dashboard({ menuTitle }: DashboardProps) {
       
 
       <div className="flex-1 bg-white rounded-lg shadow-sm p-6">
-        {loading && isInitialLoad ? <LoadingSpinner /> : renderTabContent()}
+        {loading && isInitialLoad ? (
+          <div className="space-y-8">
+            <div className="space-y-6 pt-6">
+              {/* Skeleton pour les 4 cartes principales */}
+              <div className="grid grid-cols-4 gap-6">
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+              </div>
+              
+              {/* Skeleton pour la deuxième rangée */}
+              <div className="grid grid-cols-3 gap-6">
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+              </div>
+              
+              {/* Skeleton pour le graphique */}
+              <div className="bg-white rounded-lg shadow-sm p-6">
+                <div className="animate-pulse">
+                  <div className="h-6 bg-gray-200 rounded w-1/4 mb-4"></div>
+                  <div className="h-64 bg-gray-200 rounded"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : renderTabContent()}
       </div>
 
       {/* Modal des détails factures */}

@@ -70,13 +70,13 @@ function InvoiceDetailModal({
     try {
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('id, montantPaye');
+        .select('NumeroFacture, montantPaye');
 
       // Create map of invoice numbers with their total paid amounts
       const paymentMap = new Map<string, number>();
       if (paiements) {
         paiements.forEach((p: any) => {
-          const invoiceNumber = p.id.split('-')[0];
+          const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
         });

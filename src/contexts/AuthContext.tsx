@@ -18,28 +18,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Initialiser l'agent à partir du localStorage au montage
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        // Charger depuis localStorage
+        const storedAgent = localStorage.getItem('auth_agent');
+        if (storedAgent) {
+          const parsedAgent = JSON.parse(storedAgent);
+          setAgent(parsedAgent);
+          console.log('✓ Agent restauré depuis localStorage:', parsedAgent.Nom);
+        }
+      } catch (err) {
+        console.error('❌ Erreur lors du chargement de la session:', err);
+        localStorage.removeItem('auth_agent');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+  }, []);
+
   // Sauvegarder agent dans localStorage chaque fois qu'il change
   useEffect(() => {
     if (agent) {
       localStorage.setItem('auth_agent', JSON.stringify(agent));
-    } else {
-      localStorage.removeItem('auth_agent');
     }
   }, [agent]);
-
-  // Charger depuis localStorage au démarrage
-  useEffect(() => {
-    try {
-      const storedAgent = localStorage.getItem('auth_agent');
-      if (storedAgent) {
-        setAgent(JSON.parse(storedAgent));
-      }
-    } catch (err) {
-      console.error('Error loading stored agent:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   // Authentification avec email et vérification du mot de passe haché
   const signInWithEmail = useCallback(async (email: string, password: string) => {
