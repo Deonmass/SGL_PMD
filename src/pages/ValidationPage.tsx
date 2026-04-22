@@ -91,6 +91,22 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
     }
   }, [selectedRegion, selectedYear, selectedMonth, allInvoices, searchTerm]);
 
+  useEffect(() => {
+    // Écouter les événements de fermeture de modal pour recharger les données
+    const handleModalClose = () => {
+      console.log('Modal fermé - rechargement des données...');
+      loadInvoices(selectedStatus);
+    };
+
+    // Ajouter l'écouteur d'événements
+    window.addEventListener('modalClosed', handleModalClose);
+    
+    // Nettoyer l'écouteur lors du démontage du composant
+    return () => {
+      window.removeEventListener('modalClosed', handleModalClose);
+    };
+  }, [selectedStatus]);
+
   const loadInvoices = async (statusFilter: string) => {
     setLoading(true);
     try {
@@ -222,18 +238,22 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
           // Appliquer les règles de validation selon le montant
           let isValid = false;
           
-          if (amount <= 2500) {
-            // 0 à 2,500 USD : DR seule doit signer
+          if (dopValidated) {
+            // Si DOP a signé : automatiquement valide (peu importe le montant et DR)
+            isValid = true;
+            console.log(`  → DOP signé : automatiquement valide`);
+          } else if (amount <= 2500) {
+            // 0 à 2,500 USD : DR seule doit signer (si DOP n'a pas signé)
             isValid = drValidated;
             console.log(`  → Montant ${amount} <= 2500: DR required=${drValidated}`);
           } else if (amount <= 10000) {
-            // 2,500 à 10,000 USD : DR + DOP doivent signer
-            isValid = drValidated && dopValidated;
-            console.log(`  → Montant ${amount} entre 2500-10000: DR+DOP required=${drValidated && dopValidated}`);
+            // 2,500 à 10,000 USD : DR + DOP doivent signer (mais DOP n'a pas signé)
+            isValid = false; // DOP n'a pas signé, donc pas valide
+            console.log(`  → Montant ${amount} entre 2500-10000: DOP non signé = invalide`);
           } else {
-            // > 10,000 USD : DR + DOP + DG doivent tous signer
-            isValid = drValidated && dopValidated && dgValidated;
-            console.log(`  → Montant ${amount} > 10000: DR+DOP+DG required=${drValidated && dopValidated && dgValidated}`);
+            // > 10,000 USD : DR + DOP doivent signer (mais DOP n'a pas signé)
+            isValid = false; // DOP n'a pas signé, donc pas valide
+            console.log(`  → Montant ${amount} > 10000: DOP non signé = invalide`);
           }
           
           console.log(`  → Résultat: ${isValid ? 'VALIDE ✓' : 'INVALIDE ✗'}`);
@@ -241,6 +261,56 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         });
         
         console.log(`Total factures validées après filtrage: ${allData.length}`);
+      
+      // Debug spécial pour la facture L 36956
+      const facture36956Validated = allData.find(inv => 
+        inv["Numéro de facture"] && 
+        (inv["Numéro de facture"].includes('36956') || 
+         inv["Numéro de facture"].includes('L 36956') ||
+         inv["Numéro de facture"].includes('L-36956'))
+      );
+      
+      if (facture36956Validated) {
+        console.log('*** FACTURE L 36956 TROUVÉE APRÈS FILTRAGE VALIDÉE ***');
+        console.log('Détails après filtrage:', {
+          numero: facture36956Validated["Numéro de facture"],
+          statut: facture36956Validated.Statut,
+          montant: facture36956Validated.Montant,
+          validations: {
+            DR: facture36956Validated["validation DR"],
+            DOP: facture36956Validated["validation DOP"],
+            DG: facture36956Validated["validation DG"]
+          }
+        });
+      } else {
+        console.log('*** FACTURE L 36956 NON TROUVÉE APRÈS FILTRAGE VALIDÉE ***');
+        console.log('Recherche dans toutes les données brutes...');
+        if (allInvoicesData && allInvoicesData.length > 0) {
+          const facture36956Brute = allInvoicesData.find(inv => 
+            inv["Numéro de facture"] && 
+            (inv["Numéro de facture"].includes('36956') || 
+             inv["Numéro de facture"].includes('L 36956') ||
+             inv["Numéro de facture"].includes('L-36956'))
+          );
+          if (facture36956Brute) {
+            console.log('*** FACTURE L 36956 TROUVÉE DONNÉES BRUTES ***');
+            console.log('Détails bruts:', {
+              numero: facture36956Brute["Numéro de facture"],
+              statut: facture36956Brute.Statut,
+              montant: facture36956Brute.Montant,
+              validations: {
+                DR: facture36956Brute["validation DR"],
+                DOP: facture36956Brute["validation DOP"],
+                DG: facture36956Brute["validation DG"]
+              }
+            });
+          } else {
+            console.log('*** FACTURE L 36956 NON TROUVÉE MÊME DONNÉES BRUTES ***');
+            console.log('Tous les numéros de factures:', allInvoicesData.map(inv => inv["Numéro de facture"]));
+          }
+        }
+      }
+      
       } else if (statusFilter === 'Rejetée') {
         // Pour les factures rejetées, charger toutes les factures avec Statut = 'Rejetée'
         const { data: rejectedData, error: rejectedError } = await supabase
@@ -485,6 +555,31 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         DG: inv["validation DG"]
       }
     })));
+    
+    // Debug spécial pour la facture L 36956
+    const facture36956 = filtered.find(inv => 
+      inv["Numéro de facture"] && 
+      (inv["Numéro de facture"].includes('36956') || 
+       inv["Numéro de facture"].includes('L 36956') ||
+       inv["Numéro de facture"].includes('L-36956'))
+    );
+    
+    if (facture36956) {
+      console.log('*** FACTURE L 36956 TROUVÉE AVANT TRANSFORMATION ***');
+      console.log('Détails:', {
+        numero: facture36956["Numéro de facture"],
+        statut: facture36956.Statut,
+        montant: facture36956.Montant,
+        validations: {
+          DR: facture36956["validation DR"],
+          DOP: facture36956["validation DOP"],
+          DG: facture36956["validation DG"]
+        }
+      });
+    } else {
+      console.log('*** FACTURE L 36956 NON TROUVÉE AVANT TRANSFORMATION ***');
+      console.log('Numéros de factures disponibles:', filtered.map(inv => inv["Numéro de facture"]));
+    }
 
     // Transformer les données Facture en Invoice pour InvoiceTable
     const transformedInvoices: Invoice[] = filtered.map(inv => {
@@ -492,23 +587,18 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
       const amount = typeof amountRaw === 'string' ? parseFloat(amountRaw) : (amountRaw || 0);
       const drValidated = inv["validation DR"] != null && String(inv["validation DR"]).trim() !== '';
       const dopValidated = inv["validation DOP"] != null && String(inv["validation DOP"]).trim() !== '';
-      const dgValidated = inv["validation DG"] != null && String(inv["validation DG"]).trim() !== '';
       
       let isBonAPayer = false;
-      // Nouvelles règles de validation
-      if (amount <= 2500) {
-        // Pour les factures de moins de 2500$, DR seul suffit
-        isBonAPayer = drValidated;
-      } else if (dopValidated) {
-        // Si le DOP a signé, passe directement à "bon à payer" peu importe le montant
+      // Règles de validation : DOP peut signer toute facture même sans DR
+      if (dopValidated) {
+        // Si DOP a signé : automatiquement bon à payer (peu importe le montant et DR)
         isBonAPayer = true;
+      } else if (amount <= 2500) {
+        // 0 à 2,500 USD : DR seule doit signer (si DOP n'a pas signé)
+        isBonAPayer = drValidated;
       } else {
-        // Anciennes règles pour les autres cas
-        if (amount <= 10000) {
-          isBonAPayer = drValidated && dopValidated;
-        } else {
-          isBonAPayer = drValidated && dopValidated && dgValidated;
-        }
+        // > 2,500 USD : DOP doit signer (mais n'a pas signé)
+        isBonAPayer = false;
       }
       
       console.log(`Transformation ${inv["Numéro de facture"]}: montant=${amount}, bon-a-payer=${isBonAPayer}`);
@@ -555,6 +645,28 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
 
     console.log('=== FINAL RESULT ===');
     console.log('transformedInvoices.length:', transformedInvoices.length);
+    
+    // Debug spécial pour la facture L 36956 après transformation
+    const facture36956Transformed = transformedInvoices.find(inv => 
+      inv.invoiceNumber && 
+      (inv.invoiceNumber.includes('36956') || 
+       inv.invoiceNumber.includes('L 36956') ||
+       inv.invoiceNumber.includes('L-36956'))
+    );
+    
+    if (facture36956Transformed) {
+      console.log('*** FACTURE L 36956 TROUVÉE APRÈS TRANSFORMATION ***');
+      console.log('Détails finaux:', {
+        numero: facture36956Transformed.invoiceNumber,
+        statut: facture36956Transformed.status,
+        montant: facture36956Transformed.amount,
+        bonAPayer: facture36956Transformed.status === 'bon-a-payer'
+      });
+    } else {
+      console.log('*** FACTURE L 36956 NON TROUVÉE APRÈS TRANSFORMATION ***');
+      console.log('Numéros de factures finales:', transformedInvoices.map(inv => inv.invoiceNumber));
+    }
+    
     console.log('transformedInvoices:', transformedInvoices);
 
     setInvoices(transformedInvoices);
@@ -636,7 +748,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
     const totalAmount = invoices.reduce((sum, inv) => sum + (inv.amount || 0), 0);
     const urgentCount = invoices.filter(inv => {
       const urgency = inv.urgencyLevel?.toLowerCase();
-      return urgency === 'haute' || urgency === 'urgent' || urgency === 'prioritaire';
+      return urgency === 'urgent'; // Uniquement les factures avec Priorité de paiement Urgent
     }).length;
     const overdueCount = invoices.filter(inv => {
       if (!inv.dueDate) return false;
@@ -765,17 +877,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
                 >
                   SUD
                 </button>
-                <button
-                  onClick={() => handleRegionChange('NORD')}
-                  className={`pr-4 pl-4 pt-2 pb-2 text-sm rounded-t-lg transition-all duration-150 ease-out ${
-                    selectedRegion === 'NORD'
-                      ? 'font-bold text-black bg-white'
-                      : 'text-gray-600'
-                  }`}
-                >
-                  NORD
-                </button>
-              </>
+                              </>
             ) : (
               agent?.REGION && (
                 <button

@@ -209,6 +209,14 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
         return true;
       });
     }
+
+    // Apply search filter for supplier list (left 30% panel)
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      filteredInvoices = filteredInvoices.filter(inv =>
+        inv.supplier.toLowerCase().includes(term)
+      );
+    }
     
     const supplierMap = new Map<string, { supplier: string; count: number; totalAmount: number; totalPaid: number; restAPayer: number }>();
     
@@ -288,6 +296,26 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
         }
         
         return true;
+      });
+    }
+
+    // Apply search filter for dossier list (left 30% panel)
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      filteredInvoices = filteredInvoices.filter(inv => {
+        let dossierNumber = inv.numeroDossier && inv.numeroDossier.trim() !== ''
+          ? inv.numeroDossier
+          : inv.invoiceNumber;
+
+        if (!inv.numeroDossier || inv.numeroDossier.trim() === '') {
+          if (inv.invoiceNumber.includes('/')) {
+            dossierNumber = inv.invoiceNumber.split('/')[0];
+          } else if (inv.invoiceNumber.includes('-')) {
+            dossierNumber = inv.invoiceNumber.split('-')[0];
+          }
+        }
+
+        return dossierNumber.toLowerCase().includes(term);
       });
     }
     
@@ -590,7 +618,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
+        .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
       
       if (error) {
         console.error('Erreur lors de la récupération des factures:', error);
@@ -610,6 +638,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
       const processedInvoices: Invoice[] = factures?.map((f: Record<string, unknown>) => {
         const invoiceNum = String(f['Numéro de facture'] || '').trim();
+        const dossierNum = String(f['Numéro de dossier'] || '').trim();
         const amount = parseFloat(String(f.Montant)) || 0;
         const totalPaid = paidMap.get(invoiceNum) || 0;
         const restAPayer = Math.max(0, amount - totalPaid);
@@ -620,6 +649,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
         return {
           id: String(f.ID),
           invoiceNumber: invoiceNum,
+          numeroDossier: dossierNum,
           supplier: String(f.Fournisseur || '').trim(),
           manager: String(f.Gestionnaire || '').trim(),
           costCenter: String(f['Centre de coût'] || '').trim(),
@@ -783,7 +813,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
   );
 
   return (
-    <div className="bg-white min-h-screen">
+    <div className="bg-white h-screen overflow-hidden flex flex-col">
       {/* Header */}
       <div className="bg-gray-100 p-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">{menuTitle}</h1>
@@ -936,18 +966,18 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
       {/* Content - Two Column Layout */}
       {loading ? (
-        <div className="flex items-center justify-center h-96">
+        <div className="flex-1 min-h-0 flex items-center justify-center">
           <p className="text-gray-500 text-lg">Chargement des données...</p>
         </div>
       ) : (
-        <div className="px-4 pb-4 overflow-hidden">
-          <div className={`flex gap-0 transition-all duration-300 ease-out ${selectedSupplier ? 'lg:gap-4' : ''}`}>
+        <div className="px-4 pb-4 overflow-hidden flex-1 min-h-0">
+          <div className={`flex h-[calc(100%-0.5rem)] min-h-0 gap-0 transition-all duration-300 ease-out ${selectedSupplier ? 'lg:gap-4' : ''}`}>
             {/* Left Column - 30% - List with Tabs */}
             <div className={`flex-shrink-0 transition-all duration-300 ease-out ${
               (selectedSupplier || selectedDossier) 
                 ? 'w-full lg:w-1/3 lg:border-r-4 lg:border-blue-200 lg:pr-4' 
                 : 'w-full lg:w-80'
-            } border border-gray-200 rounded-lg bg-white overflow-hidden`}>
+            } border border-gray-200 rounded-lg bg-white overflow-hidden h-full min-h-0 flex flex-col pb-2`}>
               
               {/* Tabs */}
               <div className="flex bg-gray-100 border-b">
@@ -980,9 +1010,9 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
               </div>
 
               {/* Content */}
-              <div className="p-4">
+              <div className="p-4 flex-1 min-h-0 flex flex-col">
                 {activeLeftTab === 'supplier' ? (
-                  <>
+                  <div className="flex h-full min-h-0 flex-col">
                     <h2 className="text-lg font-bold text-gray-900 mb-4">Fournisseurs avec solde à payer</h2>
                     
                     {/* Search bar for suppliers */}
@@ -997,7 +1027,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                       />
                     </div>
                     
-                    <div className="space-y-2 max-h-80 overflow-y-auto">
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto">
                       {getUnpaidSuppliers().length === 0 ? (
                         <div className="text-center py-8 text-gray-500 text-sm">
                           Aucun fournisseur avec factures non payées
@@ -1031,9 +1061,9 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                         ))
                       )}
                     </div>
-                  </>
+                  </div>
                 ) : (
-                  <>
+                  <div className="flex h-full min-h-0 flex-col">
                     <h2 className="text-lg font-bold text-gray-900 mb-4">Numéros de dossier</h2>
                     
                     {/* Search bar for dossiers */}
@@ -1048,7 +1078,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                       />
                     </div>
                     
-                    <div className="space-y-2 max-h-80 overflow-y-auto">
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto">
                       {getUnpaidDossiers().length === 0 ? (
                         <div className="text-center py-8 text-gray-500 text-sm">
                           Aucun dossier avec factures non payées
@@ -1082,14 +1112,14 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                         ))
                       )}
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             </div>
 
             {/* Right Column - 70% - Invoice Status Sections (Hidden by default, shown only when supplier or dossier selected) */}
             {(selectedSupplier || selectedDossier) && (
-              <div className="w-full lg:w-2/3 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn">
+              <div className="w-full lg:w-2/3 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn h-full min-h-0 flex flex-col pb-2">
                 <div className="p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
                   <p className="text-sm font-semibold text-blue-900">
                     Factures pour: <span className="text-blue-700">
@@ -1098,7 +1128,8 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                     {selectedDossier && <span className="text-xs text-blue-600 ml-2">(Numéro de dossier)</span>}
                   </p>
                 </div>
-                <div className="overflow-hidden">
+                <div className="overflow-hidden flex-1 min-h-0">
+                  <div className="h-full overflow-y-auto">
                   <table className="w-full">
                     <tbody>
                       {renderCollapsibleSection(
@@ -1131,6 +1162,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                       )}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               </div>
             )}

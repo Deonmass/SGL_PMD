@@ -31,6 +31,7 @@ interface InvoiceWithPayments extends Invoice {
   'Facture attachée'?: string;
   'Catégorie de charge'?: string;
   'Niveau urgence'?: string;
+  'Région'?: string;
   'Délais de paiement'?: number;
   'Échéance'?: string;
 }
@@ -376,6 +377,20 @@ function InvoiceDetailModal({
     }
   };
 
+  const handleClose = () => {
+    // Actualiser les données du modal avant fermeture
+    loadInvoicePayments();
+    
+    // Rafraîchir le tableau des données à la fermeture
+    if (onInvoiceRemoved) {
+      onInvoiceRemoved();
+    }
+    
+    // Émettre l'événement de fermeture de modal pour le rechargement automatique
+    window.dispatchEvent(new Event('modalClosed'));
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -408,7 +423,7 @@ function InvoiceDetailModal({
                 <Printer size={20} className="text-gray-600" />
               </button>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
               >
                 <X size={20} className="text-gray-600" />
@@ -446,7 +461,7 @@ function InvoiceDetailModal({
               <p className="text-center text-gray-500 py-8 text-sm">Aucune facture à afficher</p>
             ) : (
               <table className="w-full text-sm">
-                <thead>
+                <thead className="sticky top-0 z-10">
                   <tr className="border-b bg-gray-200">
                     <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                       Numéro Facture
@@ -457,11 +472,16 @@ function InvoiceDetailModal({
                     <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                       Date Réception
                     </th>
+                    {agent?.REGION === 'TOUT' && (
+                      <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        Région
+                      </th>
+                    )}
                     <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                       Catégorie de charge
                     </th>
                     <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Niveau urgence
+                      Priorité de paiement
                     </th>
                     <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                       Échéance
@@ -513,6 +533,29 @@ function InvoiceDetailModal({
                       <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
                         {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
                       </td>
+                      {agent?.REGION === 'TOUT' && (
+                        <td className="py-2 px-3 text-xs">
+                          {(() => {
+                            const region = invoice['Région'] as string;
+                            if (!region) return <span className="text-gray-500">N/A</span>;
+                            
+                            const regionColors: Record<string, { bg: string; text: string }> = {
+                              'OUEST': { bg: 'bg-blue-100', text: 'text-blue-800' },
+                              'EST': { bg: 'bg-green-100', text: 'text-green-800' },
+                              'SUD': { bg: 'bg-orange-100', text: 'text-orange-800' },
+                              'NORD': { bg: 'bg-purple-100', text: 'text-purple-800' }
+                            };
+                            
+                            const colors = regionColors[region.toUpperCase()] || { bg: 'bg-gray-100', text: 'text-gray-800' };
+                            
+                            return (
+                              <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${colors.bg} ${colors.text}`}>
+                                {region}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      )}
                       <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
                         {invoice['Catégorie de charge'] === 'Bulletin de liquidation' ? (
                           <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
@@ -622,10 +665,13 @@ function InvoiceDetailModal({
       {paiementModal.isOpen && paiementModal.invoice && (
         <PaiementModal
           invoice={paiementModal.invoice}
-          onClose={() => setPaiementModal({ isOpen: false, invoice: null })}
-          onSuccess={() => {
-            // Recharger les paiements après un paiement réussi
+          onClose={() => {
+            // Actualiser les données du modal avant fermeture
             loadInvoicePayments();
+            
+            // Émettre l'événement de fermeture de modal pour le rechargement automatique
+            window.dispatchEvent(new Event('modalClosed'));
+            onClose();
           }}
           readOnly={!paiementModal.ordoPaiementId}
           ordoPaiementId={paiementModal.ordoPaiementId}
