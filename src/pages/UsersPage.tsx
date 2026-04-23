@@ -45,7 +45,8 @@ interface ContextMenuPosition {
 const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
   'Administrateur': {
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: true },
     factures: { voir: true, creer: true, modifier: true, supprimer: true, valider: true, rejeter: true, establir_op: true, marquer_payee: true },
     factures_pending_dr: { voir: true, valider: true, rejeter: true },
     factures_pending_dop: { voir: true, valider: true, rejeter: true },
@@ -55,6 +56,15 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     factures_payment_order: { voir: true, establir_op: true, marquer_payee: true },
     factures_paid: { voir: true },
     factures_partially_paid: { voir: true },
+    factures_ffg: { voir: true, creer: true, modifier: true, supprimer: true, valider: true, rejeter: true, establir_op: true, marquer_payee: true },
+    factures_ffg_pending_dr: { voir: true, valider: true, rejeter: true },
+    factures_ffg_pending_dop: { voir: true, valider: true, rejeter: true },
+    factures_ffg_rejected: { voir: true, modifier: true },
+    factures_ffg_overdue: { voir: true },
+    factures_ffg_validated: { voir: true, establir_op: true },
+    factures_ffg_payment_order: { voir: true, establir_op: true, marquer_payee: true },
+    factures_ffg_paid: { voir: true },
+    factures_ffg_partially_paid: { voir: true },
     paramettre: { voir: true },
     fournisseurs: { voir: true, creer: true, modifier: true, supprimer: true },
     charges: { voir: true, creer: true, modifier: true, supprimer: true },
@@ -70,11 +80,16 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
   },
   'DR': {
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: true },
     factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
     factures_pending_dr: { voir: true, valider: true, rejeter: true },
     factures_rejected: { voir: true, modifier: false },
     factures_overdue: { voir: true },
+    factures_ffg: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
+    factures_ffg_pending_dr: { voir: true, valider: true, rejeter: true },
+    factures_ffg_rejected: { voir: true, modifier: false },
+    factures_ffg_overdue: { voir: true },
     paramettre: { voir: false },
     fournisseurs: { voir: true, creer: false, modifier: false, supprimer: false },
     charges: { voir: false },
@@ -88,23 +103,31 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
   },
   'DOP': {
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: true },
     factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
     factures_pending_dop: { voir: true, valider: true, rejeter: true },
     factures_validated: { voir: true, establir_op: false },
+    factures_ffg: { voir: true, creer: false, modifier: false, supprimer: false, valider: true, rejeter: true, establir_op: false, marquer_payee: false },
+    factures_ffg_pending_dop: { voir: true, valider: true, rejeter: true },
+    factures_ffg_validated: { voir: true, establir_op: false },
     paramettre: { voir: false },
     dop_tout: { valider: true },
   },
   'Utilisateur': {
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: false },
     factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
+    factures_ffg: { voir: true, creer: false, modifier: false, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
     paramettre: { voir: false },
   },
   'Gestionnaire': {
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: true },
     factures: { voir: true, creer: true, modifier: true, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
+    factures_ffg: { voir: true, creer: true, modifier: true, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
     paramettre: { voir: true },
     fournisseurs: { voir: true, creer: true, modifier: true, supprimer: false },
     charges: { voir: true, creer: true, modifier: true, supprimer: false },
@@ -144,7 +167,8 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
   const [selectedRoleTemplate, setSelectedRoleTemplate] = useState<string>('');
   const [permissions, setPermissions] = useState<MenuPermissions>({
     dashboard: { voir: true },
-    recherche: { voir: true },
+    dashboard_ffg: { voir: true },
+    recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: false },
     factures: {
       voir: true,
       creer: false,
@@ -163,6 +187,24 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
     factures_payment_order: { voir: true, establir_op: true, marquer_payee: true },
     factures_paid: { voir: true },
     factures_partially_paid: { voir: true },
+    factures_ffg: {
+      voir: true,
+      creer: false,
+      modifier: true,
+      supprimer: false,
+      valider: true,
+      rejeter: true,
+      establir_op: true,
+      marquer_payee: true
+    },
+    factures_ffg_pending_dr: { voir: true, valider: true, rejeter: true },
+    factures_ffg_pending_dop: { voir: true, valider: true, rejeter: true },
+    factures_ffg_rejected: { voir: true, modifier: true },
+    factures_ffg_overdue: { voir: true },
+    factures_ffg_validated: { voir: true, establir_op: true },
+    factures_ffg_payment_order: { voir: true, establir_op: true, marquer_payee: true },
+    factures_ffg_paid: { voir: true },
+    factures_ffg_partially_paid: { voir: true },
     paramettre: { voir: true },
     fournisseurs: { voir: true, creer: false, modifier: false, supprimer: false },
     charges: { voir: true, creer: false, modifier: false, supprimer: false },
@@ -715,7 +757,8 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       // Désactiver le mode admin - réinitialiser aux permissions par défaut
       setPermissions({
         dashboard: { voir: true },
-        recherche: { voir: true },
+        dashboard_ffg: { voir: true },
+        recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: false },
         factures: {
           voir: true,
           creer: false,
@@ -734,6 +777,15 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
         factures_payment_order: { voir: true, establir_op: true, marquer_payee: true },
         factures_paid: { voir: true },
         factures_partially_paid: { voir: true },
+        factures_ffg: { voir: true, creer: false, modifier: true, supprimer: false, valider: true, rejeter: true, establir_op: true, marquer_payee: true },
+        factures_ffg_pending_dr: { voir: true, valider: true, rejeter: true },
+        factures_ffg_pending_dop: { voir: true, valider: true, rejeter: true },
+        factures_ffg_rejected: { voir: true, modifier: true },
+        factures_ffg_overdue: { voir: true },
+        factures_ffg_validated: { voir: true, establir_op: true },
+        factures_ffg_payment_order: { voir: true, establir_op: true, marquer_payee: true },
+        factures_ffg_paid: { voir: true },
+        factures_ffg_partially_paid: { voir: true },
         paramettre: { voir: true },
         fournisseurs: { voir: true, creer: false, modifier: false, supprimer: false },
         charges: { voir: true, creer: false, modifier: false, supprimer: false },
@@ -758,7 +810,8 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       // Activer le mode admin - tout cocher
       const adminPermissions: MenuPermissions = {
         dashboard: { voir: true },
-        recherche: { voir: true },
+        dashboard_ffg: { voir: true },
+        recherche: { voir: true, voir_operationnel: true, voir_frais_generaux: true },
         factures: {
           voir: true,
           creer: true,
@@ -777,6 +830,15 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
         factures_payment_order: { voir: true, establir_op: true, marquer_payee: true },
         factures_paid: { voir: true },
         factures_partially_paid: { voir: true },
+        factures_ffg: { voir: true, creer: true, modifier: true, supprimer: true, valider: true, rejeter: true, establir_op: true, marquer_payee: true },
+        factures_ffg_pending_dr: { voir: true, valider: true, rejeter: true },
+        factures_ffg_pending_dop: { voir: true, valider: true, rejeter: true },
+        factures_ffg_rejected: { voir: true, modifier: true },
+        factures_ffg_overdue: { voir: true },
+        factures_ffg_validated: { voir: true, establir_op: true },
+        factures_ffg_payment_order: { voir: true, establir_op: true, marquer_payee: true },
+        factures_ffg_paid: { voir: true },
+        factures_ffg_partially_paid: { voir: true },
         paramettre: { voir: true },
         fournisseurs: { voir: true, creer: true, modifier: true, supprimer: true },
         charges: { voir: true, creer: true, modifier: true, supprimer: true },
@@ -819,9 +881,14 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       actions: ['voir']
     },
     {
+      key: 'dashboard_ffg',
+      label: 'DASHBOARD FFG',
+      actions: ['voir']
+    },
+    {
       key: 'recherche',
       label: 'RECHERCHE',
-      actions: ['voir']
+      actions: ['voir', 'voir_operationnel', 'voir_frais_generaux']
     },
     {
       key: 'factures',
@@ -836,6 +903,21 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
         { key: 'factures_payment_order', label: 'Ordre de paiement', actions: ['voir', 'establir_op', 'marquer_payee'] },
         { key: 'factures_paid', label: 'Payé', actions: ['voir'] },
         { key: 'factures_partially_paid', label: 'Partiellement payé', actions: ['voir'] }
+      ]
+    },
+    {
+      key: 'factures_ffg',
+      label: 'FACTURES FFG',
+      actions: ['voir', 'creer', 'modifier', 'supprimer', 'valider', 'rejeter', 'establir_op', 'marquer_payee'],
+      subMenus: [
+        { key: 'factures_ffg_pending_dr', label: 'En attente validation DR', actions: ['voir', 'valider', 'rejeter'] },
+        { key: 'factures_ffg_pending_dop', label: 'En attente validation DOP', actions: ['voir', 'valider', 'rejeter'] },
+        { key: 'factures_ffg_rejected', label: 'Rejetée', actions: ['voir', 'modifier'] },
+        { key: 'factures_ffg_overdue', label: 'Facture Échues', actions: ['voir'] },
+        { key: 'factures_ffg_validated', label: 'Validée (bon à payer)', actions: ['voir', 'establir_op'] },
+        { key: 'factures_ffg_payment_order', label: 'Ordre de paiement', actions: ['voir', 'establir_op', 'marquer_payee'] },
+        { key: 'factures_ffg_paid', label: 'Payé', actions: ['voir'] },
+        { key: 'factures_ffg_partially_paid', label: 'Partiellement payé', actions: ['voir'] }
       ]
     },
     {
@@ -859,6 +941,8 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
 
   const actionLabels: Record<string, string> = {
     voir: 'Voir',
+    voir_operationnel: 'Voir Opérationnel',
+    voir_frais_generaux: 'Voir Frais généraux',
     creer: 'Créer',
     modifier: 'Modifier',
     supprimer: 'Supprimer',
@@ -875,12 +959,17 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
     {
       id: 'dashboard-recherche',
       label: 'DashBoard et Recherche',
-      menus: ['dashboard', 'recherche']
+      menus: ['dashboard', 'dashboard_ffg', 'recherche']
     },
     {
       id: 'factures',
       label: 'Facture',
       menus: ['factures']
+    },
+    {
+      id: 'factures-ffg',
+      label: 'Facture FFG',
+      menus: ['factures_ffg']
     },
     {
       id: 'paramettre',

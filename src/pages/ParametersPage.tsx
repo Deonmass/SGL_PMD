@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { ChevronRight, Plus, Edit2, Trash2, AlertCircle, RefreshCw } from 'lucide-react';
+import { ChevronRight, Plus, Edit2, Trash2, AlertCircle, RefreshCw, Search } from 'lucide-react';
 import { usePermission } from '../hooks/usePermission';
 import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
@@ -43,6 +43,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   const [error, setError] = useState('');
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
   const [expandedSuppliers, setExpandedSuppliers] = useState<Set<number>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
 
   // Modals
   const [showFournisseurModal, setShowFournisseurModal] = useState(false);
@@ -53,9 +54,16 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   const [showCaisseModal, setShowCaisseModal] = useState(false);
 
   const [editingItem, setEditingItem] = useState<any>(null);
+  const [compteInitialData, setCompteInitialData] = useState<{
+    Fournisseur?: string;
+    Banque?: string;
+    devise?: string;
+    SGL?: boolean;
+  } | null>(null);
 
   // Load data
   useEffect(() => {
+    setSearchTerm('');
     if (subMenu === 'suppliers') loadSuppliers();
     else if (subMenu === 'charges') loadCharges();
     else if (subMenu === 'agents') loadAgents();
@@ -67,8 +75,12 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
   const loadSuppliers = async () => {
     setLoading(true);
     try {
-      const data = await fournisseurService.getAll();
-      setSuppliers(data || []);
+      const [suppliersData, comptesData] = await Promise.all([
+        fournisseurService.getAll(),
+        compteService.getAll(),
+      ]);
+      setSuppliers(suppliersData || []);
+      setComptes(comptesData || []);
     } catch (err) {
       setError('Erreur lors du chargement des fournisseurs');
       console.error(err);
@@ -281,6 +293,64 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
     return sortableSuppliers;
   }, [suppliers, sortConfig]);
 
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+
+  const filteredSuppliers = useMemo(() => {
+    if (!normalizedSearch) return sortedSuppliers;
+    return sortedSuppliers.filter((supplier) => {
+      return (
+        String(supplier.Fournisseur || '').toLowerCase().includes(normalizedSearch) ||
+        String(supplier['Catégorie fournisseur'] || '').toLowerCase().includes(normalizedSearch)
+      );
+    });
+  }, [sortedSuppliers, normalizedSearch]);
+
+  const filteredCharges = useMemo(() => {
+    if (!normalizedSearch) return charges;
+    return charges.filter((charge) => (
+      String(charge.designation_Charges || '').toLowerCase().includes(normalizedSearch) ||
+      String(charge.type || '').toLowerCase().includes(normalizedSearch) ||
+      String(charge.Bloquant || '').toLowerCase().includes(normalizedSearch)
+    ));
+  }, [charges, normalizedSearch]);
+
+  const filteredAgentsList = useMemo(() => {
+    if (!normalizedSearch) return agents;
+    return agents.filter((currentAgent) => (
+      String(currentAgent.Nom || '').toLowerCase().includes(normalizedSearch) ||
+      String(currentAgent.email || '').toLowerCase().includes(normalizedSearch) ||
+      String(currentAgent.Role || '').toLowerCase().includes(normalizedSearch) ||
+      String(currentAgent.REGION || '').toLowerCase().includes(normalizedSearch)
+    ));
+  }, [agents, normalizedSearch]);
+
+  const filteredCentres = useMemo(() => {
+    if (!normalizedSearch) return centres;
+    return centres.filter((centre) => (
+      String(centre.Designation || '').toLowerCase().includes(normalizedSearch) ||
+      String(centre.REGION || '').toLowerCase().includes(normalizedSearch)
+    ));
+  }, [centres, normalizedSearch]);
+
+  const filteredComptes = useMemo(() => {
+    if (!normalizedSearch) return comptes;
+    return comptes.filter((compte) => (
+      String(compte.Fournisseur || '').toLowerCase().includes(normalizedSearch) ||
+      String(compte.Banque || '').toLowerCase().includes(normalizedSearch) ||
+      String(compte.Compte || '').toLowerCase().includes(normalizedSearch) ||
+      String(compte.devise || '').toLowerCase().includes(normalizedSearch) ||
+      (compte.SGL ? 'oui' : 'non').includes(normalizedSearch)
+    ));
+  }, [comptes, normalizedSearch]);
+
+  const filteredCaisses = useMemo(() => {
+    if (!normalizedSearch) return caisses;
+    return caisses.filter((caisse) => (
+      String(caisse.Designation || '').toLowerCase().includes(normalizedSearch) ||
+      String(caisse.Region || '').toLowerCase().includes(normalizedSearch)
+    ));
+  }, [caisses, normalizedSearch]);
+
   const toggleSupplierExpansion = (supplierId: number) => {
     const newExpanded = new Set(expandedSuppliers);
     if (newExpanded.has(supplierId)) {
@@ -304,12 +374,23 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher un fournisseur..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('fournisseurs') && (
                     <button
@@ -328,7 +409,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -378,7 +458,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {sortedSuppliers.map((supplier) => (
+                    {filteredSuppliers.map((supplier) => (
                       <React.Fragment key={supplier.ID}>
                         <tr className={`hover:bg-gray-50 transition-colors duration-150 ${
                           expandedSuppliers.has(supplier.ID!) ? 'bg-gray-600' : ''
@@ -447,14 +527,29 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                           <tr>
                             <td colSpan={3} className="px-4 py-0 bg-gray-200">
                               <div className="py-4">
-                                <div className="text-xs font-semibold text-gray-700 mb-2">
-                                  Comptes associés ({getComptesByFournisseur(supplier.Fournisseur).length})
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-xs font-semibold text-gray-700">
+                                    Comptes associés ({getComptesByFournisseur(supplier.Fournisseur).length})
+                                  </div>
+                                  {canCreate('comptes') && (
+                                    <button
+                                      onClick={() => {
+                                        setEditingItem(null);
+                                        setCompteInitialData({ Fournisseur: supplier.Fournisseur });
+                                        setShowCompteModal(true);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                                    >
+                                      <Plus size={12} />
+                                      Nouveau compte
+                                    </button>
+                                  )}
                                 </div>
                                 {getComptesByFournisseur(supplier.Fournisseur).length > 0 ? (
                                   <div className="space-y-2">
                                     {getComptesByFournisseur(supplier.Fournisseur).map((compte) => (
                                       <div key={compte.id} className="bg-white border border-gray-300 rounded-lg p-3 text-xs">
-                                        <div className="grid grid-cols-4 gap-2">
+                                        <div className="grid grid-cols-5 gap-2">
                                           <div>
                                             <span className="font-medium text-gray-700">Banque:</span>
                                             <span className="ml-1 text-gray-600">{compte.Banque}</span>
@@ -476,6 +571,30 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                                             }`}>
                                               {compte.SGL ? 'Oui' : 'Non'}
                                             </span>
+                                          </div>
+                                          <div className="flex items-center justify-end gap-1">
+                                            {canEdit('comptes') && (
+                                              <button
+                                                onClick={() => {
+                                                  setEditingItem(compte);
+                                                  setCompteInitialData(null);
+                                                  setShowCompteModal(true);
+                                                }}
+                                                className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-all duration-200 transform hover:scale-110"
+                                                title="Éditer"
+                                              >
+                                                <Edit2 size={14} />
+                                              </button>
+                                            )}
+                                            {canDelete('comptes') && (
+                                              <button
+                                                onClick={() => handleDeleteCompte(compte.id!)}
+                                                className="p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-all duration-200 transform hover:scale-110"
+                                                title="Supprimer"
+                                              >
+                                                <Trash2 size={14} />
+                                              </button>
+                                            )}
                                           </div>
                                         </div>
                                       </div>
@@ -510,6 +629,19 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             loadSuppliers();
           }}
         />
+        <CompteModal
+          isOpen={showCompteModal}
+          compte={editingItem}
+          initialData={compteInitialData}
+          onClose={() => {
+            setShowCompteModal(false);
+            setEditingItem(null);
+            setCompteInitialData(null);
+          }}
+          onSave={() => {
+            loadSuppliers();
+          }}
+        />
       </>
     );
   }
@@ -523,12 +655,23 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher une charge..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('charges') && (
                     <button
@@ -547,7 +690,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -568,14 +710,16 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Nom</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Type</th>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Bloquant ?</th>
                       <th className="px-4 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {charges.map((charge) => (
+                    {filteredCharges.map((charge) => (
                       <tr key={charge.ID} className="hover:bg-gray-50 transition-colors duration-150">
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{charge.designation_Charges}</td>
+                        <td className="px-4 py-2 text-xs text-gray-600">{charge.type || '-'}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{charge.Bloquant}</td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
@@ -635,12 +779,23 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher un agent..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('utilisateurs') && (
                     <button
@@ -659,7 +814,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -686,7 +840,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {agents.map((agent) => (
+                    {filteredAgentsList.map((agent) => (
                       <tr key={agent.ID} className="hover:bg-gray-50 transition-colors duration-150">
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{agent.Nom}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">-</td>
@@ -749,12 +903,23 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher un centre de coût..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('centres') && (
                     <button
@@ -773,7 +938,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -799,7 +963,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {centres.map((centre) => (
+                    {filteredCentres.map((centre) => (
                       <tr key={centre.ID} className="hover:bg-gray-50 transition-colors duration-150">
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{centre.Designation}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{centre.REGION}</td>
@@ -861,17 +1025,29 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher un compte..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('comptes') && (
                     <button
                       onClick={() => {
                         setEditingItem(null);
+                        setCompteInitialData(null);
                         setShowCompteModal(true);
                       }}
                       className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
@@ -885,7 +1061,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -914,7 +1089,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {comptes.map((compte) => (
+                    {filteredComptes.map((compte) => (
                       <tr key={compte.id} className="hover:bg-gray-50 transition-colors duration-150">
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{compte.Fournisseur}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{compte.Banque}</td>
@@ -974,9 +1149,11 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
         <CompteModal
           isOpen={showCompteModal}
           compte={editingItem}
+          initialData={compteInitialData}
           onClose={() => {
             setShowCompteModal(false);
             setEditingItem(null);
+            setCompteInitialData(null);
           }}
           onSave={() => {
             loadComptes();
@@ -995,12 +1172,23 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
               <div className="flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
                 <div className="flex items-center gap-3">
+                  <div className="relative w-72">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Rechercher une caisse..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
                     onClick={handleRefresh}
                     className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg transition-all duration-200 transform hover:scale-105 shadow-md hover:shadow-lg"
                     title="Actualiser"
                   >
                     <RefreshCw size={16} className="transition-transform duration-200 hover:rotate-180" />
+                    <span className="text-sm font-medium">Actualiser</span>
                   </button>
                   {canCreate('caisses') && (
                     <button
@@ -1019,7 +1207,6 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
             </div>
           </div>
           <div className="flex-1 overflow-auto p-8 pt-4">
-
             {error && (
               <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
@@ -1045,7 +1232,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {caisses.map((caisse) => (
+                    {filteredCaisses.map((caisse) => (
                       <tr key={caisse.ID} className="hover:bg-gray-50 transition-colors duration-150">
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{caisse.Designation}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{caisse.Region}</td>

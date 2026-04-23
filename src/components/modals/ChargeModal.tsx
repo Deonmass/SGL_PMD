@@ -13,7 +13,7 @@ interface ChargeModalProps {
 export default function ChargeModal({ isOpen, charge, onClose, onSave }: ChargeModalProps) {
   const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState<Charge>(
-    charge || { designation_Charges: '', Bloquant: 'NON' }
+    charge || { designation_Charges: '', Bloquant: 'NON', type: 'Opérationnel' }
   );
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,9 +21,12 @@ export default function ChargeModal({ isOpen, charge, onClose, onSave }: ChargeM
   useEffect(() => {
     if (isOpen) {
       if (charge) {
-        setFormData(charge);
+        setFormData({
+          ...charge,
+          type: charge.type || 'Opérationnel',
+        });
       } else {
-        setFormData({ designation_Charges: '', Bloquant: 'NON' });
+        setFormData({ designation_Charges: '', Bloquant: 'NON', type: 'Opérationnel' });
       }
       setError('');
     }
@@ -96,6 +99,22 @@ export default function ChargeModal({ isOpen, charge, onClose, onSave }: ChargeM
               required
               disabled={loading}
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Type de charges *
+            </label>
+            <select
+              value={formData.type || 'Opérationnel'}
+              onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              required
+              disabled={loading}
+            >
+              <option value="Opérationnel">Opérationnel</option>
+              <option value="Frais généraux">Frais généraux</option>
+            </select>
           </div>
 
           <div>

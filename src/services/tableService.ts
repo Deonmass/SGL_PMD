@@ -159,6 +159,7 @@ export interface Charge {
   ID?: number;
   designation_Charges: string;
   Bloquant: string;
+  type?: string | null;
 }
 
 export const chargeService = {
@@ -178,22 +179,37 @@ export const chargeService = {
       throw new Error('Bloquant doit être OUI ou NON');
     }
     
+    const payload = {
+      designation_Charges: charge.designation_Charges,
+      Bloquant: bloquant,
+      type: charge.type || null,
+    };
+
     const { data, error } = await supabase
       .from('CHARGES')
-      .insert([{ ...charge, Bloquant: bloquant }])
+      .insert([payload])
       .select();
     if (error) throw error;
     return data[0];
   },
 
   async update(id: number, charge: Partial<Charge>) {
-    let updateData = { ...charge };
-    if (charge.Bloquant) {
+    const updateData: Partial<Charge> = {};
+
+    if (charge.designation_Charges !== undefined) {
+      updateData.designation_Charges = charge.designation_Charges;
+    }
+
+    if (charge.Bloquant !== undefined) {
       const bloquant = charge.Bloquant.toUpperCase();
       if (!['OUI', 'NON'].includes(bloquant)) {
         throw new Error('Bloquant doit être OUI ou NON');
       }
-      updateData = { ...updateData, Bloquant: bloquant };
+      updateData.Bloquant = bloquant;
+    }
+
+    if (charge.type !== undefined) {
+      updateData.type = charge.type || null;
     }
     
     const { data, error } = await supabase
@@ -212,6 +228,34 @@ export const chargeService = {
       .eq('ID', id);
     if (error) throw error;
   },
+};
+
+const normalizeInvoiceType = (value?: string | null) => {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais-generaux' || normalized === 'frais generaux') {
+    return 'frais-generaux';
+  }
+  if (normalized === 'operationnel' || normalized === 'operationel') {
+    return 'operationnel';
+  }
+  return normalized;
+};
+
+const matchesInvoiceType = (invoiceType: string | undefined, value?: string | null) => {
+  if (!invoiceType) return true;
+  return normalizeInvoiceType(value) === normalizeInvoiceType(invoiceType);
+};
+
+const getYearBounds = (year?: string) => {
+  if (!year) return null;
+  return {
+    start: `${year}-01-01`,
+    end: `${year}-12-31`,
+  };
 };
 
 // CENTRE_DE_COUT
@@ -353,15 +397,32 @@ export interface MonthlyInvoiceStats {
   totalPaye: number;
   totalReste: number;
   nombreFactures: number;
+  nombreFacturesPayees: number;
+  nombreFacturesNonPayees: number;
 }
 
 export const dashboardService = {
   // Get all dashboard statistics
-  async getDashboardStats(year?: string, region?: string | null): Promise<DashboardStats> {
+  async getDashboardStats(year?: string, region?: string | null, invoiceType?: string): Promise<DashboardStats> {
     try {
-      const { data: factures, error } = await supabase
+      let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, Montant, "Statut", "Date de réception", "Échéance", "validation DR", "validation DOP","validation DG", "Numéro de facture", "Région"');
+        .select('ID, Montant, "Statut", "Date de réception", "Échéance", "validation DR", "validation DOP","validation DG", "Numéro de facture", "Région", "Type de facture"');
+
+      const yearBounds = getYearBounds(year);
+      if (yearBounds) {
+        facturesQuery = facturesQuery
+          .gte('"Date de réception"', yearBounds.start)
+          .lte('"Date de réception"', yearBounds.end);
+      }
+      if (region) {
+        facturesQuery = facturesQuery.eq('"Région"', region);
+      }
+      if (invoiceType) {
+        facturesQuery = facturesQuery.eq('"Type de facture"', invoiceType);
+      }
+
+      const { data: factures, error } = await facturesQuery;
       
       if (error) throw error;
 
@@ -440,21 +501,6 @@ export const dashboardService = {
           const statut = facture.Statut?.toLowerCase() || '';
           const invoiceNumber = facture['Numéro de facture'];
           const isRejeted = statut.includes('rejet');
-
-          // Filter by year if provided
-          if (year) {
-            const receptionDate = new Date(facture['Date de réception']);
-            if (receptionDate.getFullYear().toString() !== year) {
-              return;
-            }
-          }
-
-          // Filter by region if provided
-          if (region) {
-            if (facture['Région'] !== region) {
-              return;
-            }
-          }
 
           processedCount++;
           
@@ -1021,27 +1067,29 @@ export const dashboardService = {
   },
 
   // Get top supplier by total invoice amount
-  async getTopSupplier(year?: string, region?: string | null): Promise<TopSupplier | null> {
+  async getTopSupplier(year?: string, region?: string | null, invoiceType?: string): Promise<TopSupplier | null> {
     try {
-      const { data: factures, error } = await supabase
+      let query = supabase
         .from('FACTURES')
-        .select('Fournisseur, Montant, "Date de réception", "Région"');
-      
-      if (error) throw error;
+        .select('Fournisseur, Montant, "Date de réception", "Région", "Type de facture"');
 
-      if (!factures || factures.length === 0) return null;
-
-      // Filter by year and region if provided
-      let filtered = factures;
-      if (year) {
-        filtered = filtered.filter((f: any) => {
-          const receptionDate = new Date(f['Date de réception']);
-          return receptionDate.getFullYear().toString() === year;
-        });
+      const yearBounds = getYearBounds(year);
+      if (yearBounds) {
+        query = query
+          .gte('"Date de réception"', yearBounds.start)
+          .lte('"Date de réception"', yearBounds.end);
       }
       if (region) {
-        filtered = filtered.filter((f: any) => f['Région'] === region);
+        query = query.eq('"Région"', region);
       }
+      if (invoiceType) {
+        query = query.eq('"Type de facture"', invoiceType);
+      }
+
+      const { data: filtered, error } = await query;
+      if (error) throw error;
+
+      if (!filtered || filtered.length === 0) return null;
 
       // Group by supplier
       const supplierMap = new Map<string, { montant: number; count: number }>();
@@ -1079,7 +1127,7 @@ export const dashboardService = {
   },
 
   // Get blocking charges with their invoices
-  async getBlockingChargesStats(year?: string, region?: string | null) {
+  async getBlockingChargesStats(year?: string, region?: string | null, invoiceType?: string) {
     try {
       // Get all blocking charges
       const { data: charges, error: chargesError } = await supabase
@@ -1094,10 +1142,24 @@ export const dashboardService = {
       }
 
       // Get all invoices
-      const { data: factures, error: facturesError } = await supabase
+      let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, "Catégorie de charge", Montant, "Date de réception", "Région", "Numéro de facture"');
+        .select('ID, "Catégorie de charge", Montant, "Date de réception", "Région", "Numéro de facture", "Type de facture"');
 
+      const yearBounds = getYearBounds(year);
+      if (yearBounds) {
+        facturesQuery = facturesQuery
+          .gte('"Date de réception"', yearBounds.start)
+          .lte('"Date de réception"', yearBounds.end);
+      }
+      if (region) {
+        facturesQuery = facturesQuery.eq('"Région"', region);
+      }
+      if (invoiceType) {
+        facturesQuery = facturesQuery.eq('"Type de facture"', invoiceType);
+      }
+
+      const { data: factures, error: facturesError } = await facturesQuery;
       if (facturesError) throw facturesError;
 
       // Get all payments
@@ -1118,25 +1180,9 @@ export const dashboardService = {
         });
       }
 
-      // Filter by year and region if provided
+      // Data already filtered at query level.
       let filtered = factures || [];
       console.log('📊 [Charges] Avant filtrage: ', filtered.length, 'factures');
-      
-      if (year) {
-        filtered = filtered.filter((f: any) => {
-          const receptionDate = new Date(f['Date de réception']);
-          return receptionDate.getFullYear().toString() === year;
-        });
-        console.log('📊 [Charges] Après filtrage année:', filtered.length, 'factures');
-      }
-      if (region) {
-        console.log('📊 [Charges] Filtre région:', `"${region}"`, ', factures avant:', filtered.length);
-        const uniqueRegions = [...new Set(filtered.map((f: any) => f['Région']).filter(Boolean))];
-        console.log('📊 [Charges] Régions disponibles:', uniqueRegions);
-        
-        filtered = filtered.filter((f: any) => f['Région'] === region);
-        console.log('📊 [Charges] Après filtrage région:', filtered.length, 'factures');
-      }
 
       // Map charges with their invoices
       const chargesStats = charges.map((charge: any) => {
@@ -1177,11 +1223,11 @@ export const dashboardService = {
   },
 
   // Get invoices by urgency level
-  async getInvoicesByUrgency(year?: string, region?: string | null) {
+  async getInvoicesByUrgency(year?: string, region?: string | null, invoiceType?: string) {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, Montant, "Niveau urgence", "Date de réception", "Région"');
+        .select('ID, Montant, "Niveau urgence", "Date de réception", "Région", "Type de facture"');
 
       if (error) throw error;
 
@@ -1205,6 +1251,9 @@ export const dashboardService = {
             if (f['Région'] !== region) {
               return;
             }
+          }
+          if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
+            return;
           }
 
           const montant = parseFloat(f.Montant) || 0;
@@ -1231,17 +1280,17 @@ export const dashboardService = {
     }
   },
 
-  async getInvoicesByAge(year?: string, region?: string | null) {
+  async getInvoicesByAge(year?: string, region?: string | null, invoiceType?: string) {
     try {
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, Montant, "Date de réception", "Numéro de facture", "Région"');
+        .select('ID, Montant, "Date de réception", "Numéro de facture", "Région", "Type de facture"');
 
       if (facturesError) throw facturesError;
 
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, datePaiement');
+        .select('NumeroFacture, datePaiement');
 
       if (paiementsError) throw paiementsError;
 
@@ -1285,6 +1334,9 @@ export const dashboardService = {
               return;
             }
           }
+          if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
+            return;
+          }
 
           const montant = parseFloat(f.Montant) || 0;
           const invoiceNumber = f['Numéro de facture'];
@@ -1323,17 +1375,17 @@ export const dashboardService = {
   },
 
   // Get invoice breakdown by supplier and age
-  async getSupplierAgeBreakdown(year?: string, region?: string | null) {
+  async getSupplierAgeBreakdown(year?: string, region?: string | null, invoiceType?: string) {
     try {
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, Montant, "Date de réception", Fournisseur, "Numéro de facture", "Région"');
+        .select('ID, Montant, "Date de réception", Fournisseur, "Numéro de facture", "Région", "Type de facture"');
 
       if (facturesError) throw facturesError;
 
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, datePaiement');
+        .select('NumeroFacture, datePaiement');
 
       if (paiementsError) throw paiementsError;
 
@@ -1370,6 +1422,9 @@ export const dashboardService = {
             if (f['Région'] !== region) {
               return;
             }
+          }
+          if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
+            return;
           }
 
           const montant = parseFloat(f.Montant) || 0;
@@ -1734,11 +1789,11 @@ export const dashboardService = {
   },
 
   // Get invoices by urgency with details
-  async getInvoicesByUrgencyDetailed(urgencyLevel: string, year?: string): Promise<Invoice[]> {
+  async getInvoicesByUrgencyDetailed(urgencyLevel: string, year?: string, invoiceType?: string): Promise<Invoice[]> {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Niveau urgence", "Facture attachée", "Échéance", "Catégorie de charge", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Niveau urgence", "Facture attachée", "Échéance", "Catégorie de charge", "Délais de paiement", "Type de facture"');
 
       if (error) throw error;
 
@@ -1750,6 +1805,9 @@ export const dashboardService = {
           if (receptionDate.getFullYear().toString() !== year) {
             return false;
           }
+        }
+        if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
+          return false;
         }
 
         const urgency = f['Niveau urgence']?.toLowerCase() || '';
@@ -1809,18 +1867,19 @@ export const dashboardService = {
     ageRange: 'zero30' | 'thirty60' | 'sixty90' | 'plus90',
     year?: string,
     supplier?: string,
-    region?: string | null
+    region?: string | null,
+    invoiceType?: string
   ): Promise<Invoice[]> {
     try {
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Catégorie de charge", "Facture attachée", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Catégorie de charge", "Facture attachée", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", "Type de facture"');
 
       if (facturesError) throw facturesError;
 
       const { data: paiements, error: paiementsError } = await supabase
         .from('PAIEMENTS')
-        .select('id, datePaiement');
+        .select('NumeroFacture, datePaiement');
 
       if (paiementsError) throw paiementsError;
 
@@ -1856,6 +1915,9 @@ export const dashboardService = {
 
         // Filter by region if provided
         if (region && f['Région'] !== region) {
+          return false;
+        }
+        if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
           return false;
         }
 
@@ -1965,10 +2027,21 @@ export const dashboardService = {
   // Get monthly invoice statistics for the year
   async getMonthlyInvoiceStats(year: string, region?: string | null): Promise<MonthlyInvoiceStats[]> {
     try {
-      const { data: factures, error: facturesError } = await supabase
+      let facturesQuery = supabase
         .from('FACTURES')
         .select('ID, Montant, "Statut", "Date de réception", "Numéro de facture", "Région"');
 
+      const yearBounds = getYearBounds(year);
+      if (yearBounds) {
+        facturesQuery = facturesQuery
+          .gte('"Date de réception"', yearBounds.start)
+          .lte('"Date de réception"', yearBounds.end);
+      }
+      if (region) {
+        facturesQuery = facturesQuery.eq('"Région"', region);
+      }
+
+      const { data: factures, error: facturesError } = await facturesQuery;
       if (facturesError) throw facturesError;
 
       const { data: paiements, error: paiementsError } = await supabase
@@ -1998,9 +2071,23 @@ export const dashboardService = {
       }
 
       // Initialize monthly data for all 12 months
-      const monthlyData = new Map<number, { totalRecu: number; totalPaye: number; totalReste: number; nombreFactures: number }>();
+      const monthlyData = new Map<number, {
+        totalRecu: number;
+        totalPaye: number;
+        totalReste: number;
+        nombreFactures: number;
+        nombreFacturesPayees: number;
+        nombreFacturesNonPayees: number;
+      }>();
       for (let i = 1; i <= 12; i++) {
-        monthlyData.set(i, { totalRecu: 0, totalPaye: 0, totalReste: 0, nombreFactures: 0 });
+        monthlyData.set(i, {
+          totalRecu: 0,
+          totalPaye: 0,
+          totalReste: 0,
+          nombreFactures: 0,
+          nombreFacturesPayees: 0,
+          nombreFacturesNonPayees: 0,
+        });
       }
 
       // Process invoices
@@ -2008,18 +2095,6 @@ export const dashboardService = {
         factures.forEach((f: any) => {
           const receptionDate = new Date(f['Date de réception']);
           
-          // Filter by year
-          if (receptionDate.getFullYear().toString() !== year) {
-            return;
-          }
-
-          // Filter by region if provided
-          if (region) {
-            if (f['Région'] !== region) {
-              return;
-            }
-          }
-
           const receptionMonth = receptionDate.getMonth() + 1;
           const montant = parseFloat(f.Montant) || 0;
           const invoiceNumber = f['Numéro de facture'];
@@ -2045,10 +2120,12 @@ export const dashboardService = {
               const paymentMonth = paymentDate.getMonth() + 1;
               const paymentMonthData = monthlyData.get(paymentMonth)!;
               paymentMonthData.totalPaye += paymentInfo.totalPaid;
+              paymentMonthData.nombreFacturesPayees += 1;
             } else if (new Date(paymentInfo.paymentDate).getFullYear() < parseInt(year)) {
               // If payment was in a previous year, count it in January
               const paymentMonthData = monthlyData.get(1)!;
               paymentMonthData.totalPaye += paymentInfo.totalPaid;
+              paymentMonthData.nombreFacturesPayees += 1;
             }
           }
         });
@@ -2060,6 +2137,7 @@ export const dashboardService = {
 
       for (let i = 1; i <= 12; i++) {
         const data = monthlyData.get(i)!;
+        data.nombreFacturesNonPayees = Math.max(0, data.nombreFactures - data.nombreFacturesPayees);
         result.push({
           month: monthNames[i - 1],
           monthNumber: i,
@@ -2067,6 +2145,8 @@ export const dashboardService = {
           totalPaye: Math.round(data.totalPaye),
           totalReste: Math.round(data.totalRecu - data.totalPaye),
           nombreFactures: data.nombreFactures,
+          nombreFacturesPayees: data.nombreFacturesPayees,
+          nombreFacturesNonPayees: data.nombreFacturesNonPayees,
         });
       }
 
@@ -2134,7 +2214,7 @@ export const dashboardService = {
   },
 
   // Get all cost centers with their invoice statistics
-  async getCostCentersWithStats(year?: string) {
+  async getCostCentersWithStats(year?: string, invoiceType?: string) {
     try {
       // Load all cost centers from CENTRE_DE_COUT table
       const { data: costCenters, error: centersError } = await supabase
@@ -2147,7 +2227,7 @@ export const dashboardService = {
       // Load all invoices
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, "Centre de coût", Montant, "Date de réception", "Numéro de facture"');
+        .select('ID, "Centre de coût", Montant, "Date de réception", "Numéro de facture", "Type de facture"');
 
       if (facturesError) throw facturesError;
 
@@ -2189,6 +2269,9 @@ export const dashboardService = {
             if (receptionDate.getFullYear().toString() !== year) {
               return;
             }
+          }
+          if (!matchesInvoiceType(invoiceType, invoice['Type de facture'])) {
+            return;
           }
 
           const costCenter = invoice['Centre de coût'] || 'Non spécifié';
@@ -2232,11 +2315,11 @@ export const dashboardService = {
   },
 
   // Get invoices for a specific cost center
-  async getInvoicesByCostCenter(costCenter: string, year?: string): Promise<Invoice[]> {
+  async getInvoicesByCostCenter(costCenter: string, year?: string, invoiceType?: string): Promise<Invoice[]> {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Catégorie de charge", "Facture attachée", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", "Centre de coût"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Catégorie de charge", "Facture attachée", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", "Centre de coût", "Type de facture"');
 
       if (error) throw error;
 
@@ -2249,6 +2332,9 @@ export const dashboardService = {
             if (receptionDate.getFullYear().toString() !== year) {
               return false;
             }
+          }
+          if (!matchesInvoiceType(invoiceType, f['Type de facture'])) {
+            return false;
           }
 
           const centre = f['Centre de coût'] || 'Non spécifié';
@@ -2286,7 +2372,7 @@ export const dashboardService = {
   },
 
   // Get cost centers filtered by region
-  async getCostCentersWithStatsByRegion(region: string | null, year?: string) {
+  async getCostCentersWithStatsByRegion(region: string | null, year?: string, invoiceType?: string) {
     try {
       // Load cost centers from CENTRE_DE_COUT table, filtered by region
       let query = supabase
@@ -2306,7 +2392,7 @@ export const dashboardService = {
       // Load all invoices
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, "Centre de coût", Montant, "Date de réception", "Région", "Numéro de facture"');
+        .select('ID, "Centre de coût", Montant, "Date de réception", "Région", "Numéro de facture", "Type de facture"');
 
       if (facturesError) throw facturesError;
 
@@ -2356,6 +2442,9 @@ export const dashboardService = {
             if (invoiceRegion !== region) {
               return;
             }
+          }
+          if (!matchesInvoiceType(invoiceType, invoice['Type de facture'])) {
+            return;
           }
 
           const costCenter = invoice['Centre de coût'] || 'Non spécifié';

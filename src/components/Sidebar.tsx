@@ -45,6 +45,11 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
       icon: LayoutDashboard,
     },
     {
+      id: 'dashboard-ffg',
+      label: 'DASHBOARD FFG',
+      icon: LayoutDashboard,
+    },
+    {
       id: 'search',
       label: 'RECHERCHE ',
       icon: Search,
@@ -63,6 +68,22 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
         { id: 'factures-payment-order', label: 'Ordre de paiement', icon: DollarSign },
         { id: 'factures-paid', label: 'Totalement Payées', icon: DollarSign },
         { id: 'factures-partially-paid', label: 'Partiellement payées', icon: DollarSign },
+      ],
+    },
+    {
+      id: 'factures-ffg',
+      label: 'FACTURES FFG',
+      icon: FileText,
+      subItems: [
+        { id: 'factures-ffg-new', label: 'Nouvelle facture', icon: Plus },
+        { id: 'factures-ffg-pending', label: 'En attente validation DR', icon: Clock },
+        { id: 'factures-ffg-pending-dop', label: 'En attente validation DOP', icon: Clock },
+        { id: 'factures-ffg-rejected', label: 'Factures Rejetées', icon: AlertCircle },
+        { id: 'factures-ffg-overdue', label: 'Factures Echues', icon: Calendar },
+        { id: 'factures-ffg-validated', label: 'Validée (bon à payer)', icon: CheckCircle },
+        { id: 'factures-ffg-payment-order', label: 'Ordre de paiement', icon: DollarSign },
+        { id: 'factures-ffg-paid', label: 'Totalement Payées', icon: DollarSign },
+        { id: 'factures-ffg-partially-paid', label: 'Partiellement payées', icon: DollarSign },
       ],
     },
     {
@@ -453,8 +474,10 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
           // Mapping des couleurs sombres et fines pour chaque menu
           const menuColorMap: { [key: string]: { bar: string; accent: string; activeBg: string } } = {
             'dashboard-factures': { bar: 'bg-blue-600', accent: 'text-blue-400', activeBg: 'bg-blue-700' },
+            'dashboard-ffg': { bar: 'bg-cyan-600', accent: 'text-cyan-400', activeBg: 'bg-cyan-700' },
             'search': { bar: 'bg-purple-600', accent: 'text-purple-400', activeBg: 'bg-purple-700' },
             'factures': { bar: 'bg-red-600', accent: 'text-red-400', activeBg: 'bg-red-700' },
+            'factures-ffg': { bar: 'bg-fuchsia-600', accent: 'text-fuchsia-400', activeBg: 'bg-fuchsia-700' },
             'parameters': { bar: 'bg-amber-600', accent: 'text-amber-400', activeBg: 'bg-amber-700' },
             'users': { bar: 'bg-emerald-600', accent: 'text-emerald-400', activeBg: 'bg-emerald-700' }
           };
@@ -464,8 +487,10 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
           // Vérifier les permissions pour chaque menu principal
           const itemPermissionMap: { [key: string]: string } = {
             'dashboard-factures': 'dashboard',
+            'dashboard-ffg': 'dashboard_ffg',
             'search': 'recherche',
             'factures': 'factures',
+            'factures-ffg': 'factures_ffg',
             'parameters': 'paramettre',
             'users': 'utilisateurs'
           };
@@ -518,6 +543,15 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                           'factures-payment-order': 'factures_payment_order',
                           'factures-paid': 'factures_paid',
                           'factures-partially-paid': 'factures_partially_paid',
+                          'factures-ffg-new': 'factures_ffg',
+                          'factures-ffg-pending': 'factures_ffg_pending_dr',
+                          'factures-ffg-pending-dop': 'factures_ffg_pending_dop',
+                          'factures-ffg-rejected': 'factures_ffg_rejected',
+                          'factures-ffg-overdue': 'factures_ffg_overdue',
+                          'factures-ffg-validated': 'factures_ffg_validated',
+                          'factures-ffg-payment-order': 'factures_ffg_payment_order',
+                          'factures-ffg-paid': 'factures_ffg_paid',
+                          'factures-ffg-partially-paid': 'factures_ffg_partially_paid',
                           'parameters-suppliers': 'fournisseurs',
                           'parameters-charges': 'charges',
                           'parameters-centres': 'centres',
@@ -528,7 +562,7 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                         const requiredSubPermission = subItemPermissionMap[subItem.id];
                         
                         // Pour les onglets de factures, utiliser canViewInvoiceTab au lieu de canView
-                        if (item.id === 'factures' && (subItem.id === 'factures-pending' || subItem.id === 'factures-pending-dop' || subItem.id === 'factures-pending-dq')) {
+                        if ((item.id === 'factures' || item.id === 'factures-ffg') && (subItem.id === 'factures-pending' || subItem.id === 'factures-pending-dop' || subItem.id === 'factures-pending-dq' || subItem.id === 'factures-ffg-pending' || subItem.id === 'factures-ffg-pending-dop')) {
                           if (!canViewInvoiceTab(subItem.id)) {
                             return null; // Masquer cet onglet si pas de permission pour la région
                           }

@@ -16,7 +16,12 @@ interface ContextMenuProps {
 
 function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onClose, position, activeMenu }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { canMarkAsPaid, canEdit, canDelete } = usePermission();
+  const { canMarkAsPaid, canEdit, canEstablishPaymentOrder } = usePermission();
+  const isFfgContext = String(activeMenu || '').includes('ffg');
+  const scope = isFfgContext ? 'frais-generaux' : 'operationnel';
+  const canEditCurrentScope = canEdit(isFfgContext ? 'factures_ffg' : 'factures');
+  const canAddToPaymentOrder = canEstablishPaymentOrder(scope);
+  const canPayCurrentScope = canMarkAsPaid(scope);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -70,7 +75,7 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onCl
           Visualiser
         </button>
 
-        {canEdit('factures') && (
+        {canEditCurrentScope && (
           <button
             onClick={() => {
               onEdit(invoice);
@@ -83,9 +88,9 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onCl
           </button>
         )}
 
-        {activeMenu === 'factures-validated' ? (
+        {activeMenu === 'factures-validated' || activeMenu === 'factures-ffg-validated' ? (
           <>
-            {canEdit('factures') && (
+            {canAddToPaymentOrder && (
               <button
                 onClick={() => {
                   if (onAddToPaymentOrder) {
@@ -100,7 +105,7 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onCl
               </button>
             )}
 
-            {canMarkAsPaid() && (
+            {canPayCurrentScope && (
               <button
                 onClick={() => {
                   onPay(invoice);

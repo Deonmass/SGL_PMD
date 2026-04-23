@@ -14,12 +14,12 @@ import { dashboardService, type DashboardStats, type TopSupplier, type Invoice, 
 import { supabase } from '../services/supabase';
 import { formatCurrency } from '../utils/formatters';
 import { useAuth } from '../contexts/AuthContext';
-import { useRealtimeDataMultiple } from '../hooks/useRealtimeData';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 
 interface DashboardProps {
   activeMenu?: string;
   menuTitle?: string;
+  invoiceTypeScope?: 'operationnel' | 'frais-generaux';
 }
 
 interface BlockingCharge {
@@ -81,7 +81,7 @@ interface Top10Supplier {
   montantNonPaye: number;
 }
 
-function Dashboard({ menuTitle }: DashboardProps) {
+function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardProps) {
   const { agent } = useAuth();
   const [activeTab, setActiveTab] = useState(1);
   const [selectedYear, setSelectedYear] = useState('2026');
@@ -131,7 +131,13 @@ function Dashboard({ menuTitle }: DashboardProps) {
     { id: 4, label: 'Balance agée' },
     { id: 5, label: 'Centre des coûts' },
     { id: 6, label: 'Catégorie Fournisseurs' }
-  ];
+  ].filter((tab) => invoiceTypeScope === 'frais-generaux' ? ![2, 3].includes(tab.id) : true);
+
+  useEffect(() => {
+    if (invoiceTypeScope === 'frais-generaux' && (activeTab === 2 || activeTab === 3)) {
+      setActiveTab(1);
+    }
+  }, [invoiceTypeScope, activeTab]);
 
   const loadCostCenterData = async (costCenterRegion?: string | null) => {
     try {
@@ -140,11 +146,11 @@ function Dashboard({ menuTitle }: DashboardProps) {
       // Sinon, charger les centres de coûts de la région spécifiée
       if (region === undefined) {
         // Afficher tous les centres de coûts (toutes régions)
-        const costCenters = await dashboardService.getCostCentersWithStats(selectedYear);
+        const costCenters = await dashboardService.getCostCentersWithStats(selectedYear, invoiceTypeScope);
         setCostCenterData(costCenters);
       } else if (region) {
         // Afficher les centres de coûts de la région spécifiée
-        const costCenters = await dashboardService.getCostCentersWithStatsByRegion(region, selectedYear);
+        const costCenters = await dashboardService.getCostCentersWithStatsByRegion(region, selectedYear, invoiceTypeScope);
         setCostCenterData(costCenters);
       } else {
         // Pas de région (edge case)
@@ -159,7 +165,8 @@ function Dashboard({ menuTitle }: DashboardProps) {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, Montant, "Catégorie fournisseur", "Fournisseur", "Date de réception", "Numéro de facture", "Région"');
+        .select('ID, Montant, "Catégorie fournisseur", "Fournisseur", "Date de réception", "Numéro de facture", "Région"')
+        .eq('Type de facture', invoiceTypeScope);
       
       if (error) throw error;
 
@@ -238,7 +245,8 @@ function Dashboard({ menuTitle }: DashboardProps) {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('Fournisseur, Montant, "Date de réception", "Numéro de facture", "Région", "Catégorie fournisseur"');
+        .select('Fournisseur, Montant, "Date de réception", "Numéro de facture", "Région", "Catégorie fournisseur"')
+        .eq('Type de facture', invoiceTypeScope);
       
       if (error) throw error;
 
@@ -316,7 +324,8 @@ function Dashboard({ menuTitle }: DashboardProps) {
       const { data: factures, error } = await supabase
         .from('FACTURES')
         .select('ID, "Numéro de facture", Montant, "Date de réception", Statut, "validation DR", "validation DOP", "validation DG"')
-        .eq('Fournisseur', supplierName);
+        .eq('Fournisseur', supplierName)
+        .eq('Type de facture', invoiceTypeScope);
       
       if (error) throw error;
 
@@ -365,17 +374,20 @@ function Dashboard({ menuTitle }: DashboardProps) {
     }
   }, [selectedSupplierForModal]);
 
-  const loadDashboardData = async () => {
+  const loadDashboardData = async (withLoader = false) => {
     console.log('?? [Dashboard] loadDashboardData called with: year=', selectedYear, ', region=', selectedRegionBulletin, ', month=', selectedMonth);
-    setLoading(true);
+    const shouldShowLoader = withLoader || (isInitialLoad && !stats);
+    if (shouldShowLoader) {
+      setLoading(true);
+    }
     setError(null);
     
     try {
       // Phase 1: Charger les données critiques d'abord (cartes principales)
       const [dashStats, supplier, charges] = await Promise.all([
-        dashboardService.getDashboardStats(selectedYear, selectedRegionBulletin),
-        dashboardService.getTopSupplier(selectedYear, selectedRegionBulletin),
-        dashboardService.getBlockingChargesStats(selectedYear, selectedRegionBulletin)
+        dashboardService.getDashboardStats(selectedYear, selectedRegionBulletin, invoiceTypeScope),
+        dashboardService.getTopSupplier(selectedYear, selectedRegionBulletin, invoiceTypeScope),
+        dashboardService.getBlockingChargesStats(selectedYear, selectedRegionBulletin, invoiceTypeScope)
       ]);
       
       // Mettre à jour les données critiques immédiatement
@@ -384,12 +396,18 @@ function Dashboard({ menuTitle }: DashboardProps) {
       setBlockingCharges(charges);
       
       console.log('?? [Dashboard] Critical data loaded. dashStats.totalMontant=', dashStats.totalMontant, ', chargesCount=', charges.length, ', topSupplier=', supplier?.fournisseur);
+
+      // Débloquer rapidement l'affichage après les données critiques
+      if (shouldShowLoader) {
+        setLoading(false);
+        setIsInitialLoad(false);
+      }
       
       // Phase 2: Charger les données secondaires en parallèle
       const [urgency, age, supplierAge, bulletin, monthly, availableRegions] = await Promise.all([
-        dashboardService.getInvoicesByUrgency(selectedYear, selectedRegionBulletin),
-        dashboardService.getInvoicesByAge(selectedYear, selectedRegionBulletin),
-        dashboardService.getSupplierAgeBreakdown(selectedYear, selectedRegionBulletin),
+        dashboardService.getInvoicesByUrgency(selectedYear, selectedRegionBulletin, invoiceTypeScope),
+        dashboardService.getInvoicesByAge(selectedYear, selectedRegionBulletin, invoiceTypeScope),
+        dashboardService.getSupplierAgeBreakdown(selectedYear, selectedRegionBulletin, invoiceTypeScope),
         dashboardService.getBulletinStats(selectedYear, selectedRegionBulletin),
         dashboardService.getMonthlyInvoiceStats(selectedYear, selectedRegionBulletin),
         dashboardService.getRegions()
@@ -402,24 +420,37 @@ function Dashboard({ menuTitle }: DashboardProps) {
       setMonthlyData(monthly);
       setRegions(availableRegions);
       
-      // Phase 3: Charger les données des centres de coûts (non critique)
-      await loadCostCenterData();
+      // Phase 3: Charger les données des centres de coûts (non critique, non bloquant)
+      void loadCostCenterData();
       
     } catch (err) {
       console.error('Erreur lors du chargement des données du dashboard:', err);
       setError('Erreur lors du chargement des données');
     } finally {
-      setLoading(false);
+      if (shouldShowLoader) {
+        setLoading(false);
+      }
       setIsInitialLoad(false);
     }
   };
 
   const calculateBulletinStats = async () => {
     try {
-      // Charger toutes les factures du bulletin de liquidation
-      const { data: factures, error } = await supabase
+      let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Numéro de facture", "Région", "Catégorie de charge"');
+        .select('ID, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Numéro de facture", "Région", "Catégorie de charge", "Type de facture"')
+        .eq('Type de facture', invoiceTypeScope);
+
+      if (selectedYear) {
+        facturesQuery = facturesQuery
+          .gte('"Date de réception"', `${selectedYear}-01-01`)
+          .lte('"Date de réception"', `${selectedYear}-12-31`);
+      }
+      if (selectedRegionBulletin) {
+        facturesQuery = facturesQuery.eq('"Région"', selectedRegionBulletin);
+      }
+
+      const { data: factures, error } = await facturesQuery;
       
       if (error) throw error;
 
@@ -462,19 +493,6 @@ function Dashboard({ menuTitle }: DashboardProps) {
       (factures || []).forEach((facture: any) => {
         // Filtrer par catégorie de charge - UNIQUEMENT Bulletin de liquidation
         if (facture['Catégorie de charge'] !== 'Bulletin de liquidation') {
-          return;
-        }
-
-        // Filtrer par année
-        if (selectedYear) {
-          const receptionDate = new Date(facture['Date de réception']);
-          if (receptionDate.getFullYear().toString() !== selectedYear) {
-            return;
-          }
-        }
-
-        // Filtrer par région si sélectionnée
-        if (selectedRegionBulletin && facture['Région'] !== selectedRegionBulletin) {
           return;
         }
 
@@ -591,7 +609,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     loadDashboardData();
-  }, [selectedYear, selectedMonth, selectedRegionBulletin]);
+  }, [selectedYear, selectedMonth, selectedRegionBulletin, invoiceTypeScope]);
 
   // Synchroniser selectedRegionBulletin avec la région de l'agent connecté
   useEffect(() => {
@@ -638,59 +656,15 @@ function Dashboard({ menuTitle }: DashboardProps) {
     }
   }, [selectedYear, selectedMonth, selectedRegionBulletin]);
 
-  // Initial load on component mount
+  // Initialisation des stats bulletin au montage.
+  // Les autres données dashboard sont déjà chargées par l'effet dépendant des filtres.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    loadDashboardData();
     calculateBulletinStats();
   }, []);
 
-  // Écouter les changements en temps réel dans les tables pertinentes
-  useRealtimeDataMultiple([
-    {
-      name: 'FACTURES',
-      options: {
-        onInsert: () => {
-          console.log('✓ Nouvelle facture détectée - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-        onUpdate: () => {
-          console.log('✓ Facture modifiée - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-        onDelete: () => {
-          console.log('✓ Facture supprimée - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-      },
-    },
-    {
-      name: 'PAIEMENTS',
-      options: {
-        onInsert: () => {
-          console.log('✓ Nouveau paiement détecté - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-        onUpdate: () => {
-          console.log('✓ Paiement modifié - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-        onDelete: () => {
-          console.log('✓ Paiement supprimé - rafraîchissement');
-          loadDashboardData();
-          calculateBulletinStats();
-        },
-      },
-    },
-  ]);
-
   // Écouter les événements de rafraîchissement manuel
-  useDataRefresh(REFRESH_EVENTS.DASHBOARD_STATS, () => {
+  useDataRefresh(REFRESH_EVENTS.ALL, () => {
     console.log('🔄 Rafraîchissement manuel des stats du dashboard');
     loadDashboardData();
     calculateBulletinStats();
@@ -727,7 +701,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
 
   const openModalByUrgency = async (urgencyLevel: 'urgentes' | 'prioritaires' | 'normales', title: string) => {
     try {
-      const invoices = await dashboardService.getInvoicesByUrgencyDetailed(urgencyLevel, selectedYear);
+      const invoices = await dashboardService.getInvoicesByUrgencyDetailed(urgencyLevel, selectedYear, invoiceTypeScope);
       
       // Filter by region if selected
       let filtered = invoices;
@@ -784,7 +758,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
   const openModalByCostCenter = async (costCenter: string, title: string) => {
     try {
       // Récupérer les factures pour le centre de coûts spécifique
-      const invoices = await dashboardService.getInvoicesByCostCenter(costCenter, selectedYear);
+      const invoices = await dashboardService.getInvoicesByCostCenter(costCenter, selectedYear, invoiceTypeScope);
       
       // Filtrer par région si sélectionnée
       let filtered = invoices;
@@ -956,7 +930,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
     supplier?: string
   ) => {
     try {
-      const invoices = await dashboardService.getInvoicesByAgeRange(ageRange, selectedYear, supplier, selectedRegionBulletin);
+      const invoices = await dashboardService.getInvoicesByAgeRange(ageRange, selectedYear, supplier, selectedRegionBulletin, invoiceTypeScope);
       
       setModal({
         isOpen: true,
@@ -1106,7 +1080,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
   const renderTabContent = () => {
     switch (activeTab) {
       case 1: // Global
-        if (loading) {
+        if (loading && isInitialLoad) {
           return (
             <div className="space-y-8">
               <div className="space-y-6 pt-6">
@@ -2009,6 +1983,7 @@ function Dashboard({ menuTitle }: DashboardProps) {
         onClose={closeModal}
         title={getModalTitle()}
         invoices={modal.invoices}
+        invoiceTypeScope={invoiceTypeScope}
         summary={modal.summary}
       />
 

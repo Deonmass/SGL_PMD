@@ -126,9 +126,15 @@ export function usePermission() {
     if (tabId === 'factures-pending') {
       return hasPermission('factures_pending_dr', 'voir') || isValidatorDR(agent?.REGION || '');
     }
+    if (tabId === 'factures-ffg-pending') {
+      return hasPermission('factures_ffg_pending_dr', 'voir') || isValidatorDR(agent?.REGION || '');
+    }
     // Si c'est un onglet DOP, vérifier soit la permission "voir" soit dop_tout
     if (tabId === 'factures-pending-dop') {
       return hasPermission('factures_pending_dop', 'voir') || isValidatorDOP();
+    }
+    if (tabId === 'factures-ffg-pending-dop') {
+      return hasPermission('factures_ffg_pending_dop', 'voir') || isValidatorDOP();
     }
     // Les autres onglets sont visibles si l'utilisateur a accès aux factures
     return hasPermission('factures', 'voir');
@@ -140,8 +146,19 @@ export function usePermission() {
   };
 
   // Vérifier si l'utilisateur peut marquer une facture comme payée
-  const canMarkAsPaid = (): boolean => {
-    return hasPermission('factures_payment_order', 'marquer_payee');
+  const canMarkAsPaid = (scope: 'operationnel' | 'frais-generaux' = 'operationnel'): boolean => {
+    const paymentOrderMenu = scope === 'frais-generaux' ? 'factures_ffg_payment_order' : 'factures_payment_order';
+    const invoiceMenu = scope === 'frais-generaux' ? 'factures_ffg' : 'factures';
+    return hasPermission(paymentOrderMenu, 'marquer_payee') || hasPermission(invoiceMenu, 'marquer_payee');
+  };
+
+  const canEstablishPaymentOrder = (scope: 'operationnel' | 'frais-generaux' = 'operationnel'): boolean => {
+    const validatedMenu = scope === 'frais-generaux' ? 'factures_ffg_validated' : 'factures_validated';
+    const paymentOrderMenu = scope === 'frais-generaux' ? 'factures_ffg_payment_order' : 'factures_payment_order';
+    const invoiceMenu = scope === 'frais-generaux' ? 'factures_ffg' : 'factures';
+    return hasPermission(validatedMenu, 'establir_op') ||
+      hasPermission(paymentOrderMenu, 'establir_op') ||
+      hasPermission(invoiceMenu, 'establir_op');
   };
 
   return {
@@ -158,6 +175,7 @@ export function usePermission() {
     canViewDR,
     canViewDOP,
     canMarkAsPaid,
+    canEstablishPaymentOrder,
     canViewInvoiceTab,
     getAllPermissions
   };

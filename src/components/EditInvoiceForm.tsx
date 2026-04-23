@@ -37,6 +37,10 @@ interface Charge {
   Bloquant: string;
 }
 
+function normalizeInvoiceNumber(value?: string | null) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) {
   const { success, error: showError } = useToast();
   const [formData, setFormData] = useState({
@@ -386,6 +390,37 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
     setFormData(prev => ({ ...prev, isSubmitting: true }));
     
     try {
+      const rawInvoiceNumber = formData.invoiceNumber || '';
+      const cleanedInvoiceNumber = rawInvoiceNumber.trim();
+      if (!cleanedInvoiceNumber) {
+        showError('Le numéro de facture est obligatoire.');
+        return;
+      }
+
+      // Vérifier les doublons en excluant la facture en cours d'édition.
+      const { data: existingInvoices, error: duplicateCheckError } = await supabase
+        .from('FACTURES')
+        .select('ID, "Numéro de facture"')
+        .ilike('"Numéro de facture"', cleanedInvoiceNumber);
+
+      if (duplicateCheckError) {
+        console.error('Erreur vérification doublon facture (édition):', duplicateCheckError);
+        showError('Impossible de vérifier les doublons pour le numéro de facture.');
+        return;
+      }
+
+      const duplicateFound = (existingInvoices || []).some((existingInvoice: Record<string, unknown>) => {
+        const existingId = Number(existingInvoice.ID);
+        const existingNumber = String(existingInvoice['Numéro de facture'] ?? '');
+        return existingId !== Number(invoice.id) &&
+          normalizeInvoiceNumber(existingNumber) === normalizeInvoiceNumber(cleanedInvoiceNumber);
+      });
+
+      if (duplicateFound) {
+        showError(`Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`);
+        return;
+      }
+
       // Calculer le nouveau statut si la facture est rejetée
       let newStatus = currentStatus;
       
@@ -408,7 +443,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
       const invoiceData = {
         "Date emission": formData.emissionDate,
         "Date de réception": formData.receptionDate,
-        "Numéro de facture": formData.invoiceNumber,
+        "Numéro de facture": cleanedInvoiceNumber,
         "Fournisseur": formData.supplier,
         "Catégorie fournisseur": formData.supplierCategory,
         "Région": formData.region,
@@ -442,6 +477,10 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
 
       if (error) {
         console.error('Erreur mise à jour facture:', error);
+        if (error.code === '23505') {
+          showError(`Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`);
+          return;
+        }
         showError('Erreur lors de la mise à jour de la facture: ' + error.message);
         return;
       }
