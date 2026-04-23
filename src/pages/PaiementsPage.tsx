@@ -6,6 +6,7 @@ import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/AccessDenied';
 import PaymentsTable from '../components/PaymentsTable';
 import { Invoice, InvoiceStatus } from '../types';
+import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 
 const REGIONS = ['OUEST', 'EST', 'SUD', 'NORD'];
 
@@ -66,6 +67,10 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPagePro
   useEffect(() => {
     loadPayments();
   }, [selectedRegion, selectedYear, activeMenu]);
+
+  useDataRefresh(REFRESH_EVENTS.ALL, () => {
+    loadPayments();
+  });
 
   const loadPayments = async () => {
     setLoading(true);

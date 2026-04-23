@@ -5,6 +5,7 @@ import { cloudStorageService } from '../services/cloudStorage';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
+import { refreshAllData } from '../hooks/useDataRefresh';
 
 interface InvoiceFormProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -430,6 +431,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
 
       console.log('Facture enregistrée avec succès:', data);
       success('Facture enregistrée avec succès !');
+      refreshAllData();
       
       // Appeler la fonction onSubmit avec les données complètes
       onSubmit({ ...formData, convertedAmount, id: data.ID });

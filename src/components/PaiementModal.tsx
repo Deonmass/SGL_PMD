@@ -1,11 +1,13 @@
-import { X, FileText, Loader2, Eye } from 'lucide-react';
+import { X, FileText, Loader2, Maximize2 } from 'lucide-react';
 import { Invoice } from '../types';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../services/supabase';
 import { ordoPaiementService, caisseService, Caisse } from '../services/tableService';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import { refreshAllData } from '../hooks/useDataRefresh';
+import CompteModal from './modals/CompteModal';
+import Swal from 'sweetalert2';
 
 interface PaymentData {
   datePaiement: string;
@@ -15,7 +17,7 @@ interface PaymentData {
   referencePaiement: string;
   devise: 'USD' | 'CDF' | 'EUR';
   montantAutoriseé: number;
-  montantPaye: number;
+  montantPaye: number | null;
   compteSGL: string;
   compteFournisseur: string;
   BanqueFournisseur: string;
@@ -30,6 +32,13 @@ interface PaiementModalProps {
   showOnlyNew?: boolean;
   readOnly?: boolean;
   ordoPaiementId?: number;
+}
+
+interface CompteInitialData {
+  Fournisseur: string;
+  Banque: string;
+  devise: string;
+  SGL: boolean;
 }
 
 const banques = ['Access Bank RDC', 'Afriland First Bank CD SA', 'BGFibank', 'CADECO', 'Ecobank', 'EQUITY BCDC', 'FirstBank DRC SA', 'RAWBANK', 'Solidaire Banque SA', 'Sofibanque SA', 'Standard Bank Congo', 'TMB'];
@@ -50,7 +59,21 @@ const getReferenceLabel = (mode: string): string => {
 };
 
 // Composant pour charger et afficher les comptes SGL
-function CompteSGLSelect({ value, onChange, banque, disabled }: { value: string; onChange: (compte: string) => void; banque: string; disabled: boolean }) {
+function CompteSGLSelect({
+  value,
+  onChange,
+  banque,
+  disabled,
+  refreshTrigger = 0,
+  onAddAccount
+}: {
+  value: string;
+  onChange: (compte: string) => void;
+  banque: string;
+  disabled: boolean;
+  refreshTrigger?: number;
+  onAddAccount?: () => void;
+}) {
   const [comptes, setComptes] = useState<Array<{ Compte: string; devise?: string }>>([]);
   
   const loadComptesSGL = useCallback(async () => {
@@ -75,8 +98,10 @@ function CompteSGLSelect({ value, onChange, banque, disabled }: { value: string;
   useEffect(() => {
     if (banque) {
       loadComptesSGL();
+    } else {
+      setComptes([]);
     }
-  }, [banque, loadComptesSGL]);
+  }, [banque, loadComptesSGL, refreshTrigger]);
 
   return (
     <div>
@@ -96,12 +121,37 @@ function CompteSGLSelect({ value, onChange, banque, disabled }: { value: string;
           </option>
         ))}
       </select>
+      {!disabled && banque && comptes.length === 0 && (
+        <button
+          type="button"
+          onClick={onAddAccount}
+          className="mt-2 text-xs text-blue-600 hover:text-blue-800 underline"
+        >
+          Ajouter un compte
+        </button>
+      )}
     </div>
   );
 }
 
 // Composant pour charger et afficher les comptes du fournisseur
-function CompteFournisseurSelect({ value, onChange, banque, fournisseur, disabled }: { value: string; onChange: (compte: string) => void; banque: string; fournisseur: string; disabled: boolean }) {
+function CompteFournisseurSelect({
+  value,
+  onChange,
+  banque,
+  fournisseur,
+  disabled,
+  refreshTrigger = 0,
+  onAddAccount
+}: {
+  value: string;
+  onChange: (compte: string) => void;
+  banque: string;
+  fournisseur: string;
+  disabled: boolean;
+  refreshTrigger?: number;
+  onAddAccount?: () => void;
+}) {
   const [comptes, setComptes] = useState<Array<{ Compte: string; devise?: string }>>([]);
   
   const loadComptesF = useCallback(async () => {
@@ -125,8 +175,10 @@ function CompteFournisseurSelect({ value, onChange, banque, fournisseur, disable
   useEffect(() => {
     if (banque && fournisseur) {
       loadComptesF();
+    } else {
+      setComptes([]);
     }
-  }, [banque, fournisseur, loadComptesF]);
+  }, [banque, fournisseur, loadComptesF, refreshTrigger]);
 
   return (
     <div>
@@ -146,6 +198,15 @@ function CompteFournisseurSelect({ value, onChange, banque, fournisseur, disable
           </option>
         ))}
       </select>
+      {!disabled && banque && fournisseur && comptes.length === 0 && (
+        <button
+          type="button"
+          onClick={onAddAccount}
+          className="mt-2 text-xs text-blue-600 hover:text-blue-800 underline"
+        >
+          Ajouter un compte
+        </button>
+      )}
     </div>
   );
 }
@@ -155,12 +216,35 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
   const { success, error: showError } = useToast();
   const { agent } = useAuth();
   const [activeTab, setActiveTab] = useState(1);
+  const [activeLeftTab, setActiveLeftTab] = useState<'visualization' | 'details'>('visualization');
   const [payments, setPayments] = useState<PaymentData[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [totalPaid, setTotalPaid] = useState(0);
   const [savedTabs, setSavedTabs] = useState<number[]>([]);
   const [caisses, setCaisses] = useState<Caisse[]>([]);
   const [invoiceDetails, setInvoiceDetails] = useState<any>(null);
+  const [showCompteModal, setShowCompteModal] = useState(false);
+  const [compteRefreshTrigger, setCompteRefreshTrigger] = useState(0);
+  const [compteInitialData, setCompteInitialData] = useState<CompteInitialData | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  const showAlertError = useCallback((message: string) => {
+    Swal.fire({
+      icon: 'error',
+      title: 'Erreur',
+      text: message,
+      confirmButtonColor: '#2563eb'
+    });
+  }, []);
+
+  const showAlertSuccess = useCallback((message: string) => {
+    Swal.fire({
+      icon: 'success',
+      title: 'Succès',
+      text: message,
+      confirmButtonColor: '#2563eb'
+    });
+  }, []);
 
   // Wrapper pour onClose qui rafraîchit les données
   const handleClose = useCallback(() => {
@@ -242,7 +326,9 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             entite: '', // Not stored in DB, form-only field
             referencePaiement: payment.referencePaiement || '',
             devise: payment.devise || invoice.currency as 'USD' | 'CDF' | 'EUR',
-            montantAutoriseé: Math.round(Math.max(0, montantFactureForPayment) * 100) / 100,
+            montantAutoriseé: payment.montantAutorise !== undefined && payment.montantAutorise !== null
+              ? Math.round((Number(payment.montantAutorise) || 0) * 100) / 100
+              : Math.round(Math.max(0, montantFactureForPayment) * 100) / 100,
             montantPaye: payment.montantPaye || 0,
             compteSGL: payment.compteSGL || '',
             compteFournisseur: payment.compteFournisseur || '',
@@ -373,6 +459,13 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
     return readOnly || savedTabs.includes(tabIndex);
   };
 
+  const handleFullscreen = () => {
+    if (!iframeRef.current) return;
+    if (iframeRef.current.requestFullscreen) {
+      iframeRef.current.requestFullscreen();
+    }
+  };
+
   const handleSubmit = async () => {
     // Validation de l'onglet actuel
     const currentPayment = payments[activeTab - 1];
@@ -386,18 +479,18 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
     // Validations communes
     if (!currentPayment?.datePaiement) {
-      showError('Veuillez remplir la date de paiement');
+      showAlertError('Veuillez remplir la date de paiement');
       return;
     }
 
     // Montant payé doit être >= 0
     if (currentPayment?.montantPaye === undefined || currentPayment?.montantPaye === null) {
-      showError('Veuillez entrer un montant payé');
+      showAlertError('Veuillez entrer un montant payé');
       return;
     }
 
     if (!currentPayment?.modePaiement) {
-      showError('Veuillez sélectionner un mode de paiement');
+      showAlertError('Veuillez sélectionner un mode de paiement');
       return;
     }
 
@@ -405,30 +498,30 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
     if (currentPayment.modePaiement === 'caisse') {
       // Pour caisse, entité et référence sont obligatoires
       if (!currentPayment?.entite) {
-        showError('Veuillez sélectionner une entité (bureau)');
+        showAlertError('Veuillez sélectionner une entité (caisse)');
         return;
       }
       if (!currentPayment?.referencePaiement) {
-        showError('La référence est obligatoire pour un paiement en caisse');
+        showAlertError('La référence est obligatoire pour un paiement en caisse');
         return;
       }
     } else if (['banque', 'cheque', 'op'].includes(currentPayment.modePaiement)) {
       // Pour banque/chèque/OP: vérifier les champs visibles seulement
       // Les champs cachés ne doivent PAS bloquer l'enregistrement
       if (!currentPayment?.BanqueSGL) {
-        showError('Veuillez sélectionner la banque SGL');
+        showAlertError('Veuillez sélectionner la banque SGL');
         return;
       }
       if (!currentPayment?.compteSGL) {
-        showError('Veuillez sélectionner le compte SGL');
+        showAlertError('Veuillez sélectionner le compte SGL');
         return;
       }
       if (!currentPayment?.BanqueFournisseur) {
-        showError('Veuillez sélectionner la banque fournisseur');
+        showAlertError('Veuillez sélectionner la banque fournisseur');
         return;
       }
       if (!currentPayment?.compteFournisseur) {
-        showError('Veuillez sélectionner le compte fournisseur');
+        showAlertError('Veuillez sélectionner le compte fournisseur');
         return;
       }
       if (!currentPayment?.referencePaiement) {
@@ -437,7 +530,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           : currentPayment.modePaiement === 'cheque'
           ? 'la référence du Chèque'
           : 'la référence de la transaction';
-        showError(`Veuillez saisir ${refLabel}`);
+        showAlertError(`Veuillez saisir ${refLabel}`);
         return;
       }
     }
@@ -466,7 +559,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           modePaiement: currentPayment.modePaiement,
           typePaiement: currentPayment.typePaiement,
           montantFacture: montantFacture,
-          montantAutorise: montantFacture,
+          montantAutorise: Math.round((currentPayment.montantAutoriseé || 0) * 100) / 100,
           montantPaye: Math.round((currentPayment.montantPaye || 0) * 100) / 100,
           resteAPayer: resteAPayer,
           devise: currentPayment.devise,
@@ -481,13 +574,14 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
       if (error) {
         console.error('Erreur Supabase:', error);
-        showError('Erreur lors de l\'enregistrement: ' + error.message);
+        showAlertError('Erreur lors de l\'enregistrement: ' + error.message);
         setIsSubmitting(false);
         return;
       }
 
       console.log('Paiement enregistré avec succès!');
       success('Paiement enregistré avec succès!');
+      showAlertSuccess('Paiement enregistré avec succès!');
       
       // Mettre à jour le statut de paiement dans l'ordre de paiement si applicable
       if (ordoPaiementId) {
@@ -538,7 +632,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       }
     } catch (error) {
       console.error('Erreur lors de l\'enregistrement du paiement:', error);
-      showError('Erreur lors de l\'enregistrement du paiement: ' + (error instanceof Error ? error.message : 'Erreur inconnue'));
+      showAlertError('Erreur lors de l\'enregistrement du paiement: ' + (error instanceof Error ? error.message : 'Erreur inconnue'));
     } finally {
       setIsSubmitting(false);
     }
@@ -546,7 +640,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-lg shadow-xl w-[98vw] max-w-[1700px] h-[95vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4 flex-shrink-0">
           <div className="flex items-center gap-3 flex-1">
@@ -580,60 +674,196 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         {/* Content - 2 colonnes */}
         <div className="flex-1 overflow-hidden p-6 flex gap-6">
           {/* Colonne gauche - 30% : Informations de la facture */}
-          <div className="flex-1 lg:flex-[0.3] overflow-y-auto max-h-[calc(90vh-8rem)] bg-gray-50 rounded-lg p-4">
-            <h3 className="text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
-              <FileText size={16} className="text-blue-600" />
-              Détails de la facture
-            </h3>
-            
-            {invoiceDetails ? (
+          <div className="flex-1 lg:flex-[0.3] overflow-hidden max-h-[calc(90vh-8rem)] bg-gray-50 rounded-lg flex flex-col">
+            <div className="flex bg-gray-200">
+              <button
+                onClick={() => setActiveLeftTab('visualization')}
+                className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                  activeLeftTab === 'visualization' ? 'text-black bg-white' : 'text-gray-600 bg-gray-200'
+                }`}
+              >
+                Visualisation de la facture
+              </button>
+              <button
+                onClick={() => setActiveLeftTab('details')}
+                className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                  activeLeftTab === 'details' ? 'text-black bg-white' : 'text-gray-600 bg-gray-200'
+                }`}
+              >
+                Détails de la facture
+              </button>
+            </div>
+
+            <div className="p-4 flex-1 overflow-y-auto">
+            {activeLeftTab === 'visualization' ? (
+              (invoiceDetails?.['Facture attachée'] || invoice.attachedInvoiceUrl) ? (
+                <div className="border border-gray-300 rounded-lg overflow-hidden bg-white relative group h-full min-h-[300px]">
+                  <iframe
+                    ref={iframeRef}
+                    src={invoiceDetails?.['Facture attachée'] || invoice.attachedInvoiceUrl}
+                    title="Invoice PDF"
+                    className="w-full h-full border-0"
+                    allowFullScreen
+                  />
+                  <button
+                    onClick={handleFullscreen}
+                    className="absolute top-3 right-3 bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100"
+                    title="Plein écran"
+                  >
+                    <Maximize2 size={16} className="text-gray-700" />
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center py-6 text-gray-500 text-xs">
+                  Aucune facture attachée à visualiser.
+                </div>
+              )
+            ) : invoiceDetails ? (
               <table className="w-full text-xs">
                 <tbody className="divide-y divide-gray-200">
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Informations generales
+                    </td>
+                  </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium w-1/2">N° Facture:</td>
+                    <td className="py-2 text-gray-600 font-medium w-1/2">Numero de facture:</td>
                     <td className="py-2 font-semibold text-gray-900 w-1/2">{invoiceDetails['Numéro de facture'] || invoice.invoiceNumber}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Date d'emission:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Date emission'] || '-'}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Date de reception:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Date de réception'] || invoice.receptionDate}</td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Fournisseur
+                    </td>
                   </tr>
                   <tr>
                     <td className="py-2 text-gray-600 font-medium">Fournisseur:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Fournisseur'] || invoice.supplier}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Date réception:</td>
-                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Date de réception'] || invoice.receptionDate}</td>
+                    <td className="py-2 text-gray-600 font-medium">Categorie fournisseur:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Catégorie fournisseur'] || '-'}</td>
                   </tr>
-                  <tr>
-                    <td className="py-2 text-gray-600 font-medium">Montant:</td>
-                    <td className="py-2 font-bold text-gray-900">
-                      ${(invoiceDetails['Montant'] || invoice.amount || 0).toFixed(2)} {invoiceDetails['Devise'] || invoice.currency}
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Localisation et responsables
                     </td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Région:</td>
+                    <td className="py-2 text-gray-600 font-medium">Region:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Région'] || invoice.region || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Centre de coût:</td>
+                    <td className="py-2 text-gray-600 font-medium">Centre de cout:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Centre de coût'] || invoice.costCenter || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Catégorie charge:</td>
+                    <td className="py-2 text-gray-600 font-medium">Gestionnaire:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Gestionnaire'] || '-'}</td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Details de la facture
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Type de facture:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Type de facture'] || '-'}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Categorie de charge:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Catégorie de charge'] || invoice.chargeCategory || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">N° dossier:</td>
+                    <td className="py-2 text-gray-600 font-medium">Numero de dossier:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Numéro de dossier'] || invoice.fileNumber || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Urgence:</td>
+                    <td className="py-2 text-gray-600 font-medium">Motif / Description:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Motif / Description'] || '-'}</td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Montants et devise
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Devise:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Devise'] || invoice.currency || 'USD'}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Taux facture:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Taux facture'] || '-'}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Montant:</td>
+                    <td className="py-2 font-bold text-green-700">
+                      ${(invoiceDetails['Montant'] || invoice.amount || 0).toFixed(2)} {invoiceDetails['Devise'] || invoice.currency}
+                    </td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Delais et urgence
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Priorite de paiement:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Niveau urgence'] || invoice.urgencyLevel || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Échéance:</td>
+                    <td className="py-2 text-gray-600 font-medium">Date d'echeance:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Échéance'] || invoice.dueDate || '-'}</td>
                   </tr>
                   <tr>
-                    <td className="py-2 text-gray-600 font-medium">Mode paiement:</td>
-                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Mode de paiement'] || invoice.paymentMode || '-'}</td>
+                    <td className="py-2 text-gray-600 font-medium">Mode de paiement:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Mode de paiement requis'] || invoiceDetails['Mode de paiement'] || invoice.paymentMode || '-'}</td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Fichiers et statut
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Facture attachee:</td>
+                    <td className="py-2 font-semibold text-gray-900">
+                      {(invoiceDetails['Facture attachée'] || invoice.attachedInvoiceUrl) ? 'Disponible' : '-'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Statut actuel:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Statut'] || '-'}</td>
+                  </tr>
+
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Notes
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Commentaires:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['Commentaires'] || '-'}</td>
+                  </tr>
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-2 px-2 text-xs font-bold text-gray-700 bg-gray-200">
+                      Createur
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Cree par:</td>
+                    <td className="py-2 font-semibold text-gray-900">{invoiceDetails['created_by'] || '-'}</td>
                   </tr>
                 </tbody>
               </table>
@@ -644,6 +874,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             <div className="mt-4 p-3 bg-blue-50 rounded-lg border-l-4 border-blue-600">
               <p className="text-xs text-blue-700 font-semibold">Reste à payer</p>
               <p className="text-lg font-bold text-blue-900">${getRemainingTotal().toFixed(2)}</p>
+            </div>
             </div>
           </div>
 
@@ -692,9 +923,14 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                   {/* Montant autorisé (= Montant facture) */}
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">Montant autorisé</label>
-                    <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-xs font-bold text-gray-900">
-                      ${getMontantFacture(activeTab - 1).toFixed(2)}
-                    </div>
+                    <input
+                      type="number"
+                      value={getCurrentPayment()?.montantAutoriseé ?? getMontantFacture(activeTab - 1)}
+                      onChange={(e) => updatePayment(activeTab - 1, { montantAutoriseé: parseFloat(e.target.value) || 0 })}
+                      disabled={isFieldDisabled(activeTab - 1)}
+                      step="0.01"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    />
                   </div>
 
                   {/* Montant payé */}
@@ -702,8 +938,11 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                     <label className="block text-xs font-medium text-gray-700 mb-1">Montant payé *</label>
                     <input
                       type="number"
-                      value={getCurrentPayment()?.montantPaye || 0}
-                      onChange={(e) => updatePayment(activeTab - 1, { montantPaye: parseFloat(e.target.value) || 0 })}
+                      value={getCurrentPayment()?.montantPaye ?? ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        updatePayment(activeTab - 1, { montantPaye: value === '' ? null : parseFloat(value) || 0 });
+                      }}
                       disabled={isFieldDisabled(activeTab - 1)}
                       step="0.01"
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -800,7 +1039,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                     {/* Section 1: Bureau de paiement (Caisse) */}
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Veuillez sélectionner le bureau de paiement *
+                        Veuillez sélectionner le caisse de paiement *
                       </label>
                       <select
                         value={getCurrentPayment()?.entite || ''}
@@ -887,6 +1126,16 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                           onChange={(compte) => updatePayment(activeTab - 1, { compteSGL: compte, BanqueFournisseur: '' })}
                           banque={getCurrentPayment()?.BanqueSGL || ''}
                           disabled={isFieldDisabled(activeTab - 1)}
+                          refreshTrigger={compteRefreshTrigger}
+                          onAddAccount={() => {
+                            setCompteInitialData({
+                              Fournisseur: invoice.supplier || '',
+                              Banque: getCurrentPayment()?.BanqueSGL || '',
+                              devise: getCurrentPayment()?.devise || invoice.currency || 'USD',
+                              SGL: true
+                            });
+                            setShowCompteModal(true);
+                          }}
                         />
                       )}
                     </div>
@@ -921,6 +1170,16 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                             banque={getCurrentPayment()?.BanqueFournisseur || ''}
                             fournisseur={invoice.supplier}
                             disabled={isFieldDisabled(activeTab - 1)}
+                            refreshTrigger={compteRefreshTrigger}
+                            onAddAccount={() => {
+                              setCompteInitialData({
+                                Fournisseur: invoice.supplier || '',
+                                Banque: getCurrentPayment()?.BanqueFournisseur || '',
+                                devise: getCurrentPayment()?.devise || invoice.currency || 'USD',
+                                SGL: false
+                              });
+                              setShowCompteModal(true);
+                            }}
                           />
                         )}
                       </div>
@@ -967,18 +1226,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
         {/* Footer */}
         <div className="flex justify-between items-center px-6 py-4 border-t bg-gray-50 flex-shrink-0">
-          {/* Bouton visualiser à gauche */}
-          {invoice.attachedInvoiceUrl && (
-            <a
-              href={invoice.attachedInvoiceUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all font-medium flex items-center gap-2 shadow-md hover:shadow-lg"
-            >
-              <Eye size={16} />
-              Visualiser le document
-            </a>
-          )}
+          <div />
           
           {/* Boutons à droite */}
           <div className="flex gap-3">
@@ -991,7 +1239,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             <button
               onClick={handleSubmit}
               disabled={isSubmitting || readOnly || savedTabs.includes(activeTab - 1)}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              className="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {isSubmitting ? (
                 <>
@@ -1009,6 +1257,20 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           </div>
         </div>
       </div>
+      <CompteModal
+        isOpen={showCompteModal}
+        compte={null}
+        initialData={compteInitialData}
+        onClose={() => {
+          setShowCompteModal(false);
+          setCompteInitialData(null);
+        }}
+        onSave={() => {
+          setCompteRefreshTrigger((prev) => prev + 1);
+          setShowCompteModal(false);
+          setCompteInitialData(null);
+        }}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Search, ChevronDown, RefreshCw, Download } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
@@ -8,6 +8,7 @@ import AccessDenied from '../components/AccessDenied';
 import ViewInvoiceModal from '../components/ViewInvoiceModal';
 import PaiementModal from '../components/PaiementModal';
 import { Invoice as GlobalInvoice } from '../types';
+import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 
 interface SearchPageProps {
   activeMenu?: string;
@@ -77,80 +78,78 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
     return <AccessDenied message="Vous n'avez pas accès à la recherche." />;
   }
 
-  // Fetch data from Supabase
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        // Construire la requête avec filtrage par région si nécessaire
+  const loadSearchData = useCallback(async () => {
+    setLoading(true);
+    try {
       let query = supabase
         .from('FACTURES')
         .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
 
-      // Filtrer par région si l'utilisateur n'a pas TOUT
       if (agent?.REGION && agent.REGION !== 'TOUT') {
         query = query.eq('Région', agent.REGION);
       }
 
       const { data: factures, error } = await query;
-        
-        if (error) {
-          console.error('Erreur lors de la récupération des factures:', error);
-          setLoading(false);
-          return;
-        }
-
-        const { data: paiements } = await supabase
-          .from('PAIEMENTS')
-          .select('NumeroFacture, montantPaye');
-
-        const paidMap = new Map<string, number>();
-        paiements?.forEach((p: any) => {
-          const invoiceNum = String(p.NumeroFacture || '').trim();
-          const montant = parseFloat(String(p.montantPaye || 0));
-          paidMap.set(invoiceNum, (paidMap.get(invoiceNum) || 0) + montant);
-        });
-
-        const processedInvoices: Invoice[] = factures?.map((f: Record<string, unknown>) => {
-          const invoiceNum = String(f['Numéro de facture'] || '').trim();
-          const dossierNum = String(f['Numéro de dossier'] || '').trim();
-          const amount = parseFloat(String(f.Montant)) || 0;
-          const totalPaid = paidMap.get(invoiceNum) || 0;
-          const restAPayer = Math.max(0, amount - totalPaid);
-          const dueDate = f['Échéance'] ? String(f['Échéance']) : null;
-          const statusUpper = String(f.Statut || '').toUpperCase();
-          const isRejected = statusUpper.includes('REJET');
-
-          return {
-            id: String(f.ID),
-            invoiceNumber: invoiceNum,
-            numeroDossier: dossierNum,
-            supplier: String(f.Fournisseur || '').trim(),
-            manager: String(f.Gestionnaire || '').trim(),
-            costCenter: String(f['Centre de coût'] || '').trim(),
-            date: String(f['Date de réception'] || ''),
-            amount,
-            status: isRejected ? 'REJETÉE' : totalPaid > 0 && restAPayer > 0 ? 'PARTIELLEMENT PAYÉE' : totalPaid > 0 ? 'PAYÉE' : dueDate && new Date(dueDate) < new Date() ? 'ÉCHUE' : 'NON PAYÉE',
-            currency: String(f.Devise || 'USD'),
-            region: String(f.Région || 'OUEST'),
-            totalPaid,
-            restAPayer,
-            dueDate,
-            isRejected
-          };
-        }) || [];
-
-        setInvoices(processedInvoices);
-
-      } catch (err) {
-        console.error('Erreur:', err);
-      } finally {
-        setLoading(false);
+      if (error) {
+        console.error('Erreur lors de la récupération des factures:', error);
+        return;
       }
-    };
 
-    fetchData();
-  }, []);
+      const { data: paiements } = await supabase
+        .from('PAIEMENTS')
+        .select('NumeroFacture, montantPaye');
+
+      const paidMap = new Map<string, number>();
+      paiements?.forEach((p: any) => {
+        const invoiceNum = String(p.NumeroFacture || '').trim();
+        const montant = parseFloat(String(p.montantPaye || 0));
+        paidMap.set(invoiceNum, (paidMap.get(invoiceNum) || 0) + montant);
+      });
+
+      const processedInvoices: Invoice[] = factures?.map((f: Record<string, unknown>) => {
+        const invoiceNum = String(f['Numéro de facture'] || '').trim();
+        const dossierNum = String(f['Numéro de dossier'] || '').trim();
+        const amount = parseFloat(String(f.Montant)) || 0;
+        const totalPaid = paidMap.get(invoiceNum) || 0;
+        const restAPayer = Math.max(0, amount - totalPaid);
+        const dueDate = f['Échéance'] ? String(f['Échéance']) : null;
+        const statusUpper = String(f.Statut || '').toUpperCase();
+        const isRejected = statusUpper.includes('REJET');
+
+        return {
+          id: String(f.ID),
+          invoiceNumber: invoiceNum,
+          numeroDossier: dossierNum,
+          supplier: String(f.Fournisseur || '').trim(),
+          manager: String(f.Gestionnaire || '').trim(),
+          costCenter: String(f['Centre de coût'] || '').trim(),
+          date: String(f['Date de réception'] || ''),
+          amount,
+          status: isRejected ? 'REJETÉE' : totalPaid > 0 && restAPayer > 0 ? 'PARTIELLEMENT PAYÉE' : totalPaid > 0 ? 'PAYÉE' : dueDate && new Date(dueDate) < new Date() ? 'ÉCHUE' : 'NON PAYÉE',
+          currency: String(f.Devise || 'USD'),
+          region: String(f.Région || 'OUEST'),
+          totalPaid,
+          restAPayer,
+          dueDate,
+          isRejected
+        };
+      }) || [];
+
+      setInvoices(processedInvoices);
+    } catch (err) {
+      console.error('Erreur:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [agent?.REGION]);
+
+  useEffect(() => {
+    loadSearchData();
+  }, [loadSearchData]);
+
+  useDataRefresh(REFRESH_EVENTS.ALL, () => {
+    loadSearchData();
+  });
 
   // Get unique suppliers with unpaid/overdue invoices
   const getUnpaidSuppliers = () => {
@@ -614,63 +613,7 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
   // Handlers for export and refresh
   const handleRefresh = async () => {
-    setLoading(true);
-    try {
-      const { data: factures, error } = await supabase
-        .from('FACTURES')
-        .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
-      
-      if (error) {
-        console.error('Erreur lors de la récupération des factures:', error);
-        return;
-      }
-
-      const { data: paiements } = await supabase
-        .from('PAIEMENTS')
-        .select('NumeroFacture, montantPaye');
-
-      const paidMap = new Map<string, number>();
-      paiements?.forEach((p: any) => {
-        const invoiceNum = String(p.NumeroFacture || '').trim();
-        const montant = parseFloat(String(p.montantPaye || 0));
-        paidMap.set(invoiceNum, (paidMap.get(invoiceNum) || 0) + montant);
-      });
-
-      const processedInvoices: Invoice[] = factures?.map((f: Record<string, unknown>) => {
-        const invoiceNum = String(f['Numéro de facture'] || '').trim();
-        const dossierNum = String(f['Numéro de dossier'] || '').trim();
-        const amount = parseFloat(String(f.Montant)) || 0;
-        const totalPaid = paidMap.get(invoiceNum) || 0;
-        const restAPayer = Math.max(0, amount - totalPaid);
-        const dueDate = f['Échéance'] ? String(f['Échéance']) : null;
-        const statusUpper = String(f.Statut || '').toUpperCase();
-        const isRejected = statusUpper.includes('REJET');
-
-        return {
-          id: String(f.ID),
-          invoiceNumber: invoiceNum,
-          numeroDossier: dossierNum,
-          supplier: String(f.Fournisseur || '').trim(),
-          manager: String(f.Gestionnaire || '').trim(),
-          costCenter: String(f['Centre de coût'] || '').trim(),
-          date: String(f['Date de réception'] || ''),
-          amount,
-          status: isRejected ? 'REJETÉE' : totalPaid > 0 && restAPayer > 0 ? 'PARTIELLEMENT PAYÉE' : totalPaid > 0 ? 'PAYÉE' : dueDate && new Date(dueDate) < new Date() ? 'ÉCHUE' : 'NON PAYÉE',
-          currency: String(f.Devise || 'USD'),
-          region: String(f.Région || 'OUEST'),
-          totalPaid,
-          restAPayer,
-          dueDate,
-          isRejected
-        };
-      }) || [];
-
-      setInvoices(processedInvoices);
-    } catch (err) {
-      console.error('Erreur lors de l\'actualisation:', err);
-    } finally {
-      setLoading(false);
-    }
+    await loadSearchData();
   };
 
   const handleExportToExcel = () => {

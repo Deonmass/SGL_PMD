@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 
 /**
  * Émetteur d'événements pour mettre à jour les données à travers l'application
@@ -53,11 +53,10 @@ export function useDataRefresh(eventName: string, callback: () => void) {
   // Utiliser useCallback pour éviter les modifications inutiles
   const memoizedCallback = useCallback(callback, [callback]);
 
-  // S'abonner à l'événement
-  const unsubscribe = dataRefreshEmitter.subscribe(eventName, memoizedCallback);
-
-  // Cleanup
-  return unsubscribe;
+  useEffect(() => {
+    const unsubscribe = dataRefreshEmitter.subscribe(eventName, memoizedCallback);
+    return unsubscribe;
+  }, [eventName, memoizedCallback]);
 }
 
 /**
@@ -69,13 +68,15 @@ export function useDataRefreshMultiple(
 ) {
   const memoizedCallback = useCallback(callback, [callback]);
 
-  const unsubscribes = eventNames.map((eventName) =>
-    dataRefreshEmitter.subscribe(eventName, memoizedCallback)
-  );
+  useEffect(() => {
+    const unsubscribes = eventNames.map((eventName) =>
+      dataRefreshEmitter.subscribe(eventName, memoizedCallback)
+    );
 
-  return () => {
-    unsubscribes.forEach((unsubscribe) => unsubscribe());
-  };
+    return () => {
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [eventNames, memoizedCallback]);
 }
 
 // Événements disponibles
