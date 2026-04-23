@@ -1,11 +1,13 @@
-import { X, Printer, Maximize2, CreditCard, Trash2 } from 'lucide-react';
+import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Invoice } from '../services/tableService';
+import { InvoiceStatus } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { supabase } from '../services/supabase';
 import ViewInvoiceModal from './ViewInvoiceModal';
 import PaiementModal from './PaiementModal';
 import ViewPdfModal from './ViewPdfModal';
+import ContextMenu from './ContextMenu';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import * as XLSX from 'xlsx';
@@ -34,6 +36,11 @@ interface InvoiceWithPayments extends Invoice {
   'Région'?: string;
   'Délais de paiement'?: number;
   'Échéance'?: string;
+  'validation DR'?: boolean;
+  'validation DOP'?: boolean;
+  Devise?: string;
+  'Gestionnaire'?: string;
+  'Centre de coût'?: string;
 }
 
 function InvoiceDetailModal({ 
@@ -59,6 +66,10 @@ function InvoiceDetailModal({
     { isOpen: false, title: '' }
   );
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    invoice: InvoiceWithPayments | null;
+    position: { x: number; y: number };
+  } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -259,6 +270,48 @@ function InvoiceDetailModal({
     return dueDate < today && invoice.solde > 0.01;
   };
 
+  const isBonAPayer = (invoice: InvoiceWithPayments): boolean => {
+    // Vérifier si la facture est "Bon à Payer" selon la logique de ValidationPage
+    const amount = parseFloat(invoice.Montant as any) || 0;
+    // Les validations sont des dates, pas des booléens
+    const drValidated = invoice['validation DR'] !== null && invoice['validation DR'] !== undefined && invoice['validation DR'] !== '';
+    const dopValidated = invoice['validation DOP'] !== null && invoice['validation DOP'] !== undefined && invoice['validation DOP'] !== '';
+    const isRejected = invoice.Statut?.toUpperCase().includes('REJET');
+    
+    if (isRejected) return false;
+    
+    // Logique de validation pour "Bon à Payer"
+    if (amount <= 2500) {
+      return drValidated;
+    } else {
+      // Pour > 2500$, seul le DOP doit signer
+      return dopValidated;
+    }
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, invoice: InvoiceWithPayments) => {
+    e.preventDefault();
+    console.log('Context menu triggered for invoice:', invoice['Numéro de facture']);
+    console.log('Is Bon à Payer:', isBonAPayer(invoice));
+    console.log('Invoice data:', {
+      Montant: invoice.Montant,
+      'validation DR': invoice['validation DR'],
+      'validation DOP': invoice['validation DOP'],
+      Statut: invoice.Statut
+    });
+    
+    // Uniquement pour les factures "Bon à Payer"
+    if (isBonAPayer(invoice)) {
+      console.log('Setting context menu');
+      setContextMenu({
+        invoice,
+        position: { x: e.clientX, y: e.clientY }
+      });
+    } else {
+      console.log('Invoice is not Bon à Payer, menu not shown');
+    }
+  };
+
   const sortedInvoices = [...invoicesWithPayments].sort((a, b) => {
     const montantA = parseFloat(a.Montant as any) || 0;
     const montantB = parseFloat(b.Montant as any) || 0;
@@ -300,6 +353,80 @@ function InvoiceDetailModal({
       }
     }
   };
+
+  const handleViewInvoice = (invoice: InvoiceWithPayments) => {
+    const invoiceForModal = {
+      invoiceNumber: invoice['Numéro de facture'],
+      amount: parseFloat(invoice.Montant as any),
+      supplier: invoice.Fournisseur,
+      receptionDate: invoice['Date de réception'],
+    };
+    setViewInvoiceModal({ isOpen: true, invoice: invoiceForModal });
+  };
+
+  const handlePayInvoice = (invoice: InvoiceWithPayments) => {
+    const invoiceForModal = {
+      invoiceNumber: invoice['Numéro de facture'],
+      amount: parseFloat(invoice.Montant as any),
+      supplier: invoice.Fournisseur,
+      receptionDate: invoice['Date de réception'],
+    };
+    setPaiementModal({ isOpen: true, invoice: invoiceForModal, ordoPaiementId });
+  };
+
+  const handleAddToPaymentOrder = async (invoice: InvoiceWithPayments) => {
+    try {
+      // Logique pour ajouter à l'ordre de paiement du jour
+      success('Facture ajoutée à l\'ordre de paiement du jour');
+    } catch (err) {
+      showError('Erreur lors de l\'ajout à l\'ordre de paiement');
+    }
+  };
+
+  // Fonctions adaptées pour ContextMenu (attend type Invoice)
+  const handleContextMenuViewInvoice = (invoice: Invoice) => {
+    const invoiceForModal = {
+      invoiceNumber: invoice.invoiceNumber,
+      amount: invoice.amount,
+      supplier: invoice.supplier,
+      receptionDate: invoice.receptionDate,
+    };
+    setViewInvoiceModal({ isOpen: true, invoice: invoiceForModal });
+  };
+
+  const handleContextMenuPayInvoice = (invoice: Invoice) => {
+    const invoiceForModal = {
+      invoiceNumber: invoice.invoiceNumber,
+      amount: invoice.amount,
+      supplier: invoice.supplier,
+      receptionDate: invoice.receptionDate,
+    };
+    setPaiementModal({ isOpen: true, invoice: invoiceForModal, ordoPaiementId });
+  };
+
+  const handleContextMenuAddToPaymentOrder = async (invoice: Invoice) => {
+    try {
+      success('Facture ajoutée à l\'ordre de paiement du jour');
+    } catch (err) {
+      showError('Erreur lors de l\'ajout à l\'ordre de paiement');
+    }
+  };
+
+  // Convertir InvoiceWithPayments en Invoice pour ContextMenu
+  const convertToInvoice = (invoiceWithPayments: InvoiceWithPayments): Invoice => ({
+    id: invoiceWithPayments.ID || 0,
+    invoiceNumber: invoiceWithPayments['Numéro de facture'] || '',
+    supplier: invoiceWithPayments.Fournisseur || '',
+    receptionDate: invoiceWithPayments['Date de réception'] || '',
+    amount: parseFloat(invoiceWithPayments.Montant as any) || 0,
+    currency: (invoiceWithPayments.Devise || 'USD') as 'USD' | 'CDF' | 'EUR',
+    chargeCategory: invoiceWithPayments['Catégorie de charge'] || '',
+    urgencyLevel: (invoiceWithPayments['Niveau urgence'] || 'Basse') as 'Basse' | 'Moyenne' | 'Haute',
+    status: 'bon-a-payer' as InvoiceStatus,
+    region: (invoiceWithPayments['Région'] || 'OUEST') as 'OUEST' | 'SUD' | 'EST' | 'NORD',
+    manager: invoiceWithPayments['Gestionnaire'] || '',
+    costCenter: invoiceWithPayments['Centre de coût'] || ''
+  });
 
   const handlePaymentButtonClick = async (invoice: InvoiceWithPayments) => {
     const { data, error } = await supabase
@@ -518,9 +645,13 @@ function InvoiceDetailModal({
                     const showBlueBar = isPaid || isPartiallyPaid;
                     
                     return (
-                    <tr key={index} className={`border-b hover:bg-blue-50 hover:shadow-sm transition-all duration-200 cursor-context-menu hover:border-blue-200 border-l-4 ${
-                      isOverdue ? 'border-l-red-500' : showBlueBar ? 'border-l-blue-500' : 'border-l-yellow-400'
-                    }`}>
+                    <tr 
+                      key={index} 
+                      className={`border-b hover:bg-blue-50 hover:shadow-sm transition-all duration-200 cursor-context-menu hover:border-blue-200 border-l-4 ${
+                        isOverdue ? 'border-l-red-500' : showBlueBar ? 'border-l-blue-500' : 'border-l-yellow-400'
+                      } ${isBonAPayer(invoice) ? 'cursor-context-menu' : ''}`}
+                      onContextMenu={(e) => handleContextMenu(e, invoice)}
+                    >
                       <td 
                         className="py-2 px-3 text-xs text-blue-600 cursor-pointer hover:underline font-semibold hover:text-blue-800 transform hover:scale-105 transition-all duration-200"
                         onClick={() => handleInvoiceNumberClick(invoice)}
@@ -686,6 +817,21 @@ function InvoiceDetailModal({
         title={pdfModal.title}
         summary={pdfModal.summary}
       />
+
+      {/* Menu contextuel pour les factures "Bon à Payer" */}
+      {contextMenu && contextMenu.invoice && (
+        <ContextMenu
+          key="context-menu"
+          invoice={convertToInvoice(contextMenu.invoice)}
+          position={contextMenu.position}
+          onView={handleContextMenuViewInvoice}
+          onEdit={() => {}} // Pas d'édition pour le moment
+          onPay={handleContextMenuPayInvoice}
+          onAddToPaymentOrder={handleContextMenuAddToPaymentOrder}
+          onClose={() => setContextMenu(null)}
+          activeMenu="factures-validated"
+        />
+      )}
     </>
   );
 }

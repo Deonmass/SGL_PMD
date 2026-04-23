@@ -13,6 +13,7 @@ import ToastContainer from './components/ToastContainer';
 import ValidationPage from './pages/ValidationPage';
 import PaiementsPage from './pages/PaiementsPage';
 import PaymentOrdersPage from './pages/PaymentOrdersPage';
+import { useBackgroundRealtimeSync } from './hooks/useBackgroundRealtimeSync';
 
 // Menu labels mapping
 const menuLabels: { [key: string]: string } = {
@@ -45,6 +46,7 @@ function AppContent() {
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
   const { canView, canCreate, canEdit, canDelete } = usePermission();
+  useBackgroundRealtimeSync();
 
   const getMenuTitle = (menu: string): string => {
     return menuLabels[menu] || menu;
@@ -181,6 +183,19 @@ function AppContent() {
 
   return (
     <div className="flex h-screen bg-gray-100">
+      {/* Indicateur global de synchronisation temps réel */}
+      <div className="fixed top-3 right-4 z-50 pointer-events-none">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 shadow-sm">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <span className="text-[11px] font-semibold text-emerald-700 tracking-wide">
+            SYNC TEMPS REEL ACTIVE
+          </span>
+        </div>
+      </div>
+
       {/* Sidebar */}
       <Sidebar activeMenu={activeMenu} onMenuChange={handleMenuChange} />
 

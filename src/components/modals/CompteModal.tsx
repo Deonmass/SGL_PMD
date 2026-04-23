@@ -6,11 +6,17 @@ import { Compte, compteService, fournisseurService } from '../../services/tableS
 interface CompteModalProps {
   isOpen: boolean;
   compte?: Compte | null;
+  initialData?: {
+    Fournisseur?: string;
+    Banque?: string;
+    devise?: string;
+    SGL?: boolean;
+  } | null;
   onClose: () => void;
   onSave: () => void;
 }
 
-export default function CompteModal({ isOpen, compte, onClose, onSave }: CompteModalProps) {
+export default function CompteModal({ isOpen, compte, initialData, onClose, onSave }: CompteModalProps) {
   const { canCreate, canEdit } = usePermission();
   const [formData, setFormData] = useState({
     Fournisseur: '',
@@ -36,14 +42,14 @@ export default function CompteModal({ isOpen, compte, onClose, onSave }: CompteM
       });
     } else {
       setFormData({
-        Fournisseur: '',
-        Banque: '',
+        Fournisseur: initialData?.Fournisseur || '',
+        Banque: initialData?.Banque || '',
         Compte: '',
-        SGL: false,
-        devise: ''
+        SGL: initialData?.SGL || false,
+        devise: initialData?.devise === 'EUR' ? 'EURO' : (initialData?.devise || '')
       });
     }
-  }, [compte]);
+  }, [compte, initialData, isOpen]);
 
   useEffect(() => {
     const loadFournisseurs = async () => {

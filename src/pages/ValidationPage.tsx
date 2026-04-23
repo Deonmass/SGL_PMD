@@ -8,6 +8,7 @@ import AccessDenied from '../components/AccessDenied';
 import InvoiceTable from '../components/InvoiceTable';
 import { Invoice } from '../types';
 import * as XLSX from 'xlsx';
+import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 
 interface Facture {
   ID: string;
@@ -106,6 +107,10 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
       window.removeEventListener('modalClosed', handleModalClose);
     };
   }, [selectedStatus]);
+
+  useDataRefresh(REFRESH_EVENTS.ALL, () => {
+    loadInvoices(selectedStatus);
+  });
 
   const loadInvoices = async (statusFilter: string) => {
     setLoading(true);
