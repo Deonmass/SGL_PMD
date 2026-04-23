@@ -3,6 +3,7 @@ import { X, Plus, Upload, FileText, AlertCircle } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { cloudStorageService } from '../services/cloudStorage';
 import { useToast } from '../hooks/useToast';
+import Swal from 'sweetalert2';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
@@ -14,13 +15,15 @@ interface InvoiceFormProps {
 }
 
 interface Supplier {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   Fournisseur: string;
   "Catégorie fournisseur": string;
 }
 
 interface Agent {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   Nom: string;
   Role: string;
   email: string;
@@ -28,18 +31,41 @@ interface Agent {
 }
 
 interface CostCenter {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   Designation: string;
   REGION: string;
 }
 
 interface Charge {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   "designation_Charges": string;
   Bloquant: string;
+  type?: string | null;
 }
 
-function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
+function normalizeInvoiceType(value?: string | null) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
+  if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
+  return normalized;
+}
+
+function normalizeInvoiceNumber(value?: string | null) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getEntityId(entity: Record<string, unknown>) {
+  const id = entity.id ?? entity.ID;
+  return id !== undefined && id !== null ? String(id) : '';
+}
+
+function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: InvoiceFormProps & { invoiceTypeScope?: 'operationnel' | 'frais-generaux' }) {
   const { success, error: showError } = useToast();
   const { agent } = useAuth();
   const { canCreate } = usePermission();
@@ -57,7 +83,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
     manager: '',
     
     // Typologie de la facture
-    invoiceType: '',
+    invoiceType: invoiceTypeScope,
     chargeCategory: '',
     fileNumber: '',
     motif: '',
@@ -163,6 +189,22 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
 
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (invoiceTypeScope && formData.invoiceType !== invoiceTypeScope) {
+      setFormData((prev) => ({ ...prev, invoiceType: invoiceTypeScope, chargeCategory: '' }));
+    }
+  }, [invoiceTypeScope, formData.invoiceType]);
+
+  const filteredCharges = charges.filter((charge) => {
+    if (!formData.invoiceType) return true;
+    const chargeType = normalizeInvoiceType(charge.type);
+    const targetType = normalizeInvoiceType(formData.invoiceType);
+    if (!chargeType && targetType === 'operationnel') {
+      return true;
+    }
+    return chargeType === targetType;
+  });
 
   // Réinitialiser le fournisseur sélectionné
   const handleSupplierInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -384,16 +426,51 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
     setFormData(prev => ({ ...prev, isSubmitting: true }));
     
     try {
+      const rawInvoiceNumber = formData.invoiceNumber || '';
+      const cleanedInvoiceNumber = rawInvoiceNumber.trim();
+      if (!cleanedInvoiceNumber) {
+        showError('Le numéro de facture est obligatoire.');
+        Swal.fire('Erreur', 'Le numéro de facture est obligatoire.', 'error');
+        return;
+      }
+
+      // Bloquer les doublons avant insertion (opérationnel + FFG).
+      // La normalisation est alignée avec l'index SQL: trim + lower.
+      const { data: existingInvoices, error: duplicateCheckError } = await supabase
+        .from('FACTURES')
+        .select('"Numéro de facture"')
+        .ilike('"Numéro de facture"', cleanedInvoiceNumber)
+        .limit(1);
+
+      if (duplicateCheckError) {
+        console.error('Erreur vérification doublon facture:', duplicateCheckError);
+        showError('Impossible de vérifier les doublons pour le numéro de facture.');
+        Swal.fire('Erreur', 'Impossible de vérifier les doublons pour le numéro de facture.', 'error');
+        return;
+      }
+
+      const duplicateFound = (existingInvoices || []).some((invoice) => {
+        const existingNumber = (invoice as Record<string, unknown>)['Numéro de facture'];
+        return normalizeInvoiceNumber(String(existingNumber ?? '')) === normalizeInvoiceNumber(cleanedInvoiceNumber);
+      });
+
+      if (duplicateFound) {
+        const duplicateMessage = `Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`;
+        showError(duplicateMessage);
+        Swal.fire('Doublon détecté', duplicateMessage, 'error');
+        return;
+      }
+
       // Préparer les données pour l'insertion
       const invoiceData = {
         "Date emission": formData.emissionDate,
         "Date de réception": formData.receptionDate,
-        "Numéro de facture": formData.invoiceNumber,
+        "Numéro de facture": cleanedInvoiceNumber,
         "Fournisseur": formData.supplier,
         "Catégorie fournisseur": formData.supplierCategory,
         "Région": formData.region,
-        "Centre de coût": formData.costCenter ? costCenters.find(c => c.id === formData.costCenter)?.Designation || formData.costCenter : '',
-        "Gestionnaire": formData.manager ? agents.find(a => a.id === formData.manager)?.Nom || formData.manager : '',
+        "Centre de coût": formData.costCenter ? costCenters.find(c => getEntityId(c) === formData.costCenter)?.Designation || formData.costCenter : '',
+        "Gestionnaire": formData.manager ? agents.find(a => getEntityId(a) === formData.manager)?.Nom || formData.manager : '',
         "Type de facture": formData.invoiceType,
         "Catégorie de charge": formData.chargeCategory,
         "Numéro de dossier": formData.invoiceType === 'frais-generaux' ? null : formData.fileNumber,
@@ -425,12 +502,21 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
 
       if (error) {
         console.error('Erreur insertion facture:', error);
-        showError('Erreur lors de l\'enregistrement de la facture: ' + error.message);
+        if (error.code === '23505') {
+          const duplicateMessage = `Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`;
+          showError(duplicateMessage);
+          Swal.fire('Doublon détecté', duplicateMessage, 'error');
+          return;
+        }
+        const errorMessage = 'Erreur lors de l\'enregistrement de la facture: ' + error.message;
+        showError(errorMessage);
+        Swal.fire('Erreur', errorMessage, 'error');
         return;
       }
 
       console.log('Facture enregistrée avec succès:', data);
       success('Facture enregistrée avec succès !');
+      Swal.fire('Succès', 'Facture enregistrée avec succès.', 'success');
       refreshAllData();
       
       // Appeler la fonction onSubmit avec les données complètes
@@ -439,6 +525,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
     } catch (error) {
       console.error('Erreur générale lors de l\'enregistrement:', error);
       showError('Erreur lors de l\'enregistrement de la facture');
+      Swal.fire('Erreur', 'Erreur lors de l\'enregistrement de la facture.', 'error');
     } finally {
       // Réactiver le bouton
       setFormData(prev => ({ ...prev, isSubmitting: false }));
@@ -537,7 +624,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
                     <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                       {filteredSuppliers.map((supplier) => (
                         <button
-                          key={supplier.id}
+                          key={getEntityId(supplier) || supplier.Fournisseur}
                           type="button"
                           onClick={() => selectSupplier(supplier)}
                           className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100 last:border-b-0"
@@ -612,8 +699,8 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
                     {formData.region ? '-- Sélectionner --' : 'Sélectionnez une région d\'abord'}
                   </option>
                   {filteredCostCenters.map((center) => (
-                    <option key={center.id} value={center.id}>
-                      {center.Designation || center.id}
+                    <option key={getEntityId(center) || center.Designation} value={getEntityId(center)}>
+                      {center.Designation || getEntityId(center)}
                     </option>
                   ))}
                 </select>
@@ -630,7 +717,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
                 >
                   <option value="">-- Sélectionner --</option>
                   {filteredAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
+                    <option key={getEntityId(agent) || agent.email} value={getEntityId(agent)}>
                       {agent.Nom}
                     </option>
                   ))}
@@ -653,6 +740,7 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
                   onChange={handleChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
+                  disabled
                 >
                   <option value="">-- Sélectionner --</option>
                   <option value="operationnel">Opérationnel</option>
@@ -671,8 +759,8 @@ function InvoiceForm({ onSubmit, onCancel }: InvoiceFormProps) {
                   required
                 >
                   <option value="">-- Sélectionner --</option>
-                  {charges.map((charge) => (
-                    <option key={charge.id} value={charge.id}>
+                  {filteredCharges.map((charge) => (
+                    <option key={getEntityId(charge) || charge.designation_Charges} value={getEntityId(charge)}>
                       {charge["designation_Charges"]}
                     </option>
                   ))}

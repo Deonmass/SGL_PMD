@@ -43,9 +43,21 @@ interface Facture {
 interface ValidationPageProps {
   activeMenu?: string;
   menuTitle?: string;
+  invoiceTypeScope?: 'operationnel' | 'frais-generaux';
 }
 
-function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: ValidationPageProps) {
+function normalizeInvoiceType(value?: string | null) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
+  if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
+  return normalized;
+}
+
+function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoiceTypeScope = 'operationnel' }: ValidationPageProps) {
   const { canView } = usePermission();
   const { agent } = useAuth();
   const { error } = useToast();
@@ -62,14 +74,19 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
   const getStatusFilter = () => {
     switch (activeMenu) {
       case 'factures-pending':
+      case 'factures-ffg-pending':
         return 'En attente validation DR';
       case 'factures-pending-dop':
+      case 'factures-ffg-pending-dop':
         return 'En attente validation DOP';
       case 'factures-validated':
+      case 'factures-ffg-validated':
         return 'Validée';
       case 'factures-rejected':
+      case 'factures-ffg-rejected':
         return 'Rejetée';
       case 'factures-overdue':
+      case 'factures-ffg-overdue':
         return 'Échue';
       default:
         return 'En attente validation DR';
@@ -83,7 +100,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
     console.log('statusFilter calculated:', statusFilter);
     setSelectedStatus(statusFilter);
     loadInvoices(statusFilter);
-  }, [activeMenu]);
+  }, [activeMenu, invoiceTypeScope]);
 
   useEffect(() => {
     // Appeler filterInvoices quand allInvoices change
@@ -472,7 +489,10 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation' }: Val
         }
       })));
       
-      setAllInvoices(allData);
+      const scopedData = allData.filter((invoice: any) =>
+        normalizeInvoiceType(invoice['Type de facture']) === normalizeInvoiceType(invoiceTypeScope)
+      );
+      setAllInvoices(scopedData);
       
       // Debug détaillé
       console.log('=== VALIDATION PAGE DEBUG ===');

@@ -15,6 +15,7 @@ interface InvoicesPageProps {
 }
 
 function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', onMenuChange }: InvoicesPageProps) {
+  const isFfgContext = String(activeMenu || '').startsWith('factures-ffg');
   const { canView, canCreate, canEdit, canDelete } = usePermission();
   const { agent } = useAuth();
   
@@ -142,7 +143,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
           </button>
           {canCreate('factures') && (
             <button 
-              onClick={() => onMenuChange?.('factures-new')}
+              onClick={() => onMenuChange?.(isFfgContext ? 'factures-ffg-new' : 'factures-new')}
               className="flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition font-semibold text-sm"
             >
               <Plus size={18} />

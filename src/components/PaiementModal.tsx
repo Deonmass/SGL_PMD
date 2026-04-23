@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import CompteModal from './modals/CompteModal';
 import Swal from 'sweetalert2';
+import { cloudStorageService } from '../services/cloudStorage';
 
 interface PaymentData {
   datePaiement: string;
@@ -22,6 +23,7 @@ interface PaymentData {
   compteFournisseur: string;
   BanqueFournisseur: string;
   BanqueSGL: string;
+  fichier: string;
   commentaires: string;
 }
 
@@ -226,6 +228,8 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
   const [showCompteModal, setShowCompteModal] = useState(false);
   const [compteRefreshTrigger, setCompteRefreshTrigger] = useState(0);
   const [compteInitialData, setCompteInitialData] = useState<CompteInitialData | null>(null);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [lastPaidBy, setLastPaidBy] = useState<string>('-');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const showAlertError = useCallback((message: string) => {
@@ -311,6 +315,13 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       }
 
       if (data && data.length > 0) {
+        const latestPayment = [...data].sort(
+          (a: any, b: any) =>
+            new Date(b?.timestamp || b?.datePaiement || 0).getTime() -
+            new Date(a?.timestamp || a?.datePaiement || 0).getTime()
+        )[0];
+        setLastPaidBy(latestPayment?.paiedby || '-');
+
         // Map existing payments to PaymentData format
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const existingPayments = data.map((payment: any, index: number) => {
@@ -334,6 +345,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             compteFournisseur: payment.compteFournisseur || '',
             BanqueFournisseur: payment.BanqueFournisseur || '',
             BanqueSGL: payment.BanqueSGL || '',
+            fichier: payment.fichier || '',
             commentaires: payment.commentaires || ''
           };
         });
@@ -356,6 +368,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             compteFournisseur: '',
             BanqueFournisseur: '',
             BanqueSGL: '',
+            fichier: '',
             commentaires: ''
           });
         }
@@ -364,6 +377,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         // Mark existing payments as saved
         setSavedTabs(Array.from({ length: data.length }, (_, i) => i));
       } else {
+        setLastPaidBy('-');
         // No existing payments, initialize with first
         initializeFirstPayment();
       }
@@ -389,6 +403,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       compteFournisseur: '',
       BanqueFournisseur: '',
       BanqueSGL: '',
+      fichier: '',
       commentaires: ''
     };
     setPayments([initialPayment]);
@@ -455,8 +470,64 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
     return payments[activeTab - 1];
   };
 
+  const handlePaymentFileUpload = async (index: number, file: File | null) => {
+    if (!file) return;
+
+    if (!cloudStorageService.isConfigured()) {
+      showAlertError('Le service de stockage n\'est pas configuré.');
+      return;
+    }
+
+    setIsUploadingFile(true);
+    try {
+      const result = await cloudStorageService.uploadFile(file);
+      if (!result.success || !result.fileUrl) {
+        showAlertError(result.error || 'Erreur lors de l\'upload du fichier de paiement.');
+        return;
+      }
+
+      updatePayment(index, { fichier: result.fileUrl });
+      showAlertSuccess('Fichier uploadé avec succès.');
+    } catch (err) {
+      console.error('Erreur upload fichier paiement:', err);
+      showAlertError('Erreur lors de l\'upload du fichier de paiement.');
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+
   const isFieldDisabled = (tabIndex: number) => {
     return readOnly || savedTabs.includes(tabIndex);
+  };
+
+  const renderPaymentDocument = (payment?: PaymentData) => {
+    if (!payment?.fichier) return null;
+
+    const fileUrl = payment.fichier;
+    const isPdf = fileUrl.toLowerCase().includes('.pdf');
+
+    return (
+      <div className="mt-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+        <p className="text-xs font-semibold text-gray-700 mb-2">Document de paiement</p>
+        <div className="flex items-center gap-3 mb-2">
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-blue-600 hover:underline"
+          >
+            Ouvrir le document
+          </a>
+        </div>
+        {isPdf && (
+          <iframe
+            src={fileUrl}
+            title="Document de paiement"
+            className="w-full h-56 border border-gray-300 rounded bg-white"
+          />
+        )}
+      </div>
+    );
   };
 
   const handleFullscreen = () => {
@@ -567,6 +638,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           compteFournisseur: currentPayment.compteFournisseur || '',
           BanqueFournisseur: currentPayment.BanqueFournisseur || '',
           BanqueSGL: currentPayment.BanqueSGL || '',
+          fichier: currentPayment.fichier || '',
           commentaires: currentPayment.commentaires || '',
           paiedby: agent?.email || null,
           timestamp: new Date().toISOString()
@@ -617,6 +689,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
           compteFournisseur: '',
           BanqueFournisseur: '',
           BanqueSGL: '',
+          fichier: '',
           commentaires: ''
         };
         const newPayments = [...payments, newPayment];
@@ -658,7 +731,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                   Montant payé: <span className="font-bold text-green-700">${totalPaid.toFixed(2)}</span>
                 </span>
                 <span>
-                  Reste à payer: <span className="font-bold text-orange-700">${getRemainingTotal().toFixed(2)}</span>
+                  Solde à payer: <span className="font-bold text-orange-700">${getRemainingTotal().toFixed(2)}</span>
                 </span>
               </div>
             </div>
@@ -865,16 +938,15 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                     <td className="py-2 text-gray-600 font-medium">Cree par:</td>
                     <td className="py-2 font-semibold text-gray-900">{invoiceDetails['created_by'] || '-'}</td>
                   </tr>
+                  <tr>
+                    <td className="py-2 text-gray-600 font-medium">Paye par:</td>
+                    <td className="py-2 font-semibold text-gray-900">{lastPaidBy}</td>
+                  </tr>
                 </tbody>
               </table>
             ) : (
               <div className="text-center py-4 text-gray-500 text-xs">Chargement des détails...</div>
             )}
-
-            <div className="mt-4 p-3 bg-blue-50 rounded-lg border-l-4 border-blue-600">
-              <p className="text-xs text-blue-700 font-semibold">Reste à payer</p>
-              <p className="text-lg font-bold text-blue-900">${getRemainingTotal().toFixed(2)}</p>
-            </div>
             </div>
           </div>
 
@@ -949,9 +1021,9 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                     />
                   </div>
 
-                  {/* Reste à payer */}
+                  {/* Solde à payer */}
                   <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">Reste à payer</label>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Solde à payer</label>
                     <div className={`w-full px-3 py-2 border rounded-lg text-xs font-bold ${
                       getResteAPayer(activeTab - 1) > 0
                         ? 'bg-yellow-50 text-yellow-900 border-yellow-300'
@@ -1015,6 +1087,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                         BanqueSGL: '',
                         BanqueFournisseur: '',
                         compteFournisseur: '',
+                        fichier: '',
                         commentaires: ''
                       })}
                       disabled={isFieldDisabled(activeTab - 1)}
@@ -1046,6 +1119,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                         onChange={(e) => updatePayment(activeTab - 1, { 
                           entite: e.target.value,
                           referencePaiement: '',
+                          fichier: '',
                           commentaires: ''
                         })}
                         disabled={isFieldDisabled(activeTab - 1)}
@@ -1062,18 +1136,43 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
                     {/* Section 2: Référence (Caisse) */}
                     {getCurrentPayment()?.entite && (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          {getReferenceLabel('caisse')}
-                        </label>
-                        <input
-                          type="text"
-                          value={getCurrentPayment()?.referencePaiement || ''}
-                          onChange={(e) => updatePayment(activeTab - 1, { referencePaiement: e.target.value })}
-                          disabled={isFieldDisabled(activeTab - 1)}
-                          placeholder="Entrer la référence..."
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            {getReferenceLabel('caisse')}
+                          </label>
+                          <input
+                            type="text"
+                            value={getCurrentPayment()?.referencePaiement || ''}
+                            onChange={(e) => updatePayment(activeTab - 1, { referencePaiement: e.target.value })}
+                            disabled={isFieldDisabled(activeTab - 1)}
+                            placeholder="Entrer la référence..."
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">Fichier (optionnel)</label>
+                          <input
+                            type="file"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              handlePaymentFileUpload(activeTab - 1, file);
+                              e.currentTarget.value = '';
+                            }}
+                            disabled={isFieldDisabled(activeTab - 1) || isUploadingFile}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                          {getCurrentPayment()?.fichier && (
+                            <a
+                              href={getCurrentPayment()?.fichier}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-blue-600 hover:underline mt-1 inline-block"
+                            >
+                              Voir le fichier uploadé
+                            </a>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -1090,6 +1189,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                         />
                       </div>
                     )}
+                    {renderPaymentDocument(getCurrentPayment())}
                   </div>
                 )}
 
@@ -1187,20 +1287,45 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
                     {/* Section 5: Référence (Transaction/OP/Chèque) - si Compte Fournisseur sélectionné */}
                     {getCurrentPayment()?.compteFournisseur && (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          {getCurrentPayment()?.modePaiement === 'banque' && 'Veuillez saisir la référence de la transaction *'}
-                          {getCurrentPayment()?.modePaiement === 'op' && 'Veuillez saisir la référence de l\'OP *'}
-                          {getCurrentPayment()?.modePaiement === 'cheque' && 'Veuillez saisir la référence du Chèque *'}
-                        </label>
-                        <input
-                          type="text"
-                          value={getCurrentPayment()?.referencePaiement || ''}
-                          onChange={(e) => updatePayment(activeTab - 1, { referencePaiement: e.target.value })}
-                          disabled={isFieldDisabled(activeTab - 1)}
-                          placeholder="Entrer la référence..."
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            {getCurrentPayment()?.modePaiement === 'banque' && 'Veuillez saisir la référence de la transaction *'}
+                            {getCurrentPayment()?.modePaiement === 'op' && 'Veuillez saisir la référence de l\'OP *'}
+                            {getCurrentPayment()?.modePaiement === 'cheque' && 'Veuillez saisir la référence du Chèque *'}
+                          </label>
+                          <input
+                            type="text"
+                            value={getCurrentPayment()?.referencePaiement || ''}
+                            onChange={(e) => updatePayment(activeTab - 1, { referencePaiement: e.target.value })}
+                            disabled={isFieldDisabled(activeTab - 1)}
+                            placeholder="Entrer la référence..."
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">Fichier (optionnel)</label>
+                          <input
+                            type="file"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              handlePaymentFileUpload(activeTab - 1, file);
+                              e.currentTarget.value = '';
+                            }}
+                            disabled={isFieldDisabled(activeTab - 1) || isUploadingFile}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                          {getCurrentPayment()?.fichier && (
+                            <a
+                              href={getCurrentPayment()?.fichier}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-blue-600 hover:underline mt-1 inline-block"
+                            >
+                              Voir le fichier uploadé
+                            </a>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -1217,6 +1342,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
                         />
                       </div>
                     )}
+                    {renderPaymentDocument(getCurrentPayment())}
                   </div>
                 )}
               </div>

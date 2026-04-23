@@ -13,6 +13,18 @@ import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 interface SearchPageProps {
   activeMenu?: string;
   menuTitle?: string;
+  invoiceTypeScope?: 'operationnel' | 'frais-generaux';
+}
+
+function normalizeInvoiceType(value?: string | null) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
+  if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
+  return normalized;
 }
 
 interface Invoice {
@@ -33,8 +45,8 @@ interface Invoice {
   isRejected: boolean;
 }
 
-function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
-  const { canView } = usePermission();
+function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'operationnel' }: SearchPageProps) {
+  const { canView, hasPermission } = usePermission();
   const { agent } = useAuth();
   const regions = ['OUEST', 'EST', 'SUD'];
   const years = ['2030', '2029', '2028', '2027', '2026', '2025'];
@@ -68,6 +80,11 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
   // If agent has TOUT, show all regions. Otherwise, show only their region
   const [selectedRegion, setSelectedRegion] = useState<string>(agent?.REGION && agent.REGION !== 'TOUT' ? agent.REGION : '');
   const [selectedYear, setSelectedYear] = useState<string>('2026');
+  const canViewOperational = hasPermission('recherche', 'voir_operationnel') || canView('recherche');
+  const canViewFfg = hasPermission('recherche', 'voir_frais_generaux');
+  const [selectedInvoiceType, setSelectedInvoiceType] = useState<'operationnel' | 'frais-generaux'>(
+    invoiceTypeScope === 'frais-generaux' ? 'frais-generaux' : 'operationnel'
+  );
 
   // Advanced filters
   const [filterDateType, setFilterDateType] = useState<string>('all');
@@ -84,6 +101,8 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
       let query = supabase
         .from('FACTURES')
         .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
+
+      query = query.eq('Type de facture', selectedInvoiceType);
 
       if (agent?.REGION && agent.REGION !== 'TOUT') {
         query = query.eq('Région', agent.REGION);
@@ -141,7 +160,25 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
     } finally {
       setLoading(false);
     }
-  }, [agent?.REGION]);
+  }, [agent?.REGION, selectedInvoiceType]);
+
+  useEffect(() => {
+    const normalizedScope = normalizeInvoiceType(invoiceTypeScope) as 'operationnel' | 'frais-generaux';
+    if (normalizedScope === 'frais-generaux') {
+      setSelectedInvoiceType('frais-generaux');
+      return;
+    }
+    if (selectedInvoiceType === 'frais-generaux' && !canViewFfg) {
+      setSelectedInvoiceType(canViewOperational ? 'operationnel' : 'frais-generaux');
+    }
+  }, [invoiceTypeScope, canViewOperational, canViewFfg, selectedInvoiceType]);
+
+  useEffect(() => {
+    if (selectedInvoiceType === 'frais-generaux' && activeLeftTab === 'dossier') {
+      setActiveLeftTab('supplier');
+      setSelectedDossier(null);
+    }
+  }, [selectedInvoiceType, activeLeftTab]);
 
   useEffect(() => {
     loadSearchData();
@@ -837,6 +874,16 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
 
           {/* Boutons Refresh et Export */}
           <div className="flex items-center gap-2">
+            {(canViewOperational || canViewFfg) && (
+              <select
+                value={selectedInvoiceType}
+                onChange={(e) => setSelectedInvoiceType(e.target.value as 'operationnel' | 'frais-generaux')}
+                className="px-2 py-1 text-sm border border-gray-300 rounded bg-white"
+              >
+                {canViewOperational && <option value="operationnel">Opérationnel</option>}
+                {canViewFfg && <option value="frais-generaux">Frais généraux</option>}
+              </select>
+            )}
             <button
               onClick={handleRefresh}
               disabled={loading}
@@ -937,19 +984,21 @@ function SearchPage({ menuTitle = 'Recherche avancée' }: SearchPageProps) {
                 >
                   Fournisseur
                 </button>
-                <button
-                  onClick={() => {
-                    setActiveLeftTab('dossier');
-                    setSelectedSupplier(null);
-                  }}
-                  className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
-                    activeLeftTab === 'dossier'
-                      ? 'bg-white text-gray-900 border-b-2 border-blue-500'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  Numéro de dossier
-                </button>
+                {selectedInvoiceType !== 'frais-generaux' && (
+                  <button
+                    onClick={() => {
+                      setActiveLeftTab('dossier');
+                      setSelectedSupplier(null);
+                    }}
+                    className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
+                      activeLeftTab === 'dossier'
+                        ? 'bg-white text-gray-900 border-b-2 border-blue-500'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    Numéro de dossier
+                  </button>
+                )}
               </div>
 
               {/* Content */}

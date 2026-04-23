@@ -1,0 +1,2 @@
+ALTER TABLE public."PAIEMENTS"
+ADD COLUMN IF NOT EXISTS "fichier" text;

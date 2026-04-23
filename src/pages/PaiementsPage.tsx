@@ -14,6 +14,7 @@ interface PaiementsPageProps {
   activeMenu: string;
   menuTitle: string;
   onMenuChange: (menu: string) => void;
+  invoiceTypeScope?: 'operationnel' | 'frais-generaux';
 }
 
 interface PaiementInfo {
@@ -38,7 +39,7 @@ interface Facture {
   [key: string]: any;
 }
 
-function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPageProps) {
+function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope = 'operationnel' }: PaiementsPageProps) {
   const { canView } = usePermission();
   const { error } = useToast();
   const [invoices, setInvoices] = useState<(Invoice & { 
@@ -58,7 +59,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPagePro
   });
 
   // Déterminer le mode selon activeMenu
-  const isPaid = activeMenu === 'factures-paid';
+  const isPaid = activeMenu === 'factures-paid' || activeMenu === 'factures-ffg-paid';
   const pageTitle = isPaid ? 'Factures Payées' : 'Factures Partiellement Payées';
   const pageDescription = isPaid 
     ? 'Factures complètement payées' 
@@ -66,7 +67,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPagePro
 
   useEffect(() => {
     loadPayments();
-  }, [selectedRegion, selectedYear, activeMenu]);
+  }, [selectedRegion, selectedYear, activeMenu, invoiceTypeScope]);
 
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
     loadPayments();
@@ -112,7 +113,8 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange }: PaiementsPagePro
       // Charger les factures
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('*');
+        .select('*')
+        .eq('Type de facture', invoiceTypeScope);
 
       if (facturesError) {
         console.error('Erreur chargement factures:', facturesError);

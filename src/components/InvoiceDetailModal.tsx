@@ -1,7 +1,7 @@
-import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical } from 'lucide-react';
+import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical, Filter } from 'lucide-react';
 import { useState, useEffect } from 'react';
-import { Invoice } from '../services/tableService';
-import { InvoiceStatus } from '../types';
+import { Invoice as DbInvoice } from '../services/tableService';
+import { Invoice as ContextInvoice, InvoiceStatus } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { supabase } from '../services/supabase';
 import ViewInvoiceModal from './ViewInvoiceModal';
@@ -10,6 +10,7 @@ import ViewPdfModal from './ViewPdfModal';
 import ContextMenu from './ContextMenu';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
 import * as XLSX from 'xlsx';
 
 interface InvoiceDetailModalProps {
@@ -17,7 +18,8 @@ interface InvoiceDetailModalProps {
   onClose: () => void;
   onInvoiceRemoved?: () => void;
   title: string;
-  invoices: Invoice[];
+  invoices: DbInvoice[];
+  invoiceTypeScope?: 'operationnel' | 'frais-generaux';
   ordoPaiementId?: number;
   summary?: {
     totalAmount?: number;
@@ -26,7 +28,7 @@ interface InvoiceDetailModalProps {
   };
 }
 
-interface InvoiceWithPayments extends Invoice {
+interface InvoiceWithPayments extends DbInvoice {
   totalPaid: number;
   solde: number;
   hasPayments: boolean;
@@ -36,11 +38,21 @@ interface InvoiceWithPayments extends Invoice {
   'Région'?: string;
   'Délais de paiement'?: number;
   'Échéance'?: string;
-  'validation DR'?: boolean;
-  'validation DOP'?: boolean;
+  'validation DR'?: string | boolean | null;
+  'validation DOP'?: string | boolean | null;
   Devise?: string;
   'Gestionnaire'?: string;
   'Centre de coût'?: string;
+  paymentInfo?: {
+    modePaiement?: string;
+    datePaiement?: string;
+    BanqueSGL?: string;
+    compteSGL?: string;
+    BanqueFournisseur?: string;
+    compteFournisseur?: string;
+    paiedby?: string;
+    fichier?: string;
+  };
 }
 
 function InvoiceDetailModal({ 
@@ -49,11 +61,19 @@ function InvoiceDetailModal({
   onInvoiceRemoved,
   title, 
   invoices,
+  invoiceTypeScope,
   ordoPaiementId,
   summary 
 }: InvoiceDetailModalProps) {
+  const normalizeInvoiceType = (value?: string | null) =>
+    String(value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
   const { success, error: showError } = useToast();
   const { agent } = useAuth();
+  const { canMarkAsPaid } = usePermission();
   const [invoicesWithPayments, setInvoicesWithPayments] = useState<InvoiceWithPayments[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewInvoiceModal, setViewInvoiceModal] = useState<{ isOpen: boolean; invoice: any }>(
@@ -70,6 +90,22 @@ function InvoiceDetailModal({
     invoice: InvoiceWithPayments | null;
     position: { x: number; y: number };
   } | null>(null);
+  const [showPaidFilters, setShowPaidFilters] = useState(false);
+  const [filterRegion, setFilterRegion] = useState('all');
+  const [filterSupplier, setFilterSupplier] = useState('all');
+  const [filterYear, setFilterYear] = useState('all');
+  const [filterMonth, setFilterMonth] = useState('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+
+  const normalizedTitle = (title || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const isPaidReportMode =
+    normalizedTitle.includes('factures paye') &&
+    !normalizedTitle.includes('partiellement');
+  const displayTitle = isPaidReportMode ? 'Relevé des factures payées' : title;
 
   useEffect(() => {
     if (isOpen) {
@@ -82,22 +118,49 @@ function InvoiceDetailModal({
     try {
       const { data: paiements } = await supabase
         .from('PAIEMENTS')
-        .select('NumeroFacture, montantPaye');
+        .select('NumeroFacture, montantPaye, modePaiement, datePaiement, BanqueSGL, compteSGL, BanqueFournisseur, compteFournisseur, paiedby, fichier, timestamp');
 
       // Create map of invoice numbers with their total paid amounts
       const paymentMap = new Map<string, number>();
+      const paymentDetailsMap = new Map<string, Record<string, any>>();
       if (paiements) {
         paiements.forEach((p: any) => {
           const invoiceNumber = p.NumeroFacture;
           const paid = (paymentMap.get(invoiceNumber) || 0) + (parseFloat(p.montantPaye) || 0);
           paymentMap.set(invoiceNumber, paid);
+
+          const existing = paymentDetailsMap.get(invoiceNumber);
+          const existingDate = existing?.timestamp || existing?.datePaiement || '';
+          const candidateDate = p.timestamp || p.datePaiement || '';
+          if (!existing || new Date(candidateDate).getTime() >= new Date(existingDate).getTime()) {
+            paymentDetailsMap.set(invoiceNumber, p);
+          }
         });
       }
 
       // Filter invoices by region if agent has a specific region
-      const filteredInvoices = agent?.REGION && agent.REGION !== 'TOUT' 
+      let filteredInvoices = agent?.REGION && agent.REGION !== 'TOUT' 
         ? invoices.filter(inv => (inv as any)['Région'] === agent.REGION)
         : invoices;
+
+      // Enforce invoice type scope when provided (operationnel / frais-generaux)
+      if (invoiceTypeScope && filteredInvoices.length > 0) {
+        const invoiceNumbers = filteredInvoices.map((inv: any) => inv['Numéro de facture']).filter(Boolean);
+        if (invoiceNumbers.length > 0) {
+          const { data: scopedRows } = await supabase
+            .from('FACTURES')
+            .select('"Numéro de facture", "Type de facture"')
+            .in('Numéro de facture', invoiceNumbers);
+
+          const allowed = new Set(
+            (scopedRows || [])
+              .filter((row: any) => normalizeInvoiceType(row['Type de facture']) === normalizeInvoiceType(invoiceTypeScope))
+              .map((row: any) => row['Numéro de facture'])
+          );
+
+          filteredInvoices = filteredInvoices.filter((inv: any) => allowed.has(inv['Numéro de facture']));
+        }
+      }
 
       // Enrich invoices with payment data
       const enriched = filteredInvoices.map((inv) => {
@@ -112,6 +175,18 @@ function InvoiceDetailModal({
           totalPaid,
           solde,
           hasPayments,
+          paymentInfo: paymentDetailsMap.get(invoiceNumber)
+            ? {
+                modePaiement: paymentDetailsMap.get(invoiceNumber)?.modePaiement,
+                datePaiement: paymentDetailsMap.get(invoiceNumber)?.datePaiement,
+                BanqueSGL: paymentDetailsMap.get(invoiceNumber)?.BanqueSGL,
+                compteSGL: paymentDetailsMap.get(invoiceNumber)?.compteSGL,
+                BanqueFournisseur: paymentDetailsMap.get(invoiceNumber)?.BanqueFournisseur,
+                compteFournisseur: paymentDetailsMap.get(invoiceNumber)?.compteFournisseur,
+                paiedby: paymentDetailsMap.get(invoiceNumber)?.paiedby,
+                fichier: paymentDetailsMap.get(invoiceNumber)?.fichier,
+              }
+            : undefined,
         };
       });
 
@@ -161,7 +236,7 @@ function InvoiceDetailModal({
       `;
       const content = `
         ${printStyle}
-        <h2>${title}</h2>
+        <h2>${displayTitle}</h2>
         ${table}
         <div style="margin-top: 20px; font-size: 12px; font-weight: bold;">
           <p>Total Facture: $${formatCurrency(displayTotals.totalAmount)} | Montant Payé: $${formatCurrency(displayTotals.totalPaid)} | Solde à Payer: $${formatCurrency(displayTotals.totalRemaining)}</p>
@@ -220,10 +295,10 @@ function InvoiceDetailModal({
     worksheet['!cols'] = colWidths;
 
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, title);
+    XLSX.utils.book_append_sheet(workbook, worksheet, displayTitle);
 
     // Télécharger le fichier
-    XLSX.writeFile(workbook, `${title.replace(/\s+/g, '_')}.xlsx`);
+    XLSX.writeFile(workbook, `${displayTitle.replace(/\s+/g, '_')}.xlsx`);
   };
 
   const calculateTotals = () => {
@@ -318,6 +393,65 @@ function InvoiceDetailModal({
     return montantB - montantA;
   });
 
+  const availableRegions = Array.from(
+    new Set(invoicesWithPayments.map((inv) => String(inv['Région'] || '').trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const availableSuppliers = Array.from(
+    new Set(invoicesWithPayments.map((inv) => String(inv.Fournisseur || '').trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const availableYears = Array.from(
+    new Set(
+      invoicesWithPayments
+        .map((inv) => inv.paymentInfo?.datePaiement)
+        .filter(Boolean)
+        .map((d) => new Date(d as string).getFullYear())
+        .filter((year) => !Number.isNaN(year))
+    )
+  ).sort((a, b) => b - a);
+
+  const filteredInvoices = sortedInvoices.filter((invoice) => {
+    if (!isPaidReportMode) return true;
+
+    if (filterRegion !== 'all' && String(invoice['Région'] || '') !== filterRegion) {
+      return false;
+    }
+    if (filterSupplier !== 'all' && String(invoice.Fournisseur || '') !== filterSupplier) {
+      return false;
+    }
+
+    const paymentDate = invoice.paymentInfo?.datePaiement
+      ? new Date(invoice.paymentInfo.datePaiement)
+      : null;
+
+    if (filterYear !== 'all') {
+      if (!paymentDate || paymentDate.getFullYear() !== Number(filterYear)) {
+        return false;
+      }
+    }
+
+    if (filterMonth !== 'all') {
+      if (!paymentDate || paymentDate.getMonth() + 1 !== Number(filterMonth)) {
+        return false;
+      }
+    }
+
+    if (filterDateFrom) {
+      if (!paymentDate || paymentDate < new Date(filterDateFrom)) {
+        return false;
+      }
+    }
+
+    if (filterDateTo) {
+      if (!paymentDate || paymentDate > new Date(`${filterDateTo}T23:59:59`)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
   const handleInvoiceNumberClick = async (invoice: InvoiceWithPayments) => {
     if (invoice.hasPayments) {
       const { data, error } = await supabase
@@ -384,7 +518,7 @@ function InvoiceDetailModal({
   };
 
   // Fonctions adaptées pour ContextMenu (attend type Invoice)
-  const handleContextMenuViewInvoice = (invoice: Invoice) => {
+  const handleContextMenuViewInvoice = (invoice: ContextInvoice) => {
     const invoiceForModal = {
       invoiceNumber: invoice.invoiceNumber,
       amount: invoice.amount,
@@ -394,7 +528,7 @@ function InvoiceDetailModal({
     setViewInvoiceModal({ isOpen: true, invoice: invoiceForModal });
   };
 
-  const handleContextMenuPayInvoice = (invoice: Invoice) => {
+  const handleContextMenuPayInvoice = (invoice: ContextInvoice) => {
     const invoiceForModal = {
       invoiceNumber: invoice.invoiceNumber,
       amount: invoice.amount,
@@ -404,7 +538,7 @@ function InvoiceDetailModal({
     setPaiementModal({ isOpen: true, invoice: invoiceForModal, ordoPaiementId });
   };
 
-  const handleContextMenuAddToPaymentOrder = async (invoice: Invoice) => {
+  const handleContextMenuAddToPaymentOrder = async (_invoice: ContextInvoice) => {
     try {
       success('Facture ajoutée à l\'ordre de paiement du jour');
     } catch (err) {
@@ -413,7 +547,7 @@ function InvoiceDetailModal({
   };
 
   // Convertir InvoiceWithPayments en Invoice pour ContextMenu
-  const convertToInvoice = (invoiceWithPayments: InvoiceWithPayments): Invoice => ({
+  const convertToInvoice = (invoiceWithPayments: InvoiceWithPayments): ContextInvoice => ({
     id: invoiceWithPayments.ID || 0,
     invoiceNumber: invoiceWithPayments['Numéro de facture'] || '',
     supplier: invoiceWithPayments.Fournisseur || '',
@@ -445,6 +579,9 @@ function InvoiceDetailModal({
       setPaiementModal({ isOpen: true, invoice: invoiceForModal, ordoPaiementId });
     }
   };
+
+  const scope = invoiceTypeScope === 'frais-generaux' ? 'frais-generaux' : 'operationnel';
+  const canEditPaiementModal = Boolean(ordoPaiementId) || canMarkAsPaid(scope);
 
   const handleRemoveInvoice = async (invoice: InvoiceWithPayments) => {
     if (!ordoPaiementId) return;
@@ -526,8 +663,18 @@ function InvoiceDetailModal({
         <div className={`bg-white rounded-lg shadow-xl overflow-hidden flex flex-col ${isFullscreen ? 'w-full h-screen' : 'max-w-[1400px] w-full h-[95vh]'}`}>
           {/* En-tête */}
           <div className="flex items-center justify-between bg-gray-200 border-b p-4 shadow-md">
-            <h2 className="text-lg font-bold text-gray-900">{title}</h2>
+            <h2 className="text-lg font-bold text-gray-900">{displayTitle}</h2>
             <div className="flex gap-2">
+              {isPaidReportMode && (
+                <button
+                  onClick={() => setShowPaidFilters((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors text-xs font-semibold text-gray-700"
+                  title="Afficher/Masquer les filtres"
+                >
+                  <Filter size={14} />
+                  Filtres
+                </button>
+              )}
               <button
                 onClick={() => setIsFullscreen(!isFullscreen)}
                 className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
@@ -582,63 +729,152 @@ function InvoiceDetailModal({
 
           {/* Tableau des factures */}
           <div className="flex-1 overflow-auto">
+            {isPaidReportMode && showPaidFilters && (
+              <div className="p-4 border-b bg-white">
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                  <select
+                    value={filterRegion}
+                    onChange={(e) => setFilterRegion(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                  >
+                    <option value="all">Région: Toutes</option>
+                    {availableRegions.map((region) => (
+                      <option key={region} value={region}>
+                        Région: {region}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={filterSupplier}
+                    onChange={(e) => setFilterSupplier(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                  >
+                    <option value="all">Fournisseur: Tous</option>
+                    {availableSuppliers.map((supplier) => (
+                      <option key={supplier} value={supplier}>
+                        {supplier}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={filterYear}
+                    onChange={(e) => setFilterYear(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                  >
+                    <option value="all">Année: Toutes</option>
+                    {availableYears.map((year) => (
+                      <option key={year} value={String(year)}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={filterMonth}
+                    onChange={(e) => setFilterMonth(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                  >
+                    <option value="all">Mois: Tous</option>
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map((month) => (
+                      <option key={month} value={String(month)}>
+                        Mois {month}
+                      </option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="date"
+                    value={filterDateFrom}
+                    onChange={(e) => setFilterDateFrom(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                    title="Date de paiement du"
+                  />
+
+                  <input
+                    type="date"
+                    value={filterDateTo}
+                    onChange={(e) => setFilterDateTo(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs"
+                    title="Date de paiement au"
+                  />
+                </div>
+              </div>
+            )}
             {loading ? (
               <p className="text-center text-gray-500 py-8 text-sm">Chargement des données...</p>
-            ) : invoicesWithPayments.length === 0 ? (
+            ) : filteredInvoices.length === 0 ? (
               <p className="text-center text-gray-500 py-8 text-sm">Aucune facture à afficher</p>
             ) : (
               <table className="w-full text-sm">
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b bg-gray-200">
-                    <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Numéro Facture
-                    </th>
-                    <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Fournisseur
-                    </th>
-                    <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Date Réception
-                    </th>
-                    {agent?.REGION === 'TOUT' && (
-                      <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                        Région
-                      </th>
-                    )}
-                    <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Catégorie de charge
-                    </th>
-                    <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Priorité de paiement
-                    </th>
-                    <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Échéance
-                    </th>
-                    <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Montant
-                    </th>
-                    <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Montant Payé
-                    </th>
-                    <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
-                      Solde à Payer
-                    </th>
-                    <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                      PDF
-                    </th>
-                    {ordoPaiementId && (
-                      <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                        Payer
-                      </th>
-                    )}
-                    {ordoPaiementId && (
-                      <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                        Retirer
-                      </th>
+                    {isPaidReportMode ? (
+                      <>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Numéro Facture</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Fournisseur</th>
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">Montant</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Mode paiement</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Banque SGL / Compte</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Banque fournisseur / Compte</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">PaidBy</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Fichier</th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Date paiement</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Numéro Facture
+                        </th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Fournisseur
+                        </th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Date Réception
+                        </th>
+                        {agent?.REGION === 'TOUT' && (
+                          <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                            Région
+                          </th>
+                        )}
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Catégorie de charge
+                        </th>
+                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Priorité de paiement
+                        </th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Échéance
+                        </th>
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Montant
+                        </th>
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Montant Payé
+                        </th>
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Solde à Payer
+                        </th>
+                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                          PDF
+                        </th>
+                        {ordoPaiementId && (
+                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                            Payer
+                          </th>
+                        )}
+                        {ordoPaiementId && (
+                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                            Retirer
+                          </th>
+                        )}
+                      </>
                     )}
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedInvoices.map((invoice, index) => {
+                  {filteredInvoices.map((invoice, index) => {
                     const isPaid = invoice.solde <= 0.01;
                     const isPartiallyPaid = invoice.totalPaid > 0 && invoice.solde > 0.01;
                     const isOverdue = isInvoiceOverdue(invoice);
@@ -658,121 +894,183 @@ function InvoiceDetailModal({
                       >
                         {invoice['Numéro de facture']}
                       </td>
-                      <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
-                        {invoice.Fournisseur}
-                      </td>
-                      <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
-                        {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
-                      </td>
-                      {agent?.REGION === 'TOUT' && (
-                        <td className="py-2 px-3 text-xs">
-                          {(() => {
-                            const region = invoice['Région'] as string;
-                            if (!region) return <span className="text-gray-500">N/A</span>;
-                            
-                            const regionColors: Record<string, { bg: string; text: string }> = {
-                              'OUEST': { bg: 'bg-blue-100', text: 'text-blue-800' },
-                              'EST': { bg: 'bg-green-100', text: 'text-green-800' },
-                              'SUD': { bg: 'bg-orange-100', text: 'text-orange-800' },
-                              'NORD': { bg: 'bg-purple-100', text: 'text-purple-800' }
-                            };
-                            
-                            const colors = regionColors[region.toUpperCase()] || { bg: 'bg-gray-100', text: 'text-gray-800' };
-                            
-                            return (
-                              <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${colors.bg} ${colors.text}`}>
-                                {region}
+                      {isPaidReportMode ? (
+                        <>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            {invoice.Fournisseur || 'N/A'}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold">
+                            {formatCurrency(invoice.Montant)} USD
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            {invoice.paymentInfo?.modePaiement || 'N/A'}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            <div className="flex flex-col gap-1">
+                              <span>{invoice.paymentInfo?.BanqueSGL || 'N/A'}</span>
+                              {invoice.paymentInfo?.compteSGL ? (
+                                <span className="inline-flex w-fit items-center px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-semibold">
+                                  {invoice.paymentInfo.compteSGL}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-[10px]">Compte N/A</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            <div className="flex flex-col gap-1">
+                              <span>{invoice.paymentInfo?.BanqueFournisseur || 'N/A'}</span>
+                              {invoice.paymentInfo?.compteFournisseur ? (
+                                <span className="inline-flex w-fit items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                                  {invoice.paymentInfo.compteFournisseur}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-[10px]">Compte N/A</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            {invoice.paymentInfo?.paiedby || 'N/A'}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            {invoice.paymentInfo?.fichier ? (
+                              <a
+                                href={invoice.paymentInfo.fichier}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:underline"
+                              >
+                                Voir fichier
+                              </a>
+                            ) : (
+                              'N/A'
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700">
+                            {invoice.paymentInfo?.datePaiement
+                              ? new Date(invoice.paymentInfo.datePaiement).toLocaleDateString('fr-FR')
+                              : 'N/A'}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
+                            {invoice.Fournisseur}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
+                            {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
+                          </td>
+                          {agent?.REGION === 'TOUT' && (
+                            <td className="py-2 px-3 text-xs">
+                              {(() => {
+                                const region = invoice['Région'] as string;
+                                if (!region) return <span className="text-gray-500">N/A</span>;
+                                
+                                const regionColors: Record<string, { bg: string; text: string }> = {
+                                  'OUEST': { bg: 'bg-blue-100', text: 'text-blue-800' },
+                                  'EST': { bg: 'bg-green-100', text: 'text-green-800' },
+                                  'SUD': { bg: 'bg-orange-100', text: 'text-orange-800' },
+                                  'NORD': { bg: 'bg-purple-100', text: 'text-purple-800' }
+                                };
+                                
+                                const colors = regionColors[region.toUpperCase()] || { bg: 'bg-gray-100', text: 'text-gray-800' };
+                                
+                                return (
+                                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${colors.bg} ${colors.text}`}>
+                                    {region}
+                                  </span>
+                                );
+                              })()}
+                            </td>
+                          )}
+                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
+                            {invoice['Catégorie de charge'] === 'Bulletin de liquidation' ? (
+                              <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
+                                <span className="w-2 h-2 bg-blue-600 rounded-full"></span>
+                                Bulletin de liquidation
                               </span>
-                            );
-                          })()}
-                        </td>
-                      )}
-                      <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
-                        {invoice['Catégorie de charge'] === 'Bulletin de liquidation' ? (
-                          <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
-                            <span className="w-2 h-2 bg-blue-600 rounded-full"></span>
-                            Bulletin de liquidation
-                          </span>
-                        ) : (
-                          invoice['Catégorie de charge'] || 'N/A'
-                        )}
-                      </td>
-                      <td className="py-2 px-3 text-center">
-                        {invoice['Niveau urgence'] || 'N/A'}
-                      </td>
-                      <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
-                        isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'
-                      }`}>
-                        {(() => {
-                          const dueDate = calculateDueDate(invoice);
-                          return dueDate 
-                            ? dueDate.toLocaleDateString('fr-FR')
-                            : 'N/A';
-                        })()}
-                      </td>
-                      <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors">
-                        {formatCurrency(invoice.Montant)} USD
-                      </td>
-                      <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
-                        <span className={invoice.totalPaid > 0 ? 'text-green-600' : 'text-gray-700'}>
-                          {formatCurrency(invoice.totalPaid)} USD
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
-                        <span className={invoice.solde > 0 ? 'text-red-600' : 'text-green-600'}>
-                          {formatCurrency(invoice.solde)} USD
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-center hover:bg-blue-100 rounded transition-all duration-200">
-                        {invoice['Facture attachée'] ? (
-                          <button
-                            onClick={() => 
-                              setPdfModal({
-                                isOpen: true,
-                                url: invoice['Facture attachée'],
-                                title: `Facture ${invoice['Numéro de facture']}`,
-                                summary: {
-                                  totalAmount: parseFloat(invoice.Montant as any) || 0,
-                                  totalPaid: invoice.totalPaid,
-                                  totalRemaining: invoice.solde
+                            ) : (
+                              invoice['Catégorie de charge'] || 'N/A'
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            {invoice['Niveau urgence'] || 'N/A'}
+                          </td>
+                          <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
+                            isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'
+                          }`}>
+                            {(() => {
+                              const dueDate = calculateDueDate(invoice);
+                              return dueDate 
+                                ? dueDate.toLocaleDateString('fr-FR')
+                                : 'N/A';
+                            })()}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors">
+                            {formatCurrency(invoice.Montant)} USD
+                          </td>
+                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
+                            <span className={invoice.totalPaid > 0 ? 'text-green-600' : 'text-gray-700'}>
+                              {formatCurrency(invoice.totalPaid)} USD
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
+                            <span className={invoice.solde > 0 ? 'text-red-600' : 'text-green-600'}>
+                              {formatCurrency(invoice.solde)} USD
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center hover:bg-blue-100 rounded transition-all duration-200">
+                            {invoice['Facture attachée'] ? (
+                              <button
+                                onClick={() => 
+                                  setPdfModal({
+                                    isOpen: true,
+                                    url: invoice['Facture attachée'],
+                                    title: `Facture ${invoice['Numéro de facture']}`,
+                                    summary: {
+                                      totalAmount: parseFloat(invoice.Montant as any) || 0,
+                                      totalPaid: invoice.totalPaid,
+                                      totalRemaining: invoice.solde
+                                    }
+                                  })
                                 }
-                              })
-                            }
-                            className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-125"
-                            title="Afficher le PDF"
-                          >
-                            <i className="fa fa-file-pdf-o text-lg"></i>
-                          </button>
-                        ) : (
-                          <span className="text-gray-400 text-xs">N/A</span>
-                        )}
-                      </td>
-                      {ordoPaiementId && (
-                        <td className="py-2 px-3 text-center hover:bg-green-100 rounded transition-all duration-200">
-                          <button
-                            onClick={() => handlePaymentButtonClick(invoice)}
-                            disabled={invoice.solde <= 0.01}
-                            className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 transform hover:scale-110 ${
-                              invoice.solde <= 0.01
-                                ? 'text-gray-400 cursor-not-allowed opacity-50'
-                                : 'text-green-700 hover:text-green-900 hover:bg-green-200'
-                            }`}
-                            title={invoice.solde <= 0.01 ? 'Facture entièrement payée' : 'Enregistrer un paiement'}
-                          >
-                            <CreditCard size={18} />
-                          </button>
-                        </td>
-                      )}
-                      {ordoPaiementId && (
-                        <td className="py-2 px-3 text-center hover:bg-red-100 rounded transition-all duration-200">
-                          <button
-                            onClick={() => handleRemoveInvoice(invoice)}
-                            className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-110"
-                            title="Retirer de l'ordre de paiement"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        </td>
+                                className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-125"
+                                title="Afficher le PDF"
+                              >
+                                <i className="fa fa-file-pdf-o text-lg"></i>
+                              </button>
+                            ) : (
+                              <span className="text-gray-400 text-xs">N/A</span>
+                            )}
+                          </td>
+                          {ordoPaiementId && (
+                            <td className="py-2 px-3 text-center hover:bg-green-100 rounded transition-all duration-200">
+                              <button
+                                onClick={() => handlePaymentButtonClick(invoice)}
+                                disabled={invoice.solde <= 0.01}
+                                className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 transform hover:scale-110 ${
+                                  invoice.solde <= 0.01
+                                    ? 'text-gray-400 cursor-not-allowed opacity-50'
+                                    : 'text-green-700 hover:text-green-900 hover:bg-green-200'
+                                }`}
+                                title={invoice.solde <= 0.01 ? 'Facture entièrement payée' : 'Enregistrer un paiement'}
+                              >
+                                <CreditCard size={18} />
+                              </button>
+                            </td>
+                          )}
+                          {ordoPaiementId && (
+                            <td className="py-2 px-3 text-center hover:bg-red-100 rounded transition-all duration-200">
+                              <button
+                                onClick={() => handleRemoveInvoice(invoice)}
+                                className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-110"
+                                title="Retirer de l'ordre de paiement"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </td>
+                          )}
+                        </>
                       )}
                     </tr>
                     );
@@ -797,14 +1095,11 @@ function InvoiceDetailModal({
         <PaiementModal
           invoice={paiementModal.invoice}
           onClose={() => {
+            setPaiementModal({ isOpen: false, invoice: null, ordoPaiementId: undefined });
             // Actualiser les données du modal avant fermeture
             loadInvoicePayments();
-            
-            // Émettre l'événement de fermeture de modal pour le rechargement automatique
-            window.dispatchEvent(new Event('modalClosed'));
-            onClose();
           }}
-          readOnly={!paiementModal.ordoPaiementId}
+          readOnly={!canEditPaiementModal}
           ordoPaiementId={paiementModal.ordoPaiementId}
         />
       )}
@@ -829,7 +1124,7 @@ function InvoiceDetailModal({
           onPay={handleContextMenuPayInvoice}
           onAddToPaymentOrder={handleContextMenuAddToPaymentOrder}
           onClose={() => setContextMenu(null)}
-          activeMenu="factures-validated"
+          activeMenu={invoiceTypeScope === 'frais-generaux' ? 'factures-ffg-validated' : 'factures-validated'}
         />
       )}
     </>

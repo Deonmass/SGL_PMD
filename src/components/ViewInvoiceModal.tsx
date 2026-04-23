@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../services/supabase';
 import { useToast } from '../hooks/useToast';
 import { usePermission } from '../hooks/usePermission';
+import { refreshAllData } from '../hooks/useDataRefresh';
 
 interface ViewInvoiceModalProps {
   invoice: Invoice;
@@ -208,6 +209,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       }
 
       success(`Validation ${validationType.toUpperCase()} enregistrée avec succès!`);
+      refreshAllData();
       setShowValidationModal(false);
       setValidationType(null);
     } catch {
@@ -285,6 +287,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       }
 
       success('Facture rejetée avec succès!');
+      refreshAllData();
       setRejections(updatedRejections);
       setShowRejectionConfirmation(false);
       setRejectionReason('');

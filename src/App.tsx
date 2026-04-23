@@ -20,6 +20,7 @@ const menuLabels: { [key: string]: string } = {
   dashboard: 'Dashboard',
   'dashboard-factures': 'Factures',
   'dashboard-liquidation': 'Bulletin de liquidation',
+  'dashboard-ffg': 'Dashboard frais généraux',
   search: 'Recherche avancée',
   'factures-new': 'Nouvelle facture',
   'factures-all': 'Factures',
@@ -32,6 +33,15 @@ const menuLabels: { [key: string]: string } = {
   'factures-rejected': 'Rejeté',
   'factures-overdue': 'Facture Echues',
   'factures-payment-order': 'Ordres de Paiement',
+  'factures-ffg-new': 'Nouvelle facture FFG',
+  'factures-ffg-pending': 'En attente validation DR - FFG',
+  'factures-ffg-pending-dop': 'En attente validation DOP - FFG',
+  'factures-ffg-validated': 'Validée (bon à payer) - FFG',
+  'factures-ffg-payment-order': 'Ordres de Paiement - FFG',
+  'factures-ffg-paid': 'Payé - FFG',
+  'factures-ffg-partially-paid': 'Partiellement payé - FFG',
+  'factures-ffg-rejected': 'Rejeté - FFG',
+  'factures-ffg-overdue': 'Facture Echues - FFG',
   parameters: 'Paramètres',
   'parameters-suppliers': 'Fournisseurs',
   'parameters-charges': 'Types de charges',
@@ -45,6 +55,7 @@ const menuLabels: { [key: string]: string } = {
 function AppContent() {
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
+  const [invoiceFormScope, setInvoiceFormScope] = useState<'operationnel' | 'frais-generaux'>('operationnel');
   const { canView, canCreate, canEdit, canDelete } = usePermission();
   useBackgroundRealtimeSync();
 
@@ -58,6 +69,7 @@ function AppContent() {
       'dashboard': 'dashboard',
       'dashboard-factures': 'dashboard',
       'dashboard-liquidation': 'dashboard',
+      'dashboard-ffg': 'dashboard_ffg',
       'search': 'recherche',
       'factures-new': 'factures',
       'factures-all': 'factures',
@@ -70,6 +82,15 @@ function AppContent() {
       'factures-rejected': 'factures_rejected',
       'factures-overdue': 'factures_overdue',
       'factures-payment-order': 'factures_payment_order',
+      'factures-ffg-new': 'factures_ffg',
+      'factures-ffg-pending': 'factures_ffg_pending_dr',
+      'factures-ffg-pending-dop': 'factures_ffg_pending_dop',
+      'factures-ffg-validated': 'factures_ffg_validated',
+      'factures-ffg-paid': 'factures_ffg_paid',
+      'factures-ffg-partially-paid': 'factures_ffg_partially_paid',
+      'factures-ffg-rejected': 'factures_ffg_rejected',
+      'factures-ffg-overdue': 'factures_ffg_overdue',
+      'factures-ffg-payment-order': 'factures_ffg_payment_order',
       'parameters': 'paramettre',
       'parameters-suppliers': 'fournisseurs',
       'parameters-charges': 'charges',
@@ -84,22 +105,25 @@ function AppContent() {
     
     // Si une permission est requise et l'utilisateur ne l'a pas, retourner au dashboard
     if (requiredPermission && !canView(requiredPermission)) {
-      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} />;
+      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" />;
     }
 
     // New Invoice Modal
-    if (activeMenu === 'factures-new') {
+    if (activeMenu === 'factures-new' || activeMenu === 'factures-ffg-new') {
       return null;
     }
 
     // Dashboard pages
     if (activeMenu === 'dashboard' || activeMenu === 'dashboard-factures' || activeMenu === 'dashboard-liquidation') {
-      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" />;
+    }
+    if (activeMenu === 'dashboard-ffg') {
+      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="frais-generaux" />;
     }
 
     // Search page
     if (activeMenu === 'search') {
-      return <SearchPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <SearchPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" />;
     }
 
     // Invoices
@@ -107,21 +131,37 @@ function AppContent() {
       return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
     }
     if (activeMenu === 'factures-pending' || activeMenu === 'factures-pending-dop' || activeMenu === 'factures-pending-dq') {
-      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" />;
     }
     if (activeMenu === 'factures-validated' || activeMenu === 'factures-rejected' || activeMenu === 'factures-overdue') {
-      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" />;
     }
     if (activeMenu === 'factures-paid' || activeMenu === 'factures-partially-paid') {
-      return <PaiementsPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
+      return <PaiementsPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} invoiceTypeScope="operationnel" />;
+    }
+    if (activeMenu === 'factures-ffg-pending' || activeMenu === 'factures-ffg-pending-dop') {
+      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="frais-generaux" />;
+    }
+    if (activeMenu === 'factures-ffg-validated' || activeMenu === 'factures-ffg-rejected' || activeMenu === 'factures-ffg-overdue') {
+      return <ValidationPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="frais-generaux" />;
+    }
+    if (activeMenu === 'factures-ffg-paid' || activeMenu === 'factures-ffg-partially-paid') {
+      return <PaiementsPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} invoiceTypeScope="frais-generaux" />;
     }
 
     // Payment Orders
     if (activeMenu === 'factures-payment-order') {
       return <PaymentOrdersPage />;
     }
+    if (activeMenu === 'factures-ffg-payment-order') {
+      return <PaymentOrdersPage />;
+    }
 
     // Default to all invoices for factures menu
+    if (activeMenu.startsWith('factures-ffg')) {
+      return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
+    }
+
     if (activeMenu.startsWith('factures')) {
       return <InvoicesPage filterType="all" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
     }
@@ -159,10 +199,11 @@ function AppContent() {
   };
 
   const handleMenuChange = (menu: string) => {
-    if (menu === 'factures-new') {
+    if (menu === 'factures-new' || menu === 'factures-ffg-new') {
       // Vérifier la permission avant d'ouvrir le formulaire
       if (canCreate('factures')) {
         setShowInvoiceForm(true);
+        setInvoiceFormScope(menu === 'factures-ffg-new' ? 'frais-generaux' : 'operationnel');
       }
     } else {
       setShowInvoiceForm(false);
@@ -183,17 +224,12 @@ function AppContent() {
 
   return (
     <div className="flex h-screen bg-gray-100">
-      {/* Indicateur global de synchronisation temps réel */}
-      <div className="fixed top-3 right-4 z-50 pointer-events-none">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 shadow-sm">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-          </span>
-          <span className="text-[11px] font-semibold text-emerald-700 tracking-wide">
-            SYNC TEMPS REEL ACTIVE
-          </span>
-        </div>
+      {/* Indicateur sync temps réel - coin inférieur gauche */}
+      <div className="fixed bottom-3 left-3 z-50 pointer-events-none">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+        </span>
       </div>
 
       {/* Sidebar */}
@@ -209,6 +245,7 @@ function AppContent() {
         <InvoiceForm
           onSubmit={handleInvoiceSubmit}
           onCancel={handleInvoiceCancel}
+          invoiceTypeScope={invoiceFormScope}
         />
       )}
       
