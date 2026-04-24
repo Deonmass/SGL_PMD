@@ -1,8 +1,8 @@
-import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical, Filter } from 'lucide-react';
+import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical, Filter, Search, RefreshCw } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Invoice as DbInvoice } from '../services/tableService';
 import { Invoice as ContextInvoice, InvoiceStatus } from '../types';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatMoney } from '../utils/formatters';
 import { supabase } from '../services/supabase';
 import ViewInvoiceModal from './ViewInvoiceModal';
 import PaiementModal from './PaiementModal';
@@ -11,6 +11,7 @@ import ContextMenu from './ContextMenu';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
+import { refreshAllData, useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import * as XLSX from 'xlsx';
 
 interface InvoiceDetailModalProps {
@@ -55,6 +56,21 @@ interface InvoiceWithPayments extends DbInvoice {
   };
 }
 
+const EMPTY_ANIMATION_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120" viewBox="0 0 180 120">
+  <rect x="24" y="22" width="132" height="82" rx="12" fill="#d7dee3" />
+  <rect x="36" y="34" width="108" height="60" rx="8" fill="#f2f5f7" />
+  <rect x="48" y="72" width="72" height="6" rx="3" fill="#c7d0d6" />
+  <rect x="48" y="82" width="66" height="5" rx="2.5" fill="#d2d9de" />
+  <circle cx="84" cy="56" r="3.2" fill="#8ea0ad" />
+  <circle cx="104" cy="56" r="3.2" fill="#8ea0ad" />
+  <path d="M83 65c3.2-3.6 7.6-3.6 10.8 0" stroke="#8ea0ad" stroke-width="2.5" fill="none" stroke-linecap="round" />
+  <circle cx="124" cy="88" r="16" fill="none" stroke="#9fb1bd" stroke-width="6" />
+  <path d="M136 100l12 12" stroke="#9fb1bd" stroke-width="6" stroke-linecap="round" />
+</svg>`);
+
 function InvoiceDetailModal({ 
   isOpen, 
   onClose, 
@@ -65,6 +81,13 @@ function InvoiceDetailModal({
   ordoPaiementId,
   summary 
 }: InvoiceDetailModalProps) {
+  const formatSingleWord = (value?: string | null) => {
+    const text = String(value || '').trim();
+    if (!text) return 'N/A';
+    if (text.includes(' ')) return text;
+    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+  };
+
   const normalizeInvoiceType = (value?: string | null) =>
     String(value || '')
       .toLowerCase()
@@ -97,6 +120,8 @@ function InvoiceDetailModal({
   const [filterMonth, setFilterMonth] = useState('all');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const normalizedTitle = (title || '')
     .toLowerCase()
@@ -112,6 +137,12 @@ function InvoiceDetailModal({
       loadInvoicePayments();
     }
   }, [isOpen, invoices]);
+
+  useDataRefresh(REFRESH_EVENTS.ALL, () => {
+    if (isOpen) {
+      loadInvoicePayments();
+    }
+  });
 
   const loadInvoicePayments = async () => {
     setLoading(true);
@@ -301,14 +332,14 @@ function InvoiceDetailModal({
     XLSX.writeFile(workbook, `${displayTitle.replace(/\s+/g, '_')}.xlsx`);
   };
 
-  const calculateTotals = () => {
+  const calculateTotals = (rows: InvoiceWithPayments[]) => {
     const totals = {
       totalAmount: 0,
       totalPaid: 0,
       totalRemaining: 0
     };
 
-    invoicesWithPayments.forEach((invoice) => {
+    rows.forEach((invoice) => {
       totals.totalAmount += parseFloat(invoice.Montant as any) || 0;
       totals.totalPaid += invoice.totalPaid || 0;
       totals.totalRemaining += invoice.solde || 0;
@@ -316,8 +347,6 @@ function InvoiceDetailModal({
 
     return totals;
   };
-
-  const displayTotals = calculateTotals();
 
   const calculateDueDate = (invoice: InvoiceWithPayments): Date | null => {
     // Si l'échéance est définie, l'utiliser
@@ -346,22 +375,13 @@ function InvoiceDetailModal({
   };
 
   const isBonAPayer = (invoice: InvoiceWithPayments): boolean => {
-    // Vérifier si la facture est "Bon à Payer" selon la logique de ValidationPage
-    const amount = parseFloat(invoice.Montant as any) || 0;
-    // Les validations sont des dates, pas des booléens
+    // Règle demandée: Bon à payer uniquement après validation DOP
     const drValidated = invoice['validation DR'] !== null && invoice['validation DR'] !== undefined && invoice['validation DR'] !== '';
     const dopValidated = invoice['validation DOP'] !== null && invoice['validation DOP'] !== undefined && invoice['validation DOP'] !== '';
     const isRejected = invoice.Statut?.toUpperCase().includes('REJET');
     
     if (isRejected) return false;
-    
-    // Logique de validation pour "Bon à Payer"
-    if (amount <= 2500) {
-      return drValidated;
-    } else {
-      // Pour > 2500$, seul le DOP doit signer
-      return dopValidated;
-    }
+    return dopValidated;
   };
 
   const handleContextMenu = (e: React.MouseEvent, invoice: InvoiceWithPayments) => {
@@ -412,6 +432,15 @@ function InvoiceDetailModal({
   ).sort((a, b) => b - a);
 
   const filteredInvoices = sortedInvoices.filter((invoice) => {
+    const search = searchQuery.trim().toLowerCase();
+    if (search) {
+      const invoiceNumber = String(invoice['Numéro de facture'] || '').toLowerCase();
+      const supplier = String(invoice.Fournisseur || '').toLowerCase();
+      const category = String(invoice['Catégorie de charge'] || '').toLowerCase();
+      const matchesSearch = invoiceNumber.includes(search) || supplier.includes(search) || category.includes(search);
+      if (!matchesSearch) return false;
+    }
+
     if (!isPaidReportMode) return true;
 
     if (filterRegion !== 'all' && String(invoice['Région'] || '') !== filterRegion) {
@@ -451,6 +480,19 @@ function InvoiceDetailModal({
 
     return true;
   });
+
+  const displayTotals = calculateTotals(filteredInvoices);
+  const totalsByCurrency = filteredInvoices.reduce<Record<string, { total: number; paid: number; remaining: number }>>((acc, invoice) => {
+    const currency = String(invoice.Devise || 'USD').toUpperCase();
+    if (!acc[currency]) {
+      acc[currency] = { total: 0, paid: 0, remaining: 0 };
+    }
+    acc[currency].total += parseFloat(invoice.Montant as any) || 0;
+    acc[currency].paid += invoice.totalPaid || 0;
+    acc[currency].remaining += invoice.solde || 0;
+    return acc;
+  }, {});
+  const currencyRows = Object.entries(totalsByCurrency);
 
   const handleInvoiceNumberClick = async (invoice: InvoiceWithPayments) => {
     if (invoice.hasPayments) {
@@ -655,6 +697,19 @@ function InvoiceDetailModal({
     onClose();
   };
 
+  const handleRefreshCurrentView = async () => {
+    setIsRefreshing(true);
+    try {
+      await loadInvoicePayments();
+      refreshAllData();
+      success('Données actualisées depuis la base.');
+    } catch {
+      showError('Erreur lors de l’actualisation des données.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -662,9 +717,19 @@ function InvoiceDetailModal({
       <div className={`fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4 ${isFullscreen ? 'p-0' : ''}`}>
         <div className={`bg-white rounded-lg shadow-xl overflow-hidden flex flex-col ${isFullscreen ? 'w-full h-screen' : 'max-w-[1400px] w-full h-[95vh]'}`}>
           {/* En-tête */}
-          <div className="flex items-center justify-between bg-gray-200 border-b p-4 shadow-md">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-gray-200 border-b p-4 shadow-md">
             <h2 className="text-lg font-bold text-gray-900">{displayTitle}</h2>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative w-full md:w-[420px] md:max-w-[45vw] md:min-w-[300px]">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Rechercher: numéro, fournisseur, catégorie..."
+                  className="w-full h-9 pl-9 pr-3 border border-gray-300 rounded-lg text-xs leading-none focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+              </div>
               {isPaidReportMode && (
                 <button
                   onClick={() => setShowPaidFilters((prev) => !prev)}
@@ -675,6 +740,14 @@ function InvoiceDetailModal({
                   Filtres
                 </button>
               )}
+              <button
+                onClick={handleRefreshCurrentView}
+                className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
+                title="Actualiser"
+                disabled={isRefreshing}
+              >
+                <RefreshCw size={20} className={`text-gray-600 ${isRefreshing ? 'animate-spin' : ''}`} />
+              </button>
               <button
                 onClick={() => setIsFullscreen(!isFullscreen)}
                 className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
@@ -707,24 +780,45 @@ function InvoiceDetailModal({
 
           {/* Résumé sous le titre */}
           <div className="border-b p-4 bg-gray-100">
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div>
-                <p className="text-xs text-gray-600 mb-0.5">Total Facture ({sortedInvoices.length})</p>
-                <p className="text-base font-bold text-gray-900">${formatCurrency(displayTotals.totalAmount)}</p>
+                <p className="text-xs text-gray-600 mb-0.5">Total Facture ({filteredInvoices.length})</p>
+                <p className="text-base font-bold text-gray-900">
+                  {currencyRows.length === 1
+                    ? formatMoney(displayTotals.totalAmount, currencyRows[0][0])
+                    : formatCurrency(displayTotals.totalAmount)}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-600 mb-0.5">Montant Payé</p>
-                <p className="text-base font-bold text-green-600">${formatCurrency(displayTotals.totalPaid)}</p>
+                <p className="text-base font-bold text-green-600">
+                  {currencyRows.length === 1
+                    ? formatMoney(displayTotals.totalPaid, currencyRows[0][0])
+                    : formatCurrency(displayTotals.totalPaid)}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-600 mb-0.5">Solde à Payer</p>
-                <p className="text-base font-bold text-red-600">${formatCurrency(displayTotals.totalRemaining)}</p>
+                <p className="text-base font-bold text-red-600">
+                  {currencyRows.length === 1
+                    ? formatMoney(displayTotals.totalRemaining, currencyRows[0][0])
+                    : formatCurrency(displayTotals.totalRemaining)}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-600 mb-0.5">Nombre de factures</p>
-                <p className="text-base font-bold text-gray-900">{sortedInvoices.length}</p>
+                <p className="text-base font-bold text-gray-900">{filteredInvoices.length}</p>
               </div>
             </div>
+            {currencyRows.length > 1 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {currencyRows.map(([currency, totals]) => (
+                  <span key={currency} className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold bg-white border border-gray-300 text-gray-700">
+                    {currency}: {formatMoney(totals.total, currency)}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Tableau des factures */}
@@ -805,7 +899,11 @@ function InvoiceDetailModal({
             {loading ? (
               <p className="text-center text-gray-500 py-8 text-sm">Chargement des données...</p>
             ) : filteredInvoices.length === 0 ? (
-              <p className="text-center text-gray-500 py-8 text-sm">Aucune facture à afficher</p>
+              <div className="py-10 text-center">
+                <img src={EMPTY_ANIMATION_SVG} alt="Aucune donnée" className="mx-auto w-40 h-auto animate-bounce" />
+                <p className="mt-3 text-sm font-semibold text-gray-600">Aucune facture à afficher.</p>
+                <p className="text-xs text-gray-500">Ajustez les filtres ou actualisez les données.</p>
+              </div>
             ) : (
               <table className="w-full text-sm">
                 <thead className="sticky top-0 z-10">
@@ -994,7 +1092,7 @@ function InvoiceDetailModal({
                             )}
                           </td>
                           <td className="py-2 px-3 text-center">
-                            {invoice['Niveau urgence'] || 'N/A'}
+                            {formatSingleWord(invoice['Niveau urgence'])}
                           </td>
                           <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
                             isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'

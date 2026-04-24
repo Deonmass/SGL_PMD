@@ -14,6 +14,8 @@ import ValidationPage from './pages/ValidationPage';
 import PaiementsPage from './pages/PaiementsPage';
 import PaymentOrdersPage from './pages/PaymentOrdersPage';
 import { useBackgroundRealtimeSync } from './hooks/useBackgroundRealtimeSync';
+import ProfileSignaturePage from './pages/ProfileSignaturePage';
+import LogsPage from './pages/LogsPage';
 
 // Menu labels mapping
 const menuLabels: { [key: string]: string } = {
@@ -50,13 +52,16 @@ const menuLabels: { [key: string]: string } = {
   'parameters-caisses': 'Caisses',
   'parameters-comptes': 'Comptes',
   users: 'Utilisateurs',
+  'profile-signature': 'Ma signature',
+  'users-logs': 'LOGs',
 };
 
 function AppContent() {
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
   const [invoiceFormScope, setInvoiceFormScope] = useState<'operationnel' | 'frais-generaux'>('operationnel');
-  const { canView, canCreate, canEdit, canDelete } = usePermission();
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const { canView, canCreate, canEdit, canDelete, canManageOwnSignature } = usePermission();
   useBackgroundRealtimeSync();
 
   const getMenuTitle = (menu: string): string => {
@@ -98,12 +103,17 @@ function AppContent() {
       'parameters-centres': 'centres',
       'parameters-caisses': 'caisses',
       'parameters-comptes': 'comptes',
-      'users': 'utilisateurs'
+      'users': 'utilisateurs',
+      'users-logs': 'logs',
+      'profile-signature': null
     };
 
     const requiredPermission = menuPermissionMap[activeMenu];
     
     // Si une permission est requise et l'utilisateur ne l'a pas, retourner au dashboard
+    if (activeMenu === 'profile-signature' && !canManageOwnSignature()) {
+      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" />;
+    }
     if (requiredPermission && !canView(requiredPermission)) {
       return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" />;
     }
@@ -193,6 +203,12 @@ function AppContent() {
     if (activeMenu === 'users') {
       return <UsersPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
     }
+    if (activeMenu === 'users-logs') {
+      return <LogsPage menuTitle={getMenuTitle(activeMenu)} />;
+    }
+    if (activeMenu === 'profile-signature') {
+      return <ProfileSignaturePage menuTitle={getMenuTitle(activeMenu)} />;
+    }
 
     // Default
     return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
@@ -233,10 +249,15 @@ function AppContent() {
       </div>
 
       {/* Sidebar */}
-      <Sidebar activeMenu={activeMenu} onMenuChange={handleMenuChange} />
+      <Sidebar
+        activeMenu={activeMenu}
+        onMenuChange={handleMenuChange}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
+      />
 
       {/* Main Content */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto min-w-0">
         {renderPage()}
       </div>
 

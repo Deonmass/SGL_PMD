@@ -9,6 +9,7 @@ import InvoiceTable from '../components/InvoiceTable';
 import { Invoice } from '../types';
 import * as XLSX from 'xlsx';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
+import { formatMoney } from '../utils/formatters';
 
 interface Facture {
   ID: string;
@@ -56,6 +57,21 @@ function normalizeInvoiceType(value?: string | null) {
   if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
   return normalized;
 }
+
+const EMPTY_ANIMATION_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120" viewBox="0 0 180 120">
+  <rect x="24" y="22" width="132" height="82" rx="12" fill="#d7dee3" />
+  <rect x="36" y="34" width="108" height="60" rx="8" fill="#f2f5f7" />
+  <rect x="48" y="72" width="72" height="6" rx="3" fill="#c7d0d6" />
+  <rect x="48" y="82" width="66" height="5" rx="2.5" fill="#d2d9de" />
+  <circle cx="84" cy="56" r="3.2" fill="#8ea0ad" />
+  <circle cx="104" cy="56" r="3.2" fill="#8ea0ad" />
+  <path d="M83 65c3.2-3.6 7.6-3.6 10.8 0" stroke="#8ea0ad" stroke-width="2.5" fill="none" stroke-linecap="round" />
+  <circle cx="124" cy="88" r="16" fill="none" stroke="#9fb1bd" stroke-width="6" />
+  <path d="M136 100l12 12" stroke="#9fb1bd" stroke-width="6" stroke-linecap="round" />
+</svg>`);
 
 function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoiceTypeScope = 'operationnel' }: ValidationPageProps) {
   const { canView } = usePermission();
@@ -224,7 +240,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           console.log(`*** PAIEMENT POUR 2026-00652 ***: montant=${paymentsMap.get('2026-00652')}`);
         }
 
-        // Filtrer les factures qui respectent les règles de validation selon le montant
+        // Filtrer les factures validées selon la nouvelle règle
         // ET qui n'ont pas encore de paiement
         allData = (allInvoicesData || []).filter(invoice => {
           // Debug spécial pour 2026-00652
@@ -247,36 +263,14 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
             return false;
           }
 
-          // Convertir le montant en nombre (peut être une string dans la BDD)
-          const amountRaw = invoice.Montant;
-          const amount = typeof amountRaw === 'string' ? parseFloat(amountRaw) : (amountRaw || 0);
-          
           const drValidated = invoice["validation DR"] != null && String(invoice["validation DR"]).trim() !== '';
           const dopValidated = invoice["validation DOP"] != null && String(invoice["validation DOP"]).trim() !== '';
           const dgValidated = invoice["validation DG"] != null && String(invoice["validation DG"]).trim() !== '';
           
-          console.log(`Vérification facture ${invoice["Numéro de facture"]}: statut=${invoice.Statut}, montant=${amount} (raw=${amountRaw}, type=${typeof amountRaw}), DR=${drValidated}, DOP=${dopValidated}, DG=${dgValidated}`);
+          console.log(`Vérification facture ${invoice["Numéro de facture"]}: statut=${invoice.Statut}, DR=${drValidated}, DOP=${dopValidated}, DG=${dgValidated}`);
           
-          // Appliquer les règles de validation selon le montant
-          let isValid = false;
-          
-          if (dopValidated) {
-            // Si DOP a signé : automatiquement valide (peu importe le montant et DR)
-            isValid = true;
-            console.log(`  → DOP signé : automatiquement valide`);
-          } else if (amount <= 2500) {
-            // 0 à 2,500 USD : DR seule doit signer (si DOP n'a pas signé)
-            isValid = drValidated;
-            console.log(`  → Montant ${amount} <= 2500: DR required=${drValidated}`);
-          } else if (amount <= 10000) {
-            // 2,500 à 10,000 USD : DR + DOP doivent signer (mais DOP n'a pas signé)
-            isValid = false; // DOP n'a pas signé, donc pas valide
-            console.log(`  → Montant ${amount} entre 2500-10000: DOP non signé = invalide`);
-          } else {
-            // > 10,000 USD : DR + DOP doivent signer (mais DOP n'a pas signé)
-            isValid = false; // DOP n'a pas signé, donc pas valide
-            console.log(`  → Montant ${amount} > 10000: DOP non signé = invalide`);
-          }
+          // Règle demandée: seule validation DOP rend la facture validée
+          const isValid = dopValidated;
           
           console.log(`  → Résultat: ${isValid ? 'VALIDE ✓' : 'INVALIDE ✗'}`);
           return isValid;
@@ -613,18 +607,8 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       const drValidated = inv["validation DR"] != null && String(inv["validation DR"]).trim() !== '';
       const dopValidated = inv["validation DOP"] != null && String(inv["validation DOP"]).trim() !== '';
       
-      let isBonAPayer = false;
-      // Règles de validation : DOP peut signer toute facture même sans DR
-      if (dopValidated) {
-        // Si DOP a signé : automatiquement bon à payer (peu importe le montant et DR)
-        isBonAPayer = true;
-      } else if (amount <= 2500) {
-        // 0 à 2,500 USD : DR seule doit signer (si DOP n'a pas signé)
-        isBonAPayer = drValidated;
-      } else {
-        // > 2,500 USD : DOP doit signer (mais n'a pas signé)
-        isBonAPayer = false;
-      }
+      // Règle demandée: bon à payer uniquement après validation DOP
+      const isBonAPayer = dopValidated;
       
       console.log(`Transformation ${inv["Numéro de facture"]}: montant=${amount}, bon-a-payer=${isBonAPayer}`);
       
@@ -649,7 +633,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
         return finalStatus;
       })(),
       region: inv.Région as 'OUEST' | 'SUD' | 'EST' | 'NORD',
-      validations: ((inv["validation DR"] != null && String(inv["validation DR"]).trim() !== '') ? 1 : 0) + ((inv["validation DOP"] != null && String(inv["validation DOP"]).trim() !== '') ? 1 : 0) + ((inv["validation DG"] != null && String(inv["validation DG"]).trim() !== '') ? 1 : 0),
+      validations: ((inv["validation DOP"] != null && String(inv["validation DOP"]).trim() !== '') ? 2 : ((inv["validation DR"] != null && String(inv["validation DR"]).trim() !== '') ? 1 : 0)),
       file: inv["Facture attachée"] || undefined,
       // Champs supplémentaires pour le formulaire
       emissionDate: inv["Date d'émission"],
@@ -770,7 +754,11 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   };
 
   const getStatistics = () => {
-    const totalAmount = invoices.reduce((sum, inv) => sum + (inv.amount || 0), 0);
+    const totalsByCurrency = invoices.reduce<Record<string, number>>((acc, inv) => {
+      const currency = String(inv.currency || 'USD').toUpperCase();
+      acc[currency] = (acc[currency] || 0) + (inv.amount || 0);
+      return acc;
+    }, {});
     const urgentCount = invoices.filter(inv => {
       const urgency = inv.urgencyLevel?.toLowerCase();
       return urgency === 'urgent'; // Uniquement les factures avec Priorité de paiement Urgent
@@ -783,7 +771,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     }).length;
 
     return {
-      total: totalAmount.toFixed(2),
+      totalsByCurrency,
       count: invoices.length,
       urgent: urgentCount,
       overdue: overdueCount
@@ -846,9 +834,9 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   return (
     <div className="p-0 bg-white">
       {/* Filtres unifiés avec style tabs */}
-      <div className="bg-gray-100  pr-4 pl-4 pt-4 pb-0 mb-6">
+      <div className="bg-gray-100 pr-4 pl-4 pt-4 pb-0 mb-6">
         {/* Header de la page */}
-      <div className="flex justify-between items-center mb-4">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">{menuTitle}</h1>
           <p className="text-gray-600 mt-0">
@@ -856,10 +844,10 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           </p>
         </div>
       </div>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           
           {/* Onglets par région */}
-          <div className="flex">
+          <div className="flex flex-wrap">
             {agent?.REGION === 'TOUT' ? (
               <>
                 <button
@@ -920,14 +908,14 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           </div>
           
           {/* Contrôles à droite */}
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 placeholder="N° dossier, fournisseur, montant, priorité..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="px-3 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+                className="px-3 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -992,7 +980,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       ) : (
         <>
         {/* Cartes de statistiques */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4" >
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4">
         <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg shadow-lg p-4 hover:shadow-2xl transition-all duration-300 hover:scale-105 cursor-pointer text-white">
           <div className="flex items-center justify-between">
             <div className="flex-1">
@@ -1015,8 +1003,24 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
               <div className="flex items-center gap-3">
                 <div>
                   <p className="text-sm font-semibold opacity-90">Montant Total</p>
-                  <p className="text-3xl font-bold">{stats.total.toLocaleString()}</p>
-                  <p className="text-xs opacity-75 mt-1">USD</p>
+                  {Object.keys(stats.totalsByCurrency).length === 0 ? (
+                    <p className="text-3xl font-bold">0</p>
+                  ) : Object.keys(stats.totalsByCurrency).length === 1 ? (
+                    <p className="text-2xl font-bold">
+                      {formatMoney(
+                        stats.totalsByCurrency[Object.keys(stats.totalsByCurrency)[0]],
+                        Object.keys(stats.totalsByCurrency)[0]
+                      )}
+                    </p>
+                  ) : (
+                    <div className="mt-1 space-y-1">
+                      {Object.entries(stats.totalsByCurrency).map(([currency, amount]) => (
+                        <p key={currency} className="text-xs font-semibold">
+                          {formatMoney(amount, currency)}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1061,7 +1065,15 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
 
       {/* Tableau des factures avec menu contextuel */}
       <div className="px-0 pb-4">
-        <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
+        {invoices.length === 0 ? (
+          <div className="py-12 text-center">
+            <img src={EMPTY_ANIMATION_SVG} alt="Aucune donnée" className="mx-auto w-40 h-auto animate-bounce" />
+            <p className="mt-3 text-sm font-semibold text-gray-600">Aucune facture trouvée pour ces filtres.</p>
+            <p className="text-xs text-gray-500">Modifiez la recherche, la région, l'année ou le mois.</p>
+          </div>
+        ) : (
+          <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
+        )}
       </div>
         </>
       )}

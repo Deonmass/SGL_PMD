@@ -17,7 +17,10 @@ import {
   MapPin,
   CreditCard,
   LogOut,
-  Lock
+  Lock,
+  FileSignature,
+  ChevronsLeft,
+  ChevronsRight
 } from 'lucide-react';
 import { useState } from 'react';
 import Swal from 'sweetalert2';
@@ -29,11 +32,13 @@ import { supabase } from '../services/supabase';
 interface SidebarProps {
   activeMenu: string;
   onMenuChange: (menu: string) => void;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
-function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
+function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollapse }: SidebarProps) {
   const { agent, signOut } = useAuth();
-  const { canView, canViewInvoiceTab } = usePermission();
+  const { canView, canViewInvoiceTab, canManageOwnSignature } = usePermission();
   const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -104,6 +109,7 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
       icon: Users,
       subItems: [
         { id: 'parameters-agents', label: 'Utilisateurs', icon: UserCheck },
+        { id: 'users-logs', label: 'LOGs', icon: FileText },
       ],
     },
   ];
@@ -129,6 +135,12 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
   const isExpanded = (id: string) => {
     return expandedMenus.includes(id);
   };
+
+  const iconTooltip = (label: string) => (
+    <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-900/95 backdrop-blur-sm text-white text-[11px] px-2.5 py-1.5 opacity-0 -translate-x-2 scale-95 blur-[1px] group-hover:opacity-100 group-hover:translate-x-0 group-hover:scale-100 group-hover:blur-0 transition-all duration-250 ease-out z-[220] border border-slate-500/80 shadow-2xl">
+      {label}
+    </span>
+  );
 
   const handleChangePassword = async () => {
     if (!agent?.ID) {
@@ -451,19 +463,33 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
   };
 
   return (
-    <div className="w-64 bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 min-h-screen text-white flex flex-col" style={{ fontFamily: '"Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", sans-serif' }}>
+    <div
+      className={`${isCollapsed ? 'w-20' : 'w-64'} relative overflow-visible bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 min-h-screen text-white flex flex-col transition-all duration-300`}
+      style={{ fontFamily: '"Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", sans-serif' }}
+    >
       {/* Header */}
-      <div className="px-6 py-5 border-b border-slate-700/50">
-        <div className="flex items-center gap-3">
+      <div className={`${isCollapsed ? 'px-3 py-4' : 'px-6 py-5'} border-b border-slate-700/50`}>
+        <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
           <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-lg p-2 shadow-lg">
             <LayoutDashboard size={20} className="text-white" />
           </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight">PMD</h1>
-            <p className="text-xs text-slate-400 font-medium">Dashboard</p>
-          </div>
+          {!isCollapsed && (
+            <div>
+              <h1 className="text-lg font-bold tracking-tight">PMD</h1>
+              <p className="text-xs text-slate-400 font-medium">Dashboard</p>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Toggle sur la séparation droite (position demandée) */}
+      <button
+        onClick={onToggleCollapse}
+        className="absolute top-20 -right-3 h-10 w-7 rounded-r-md bg-slate-800 border border-slate-500 border-l-0 text-slate-200 hover:text-white hover:bg-slate-700 transition z-[200] shadow-2xl ring-1 ring-black/30 flex items-center justify-center"
+        title={isCollapsed ? 'Afficher le menu' : 'Réduire le menu'}
+      >
+        {isCollapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
+      </button>
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
@@ -506,28 +532,39 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                 {item.id === 'users' && (
                   <div className="my-4 border-t border-slate-600/20"></div>
                 )}
-                <div key={item.id} className="mb-2 group/menu">
+                <div key={item.id} className="mb-2 group/menu relative">
                   <button
                     onClick={() => {
                       toggleMenu(item.id);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all duration-300 ease-out relative hover:scale-105 text-slate-300 hover:text-white`}
+                    className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'} ${isCollapsed ? 'px-2' : 'px-4'} py-3 rounded-lg text-sm font-semibold transition-all duration-300 ease-out relative hover:scale-[1.08] active:scale-[0.98] text-slate-300 hover:text-white`}
                   >
                     <div className={`absolute left-0 top-0 bottom-0 w-0.5 ${menuColor.bar} transition-all duration-300 ease-out`}></div>
                     <Icon size={19} className={`flex-shrink-0 transition-colors duration-300 ease-out ${
                       isItemExpanded ? menuColor.accent : 'group-hover:' + menuColor.accent
                     }`} />
-                    <span className="flex-1 text-left">{item.label}</span>
-                    <ChevronDown
-                      size={16}
-                      className={`transition-transform duration-300 ease-out flex-shrink-0 ${
-                        isItemExpanded ? 'rotate-180' : ''
-                      }`}
-                    />
+                    {isCollapsed && (
+                      <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-[1.5px] w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_10px_rgba(239,68,68,0.75)] transition-all duration-300 ease-out group-hover:w-6"></span>
+                    )}
+                    {isCollapsed && iconTooltip(item.label)}
+                    {!isCollapsed && (
+                      <span className="flex-1 text-left relative">
+                        {item.label}
+                        <span className="absolute -bottom-1 left-0 h-[1.5px] w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_10px_rgba(239,68,68,0.75)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                      </span>
+                    )}
+                    {!isCollapsed && (
+                      <ChevronDown
+                        size={16}
+                        className={`transition-transform duration-300 ease-out flex-shrink-0 ${
+                          isItemExpanded ? 'rotate-180' : ''
+                        }`}
+                      />
+                    )}
                   </button>
 
                   {isItemExpanded && (
-                    <div className="ml-2 mt-2 space-y-1 animate-in slide-in-from-top-1 duration-300">
+                    <div className={`${isCollapsed ? 'mt-1 space-y-1' : 'ml-2 mt-2 space-y-1'} animate-in slide-in-from-top-1 duration-300`}>
                       {item.subItems.map((subItem) => {
                         const SubIcon = subItem.icon;
                         
@@ -557,6 +594,7 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                           'parameters-centres': 'centres',
                           'parameters-caisses': 'caisses',
                           'parameters-comptes': 'comptes',
+                          'users-logs': 'logs',
                         };
 
                         const requiredSubPermission = subItemPermissionMap[subItem.id];
@@ -574,17 +612,26 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                           <button
                             key={subItem.id}
                             onClick={() => handleMenuClick(subItem.id)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs transition-all duration-300 ease-out group relative hover:scale-105 ${
+                            className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-4'} py-2.5 rounded-lg text-xs transition-all duration-300 ease-out group relative hover:scale-[1.06] active:scale-[0.98] ${
                               isSubMenuActive(subItem.id)
                                 ? `${menuColor.activeBg} text-white font-semibold`
                                 : 'text-slate-400 hover:text-slate-200'
                             }`}
                           >
-                            <div className={`absolute left-0 top-0 bottom-0 w-0.5 ${menuColor.bar} transition-all duration-300 ease-out`}></div>
+                            <div className={`absolute left-0 top-0 bottom-0 ${isCollapsed ? 'w-0.5' : 'w-px'} ${menuColor.bar} transition-all duration-300 ease-out`}></div>
                             <SubIcon size={15} className={`flex-shrink-0 transition-colors duration-300 ease-out ${
                               isSubMenuActive(subItem.id) ? menuColor.accent : 'group-hover:' + menuColor.accent
                             }`} />
-                            <span className={`flex-1 text-left`}>{subItem.label}</span>
+                            {isCollapsed && (
+                              <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-5"></span>
+                            )}
+                            {isCollapsed && iconTooltip(subItem.label)}
+                            {!isCollapsed && (
+                              <span className="flex-1 text-left relative">
+                                {subItem.label}
+                                <span className="absolute -bottom-1 left-0 h-px w-0 bg-gradient-to-r from-red-300 via-red-400 to-rose-400 shadow-[0_0_8px_rgba(239,68,68,0.65)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                              </span>
+                            )}
                           </button>
                         );
                       })}
@@ -599,7 +646,7 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
             <button
               key={item.id}
               onClick={() => handleMenuClick(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all duration-300 ease-out group relative hover:scale-105 ${
+              className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'} ${isCollapsed ? 'px-2' : 'px-4'} py-3 rounded-lg text-sm font-semibold transition-all duration-300 ease-out group relative hover:scale-[1.08] active:scale-[0.98] ${
                 isSubMenuActive(item.id)
                   ? `${menuColor.activeBg} text-white`
                   : 'text-slate-300 hover:text-white'
@@ -609,54 +656,98 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
               <Icon size={19} className={`flex-shrink-0 transition-colors duration-300 ease-out ${
                 isSubMenuActive(item.id) ? menuColor.accent : 'group-hover:' + menuColor.accent
               }`} />
-              <span className="">{item.label}</span>
+              {isCollapsed && (
+                <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-[1.5px] w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_10px_rgba(239,68,68,0.75)] transition-all duration-300 ease-out group-hover:w-6"></span>
+              )}
+              {isCollapsed && iconTooltip(item.label)}
+              {!isCollapsed && (
+                <span className="relative">
+                  {item.label}
+                  <span className="absolute -bottom-1 left-0 h-[1.5px] w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_10px_rgba(239,68,68,0.75)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                </span>
+              )}
             </button>
           );
         })}
       </nav>
 
       {/* User Footer */}
-      <div className="border-t border-slate-700/50 bg-slate-800/50">
+      <div className="border-t border-slate-700/50 bg-slate-800/50 relative overflow-visible">
         {agent ? (
-          <div className="p-4 space-y-3">
+          <div className={`${isCollapsed ? 'p-2 space-y-2' : 'p-4 space-y-3'}`}>
             {/* User Info - Clickable */}
             <button
               onClick={() => setShowUserMenu(!showUserMenu)}
-              className="w-full flex items-center gap-3 hover:bg-slate-700/40 rounded-lg p-2.5 transition-all duration-300 ease-out group"
+              className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'} hover:bg-slate-700/40 rounded-lg ${isCollapsed ? 'p-2' : 'p-2.5'} transition-all duration-300 ease-out group`}
             >
               <div className="w-11 h-11 bg-gradient-to-br from-red-500 to-red-600 rounded-lg flex items-center justify-center text-sm font-bold text-white flex-shrink-0 shadow-lg group-hover:shadow-xl transition-shadow duration-300">
                 {(agent.Nom?.[0] || agent.email?.[0] || '?').toUpperCase()}
               </div>
-              <div className="flex-1 min-w-0 text-left">
-                <p className="text-sm font-semibold text-white truncate">
-                  {agent.Nom || 'Utilisateur'}
-                </p>
-                <p className="text-xs text-slate-400 truncate">{agent.Role || 'Agent'}</p>
-                {agent.REGION && (
-                  <p className="text-xs text-slate-500 truncate">{agent.REGION}</p>
-                )}
-              </div>
-              <ChevronDown
-                size={16}
-                className={`transition-transform duration-300 ease-out flex-shrink-0 text-slate-400 ${
-                  showUserMenu ? 'rotate-180' : ''
-                }`}
-              />
+              {!isCollapsed && (
+                <>
+                  <div className="flex-1 min-w-0 text-left">
+                    <p className="text-sm font-semibold text-white truncate">
+                      {agent.Nom || 'Utilisateur'}
+                    </p>
+                    <p className="text-xs text-slate-400 truncate">{agent.Role || 'Agent'}</p>
+                    {agent.REGION && (
+                      <p className="text-xs text-slate-500 truncate">{agent.REGION}</p>
+                    )}
+                  </div>
+                  <ChevronDown
+                    size={16}
+                    className={`transition-transform duration-300 ease-out flex-shrink-0 text-slate-400 ${
+                      showUserMenu ? 'rotate-180' : ''
+                    }`}
+                  />
+                </>
+              )}
             </button>
 
             {/* User Menu Items */}
             {showUserMenu && (
-              <div className="space-y-1 animate-in slide-in-from-top-1 duration-300 bg-slate-700/20 rounded-lg p-2">
+              <div className={`${isCollapsed ? 'bg-slate-700/30' : 'bg-slate-700/20'} space-y-1 rounded-lg p-2 animate-in fade-in-0 slide-in-from-top-1 duration-300 overflow-visible`}>
                 <button
                   onClick={() => {
                     handleChangePassword();
                     setShowUserMenu(false);
                   }}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ease-out text-slate-300 hover:bg-slate-700/50 hover:text-white"
+                  className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2 rounded-lg text-xs font-semibold transition-all duration-300 ease-out text-slate-300 hover:bg-slate-700/50 hover:text-white hover:scale-[1.06] hover:-translate-y-0.5 active:scale-[0.98] group relative`}
                 >
                   <Lock size={15} className="flex-shrink-0" />
-                  <span>Changer de mot de passe</span>
+                  {isCollapsed && (
+                    <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-5"></span>
+                  )}
+                  {isCollapsed && iconTooltip('Changer de mot de passe')}
+                  {!isCollapsed && (
+                    <span className="relative">
+                      Changer de mot de passe
+                      <span className="absolute -bottom-1 left-0 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                    </span>
+                  )}
                 </button>
+
+                {canManageOwnSignature() && (
+                  <button
+                    onClick={() => {
+                      onMenuChange('profile-signature');
+                      setShowUserMenu(false);
+                    }}
+                    className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2 rounded-lg text-xs font-semibold transition-all duration-300 ease-out text-slate-300 hover:bg-slate-700/50 hover:text-white hover:scale-[1.06] hover:-translate-y-0.5 active:scale-[0.98] group relative`}
+                  >
+                    <FileSignature size={15} className="flex-shrink-0" />
+                    {isCollapsed && (
+                      <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-5"></span>
+                    )}
+                    {isCollapsed && iconTooltip('Ma signature')}
+                    {!isCollapsed && (
+                      <span className="relative">
+                        Ma signature
+                        <span className="absolute -bottom-1 left-0 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                      </span>
+                    )}
+                  </button>
+                )}
 
                 <div className="my-1.5 border-t border-slate-600/30"></div>
 
@@ -667,10 +758,19 @@ function Sidebar({ activeMenu, onMenuChange }: SidebarProps) {
                     signOut();
                   }}
                   disabled={isLoggingOut}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ease-out text-red-400 hover:bg-red-500/25 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2 rounded-lg text-xs font-semibold transition-all duration-300 ease-out text-red-400 hover:bg-red-500/25 hover:text-red-300 hover:scale-[1.06] hover:-translate-y-0.5 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed group relative`}
                 >
                   <LogOut size={15} className="flex-shrink-0" />
-                  <span>{isLoggingOut ? 'Déconnexion...' : 'Déconnexion'}</span>
+                  {isCollapsed && (
+                    <span className="absolute bottom-1 left-1/2 -translate-x-1/2 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-5"></span>
+                  )}
+                  {isCollapsed && iconTooltip(isLoggingOut ? 'Déconnexion...' : 'Déconnexion')}
+                  {!isCollapsed && (
+                    <span className="relative">
+                      {isLoggingOut ? 'Déconnexion...' : 'Déconnexion'}
+                      <span className="absolute -bottom-1 left-0 h-px w-0 bg-gradient-to-r from-red-400 via-red-500 to-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.7)] transition-all duration-300 ease-out group-hover:w-full"></span>
+                    </span>
+                  )}
                 </button>
               </div>
             )}

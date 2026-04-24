@@ -94,6 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: data.email,
         Role: data.Role,
         REGION: data.REGION,
+        signature: data.signature || null,
         statut: data.statut || 'Actif',
         Mot_de_passe: data['mot de passe'],
         permission: data.permission,

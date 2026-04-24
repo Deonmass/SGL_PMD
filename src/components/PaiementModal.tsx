@@ -6,6 +6,7 @@ import { ordoPaiementService, caisseService, Caisse } from '../services/tableSer
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import { refreshAllData } from '../hooks/useDataRefresh';
+import { appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import CompteModal from './modals/CompteModal';
 import Swal from 'sweetalert2';
 import { cloudStorageService } from '../services/cloudStorage';
@@ -649,6 +650,20 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         showAlertError('Erreur lors de l\'enregistrement: ' + error.message);
         setIsSubmitting(false);
         return;
+      }
+
+      try {
+        const actor = buildLogActor({ Nom: agent?.Nom, email: agent?.email });
+        const montantPaye = Math.round((currentPayment.montantPaye || 0) * 100) / 100;
+        const mode = currentPayment.modePaiement || 'non précisé';
+        await appendFactureLogByInvoiceNumber(
+          invoice.invoiceNumber,
+          actor,
+          'Paiement',
+          `Paiement enregistré (${mode}) d'un montant de ${montantPaye} ${currentPayment.devise || 'USD'}.`
+        );
+      } catch (logError) {
+        console.error('Erreur journalisation facture (paiement):', logError);
       }
 
       console.log('Paiement enregistré avec succès!');

@@ -4,6 +4,9 @@ import { supabase } from '../services/supabase';
 import { cloudStorageService } from '../services/cloudStorage';
 import { useToast } from '../hooks/useToast';
 import { Invoice } from '../types';
+import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import { appendFactureLogById, buildFactureUpdateExplanation, buildLogActor } from '../services/activityLogService';
 
 interface EditInvoiceFormProps {
   invoice: Invoice;
@@ -26,23 +29,44 @@ interface Agent {
 }
 
 interface CostCenter {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   Designation: string;
   REGION: string;
 }
 
 interface Charge {
-  id: string;
+  id?: string | number;
+  ID?: string | number;
   "designation_Charges": string;
   Bloquant: string;
+  type?: string | null;
+}
+
+function normalizeInvoiceType(value?: string | null) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
+  if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
+  return normalized;
 }
 
 function normalizeInvoiceNumber(value?: string | null) {
   return String(value || '').trim().toLowerCase();
 }
 
+function getEntityId(entity: Record<string, unknown>) {
+  const id = entity.id ?? entity.ID;
+  return id !== undefined && id !== null ? String(id) : '';
+}
+
 function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) {
   const { success, error: showError } = useToast();
+  const { agent } = useAuth();
+  const { canCreate } = usePermission();
   const [formData, setFormData] = useState({
     // Informations générales
     emissionDate: invoice.emissionDate || '',
@@ -98,6 +122,15 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
   const [charges, setCharges] = useState<Charge[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [newSupplier, setNewSupplier] = useState({ name: '', category: '' });
+  const [showAddCostCenterModal, setShowAddCostCenterModal] = useState(false);
+  const [newCostCenter, setNewCostCenter] = useState({ Designation: '', REGION: String(invoice.region || agent?.REGION || 'OUEST') });
+  const [isAddingCostCenter, setIsAddingCostCenter] = useState(false);
+  const [paymentModeOptions, setPaymentModeOptions] = useState([
+    { value: 'cash', label: 'Cash' },
+    { value: 'bank', label: 'Banque' },
+    { value: 'mobile-money', label: 'Mobile Money' },
+    { value: 'check', label: 'Chèque' },
+  ]);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   
   const supplierInputRef = useRef<HTMLInputElement>(null);
@@ -108,6 +141,17 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
     if (!formData.region) return [];
     return costCenters.filter(center => center.REGION === formData.region);
   }, [costCenters, formData.region]);
+
+  const filteredCharges = useMemo(() => {
+    if (!formData.invoiceType) return charges;
+    const targetType = normalizeInvoiceType(formData.invoiceType);
+
+    return charges.filter((charge) => {
+      const chargeType = normalizeInvoiceType(charge.type);
+      if (!chargeType && targetType === 'operationnel') return true;
+      return chargeType === targetType;
+    });
+  }, [charges, formData.invoiceType]);
 
   // Chargement des données depuis Supabase
   useEffect(() => {
@@ -163,6 +207,19 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
 
     loadData();
   }, []);
+
+  useEffect(() => {
+    const currentMode = String(formData.paymentMode || '').trim();
+    if (!currentMode) return;
+    const exists = paymentModeOptions.some((option) => option.value === currentMode);
+    if (!exists) {
+      const label = currentMode
+        .split('-')
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+      setPaymentModeOptions((prev) => [...prev, { value: currentMode, label }]);
+    }
+  }, [formData.paymentMode, paymentModeOptions]);
 
   // Charger les données complètes de la facture depuis la BDD (pour emissionDate et autres champs)
   useEffect(() => {
@@ -262,6 +319,46 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
     }
   };
 
+  const handleAddCostCenter = async () => {
+    const designation = newCostCenter.Designation.trim();
+    if (!designation) {
+      showError('La désignation du centre de coût est obligatoire.');
+      return;
+    }
+    if (!canCreate('centres')) {
+      showError('Vous n\'avez pas la permission de créer un centre de coût.');
+      return;
+    }
+
+    setIsAddingCostCenter(true);
+    try {
+      const payload = {
+        Designation: designation,
+        REGION: newCostCenter.REGION || formData.region || 'OUEST'
+      };
+      const { data, error } = await supabase
+        .from('CENTRE_DE_COUT')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error) {
+        showError(`Erreur lors de l'ajout du centre de coût: ${error.message}`);
+        return;
+      }
+
+      if (data) {
+        setCostCenters((prev) => [data as CostCenter, ...prev]);
+        setFormData((prev) => ({ ...prev, costCenter: String((data as CostCenter).Designation || designation) }));
+      }
+      setShowAddCostCenterModal(false);
+      setNewCostCenter({ Designation: '', REGION: formData.region || 'OUEST' });
+      success('Centre de coût ajouté avec succès.');
+    } finally {
+      setIsAddingCostCenter(false);
+    }
+  };
+
   // Gérer le drag and drop
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -346,6 +443,10 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
     const { name, value } = e.target;
     setFormData(prev => {
       const updated = { ...prev, [name]: value };
+
+      if (name === 'invoiceType') {
+        updated.chargeCategory = '';
+      }
       
       // Recalculate dueDate if receptionDate or paymentDelay changes
       if (name === 'receptionDate' || name === 'paymentDelay') {
@@ -428,18 +529,41 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
         // Déterminer le statut basé sur les validations
         const hasDR = validations.dr !== null;
         const hasDOP = validations.dop !== null;
-        const hasDG = validations.dg !== null;
-        
         if (!hasDR) {
           newStatus = 'En attente validation DR';
         } else if (hasDR && !hasDOP) {
           newStatus = 'En attente validation DOP';
-        } else if (hasDR && hasDOP && !hasDG) {
-          newStatus = 'En attente validation DG';
+        } else if (hasDR && hasDOP) {
+          newStatus = 'Validée';
         }
       }
       
       // Préparer les données pour la mise à jour
+      const beforeValues: Record<string, unknown> = {
+        'Date emission': invoice.emissionDate,
+        'Date de réception': invoice.receptionDate,
+        'Numéro de facture': invoice.invoiceNumber,
+        Fournisseur: invoice.supplier,
+        'Catégorie fournisseur': invoice.supplierCategory,
+        Région: invoice.region,
+        'Centre de coût': invoice.costCenter,
+        Gestionnaire: invoice.manager,
+        'Type de facture': invoice.invoiceType,
+        'Catégorie de charge': invoice.chargeCategory,
+        'Numéro de dossier': invoice.fileNumber,
+        'Motif / Description': invoice.motif,
+        Devise: invoice.currency,
+        'Taux facture': invoice.exchangeRate,
+        Montant: invoice.amount,
+        'Niveau urgence': invoice.urgencyLevel,
+        'Délais de paiement': invoice.paymentDelay,
+        Échéance: invoice.dueDate,
+        'Mode de paiement requis': invoice.paymentMode,
+        'Facture attachée': invoice.attachedInvoiceUrl,
+        Commentaires: invoice.comments,
+        Statut: currentStatus,
+      };
+
       const invoiceData = {
         "Date emission": formData.emissionDate,
         "Date de réception": formData.receptionDate,
@@ -447,8 +571,8 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
         "Fournisseur": formData.supplier,
         "Catégorie fournisseur": formData.supplierCategory,
         "Région": formData.region,
-        "Centre de coût": formData.costCenter ? costCenters.find(c => c.id === formData.costCenter)?.Designation || formData.costCenter : '',
-        "Gestionnaire": formData.manager ? agents.find(a => a.id === formData.manager)?.Nom || formData.manager : '',
+        "Centre de coût": formData.costCenter || '',
+        "Gestionnaire": formData.manager || '',
         "Type de facture": formData.invoiceType,
         "Catégorie de charge": formData.chargeCategory,
         "Numéro de dossier": formData.invoiceType === 'frais-generaux' ? null : formData.fileNumber,
@@ -486,6 +610,15 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
       }
 
       console.log('Facture mise à jour avec succès:', data);
+
+      try {
+        const actor = buildLogActor(agent);
+        const explication = buildFactureUpdateExplanation(beforeValues, invoiceData);
+        await appendFactureLogById(Number(invoice.id), actor, 'Edition', explication);
+      } catch (logError) {
+        console.error('Erreur journalisation facture (édition):', logError);
+      }
+
       success('Facture mise à jour avec succès !');
       
       // Appeler la fonction onSubmit avec les données complètes
@@ -644,9 +777,22 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Centre de coût *
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-semibold text-gray-700">
+                    Centre de coût *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewCostCenter((prev) => ({ ...prev, REGION: formData.region || prev.REGION || 'OUEST' }));
+                      setShowAddCostCenterModal(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
+                  >
+                    <Plus size={12} />
+                    Ajouter
+                  </button>
+                </div>
                 <select
                   name="costCenter"
                   value={formData.costCenter}
@@ -660,9 +806,9 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                   <option value="">
                     {formData.region ? '-- Sélectionner --' : 'Sélectionnez une région d\'abord'}
                   </option>
-                  {costCenters.map((center) => (
-                    <option key={center.id} value={center.id}>
-                      {center.Designation || center.id}
+                  {filteredCostCenters.map((center) => (
+                    <option key={getEntityId(center) || center.Designation} value={center.Designation}>
+                      {center.Designation}
                     </option>
                   ))}
                 </select>
@@ -679,7 +825,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                 >
                   <option value="">-- Sélectionner --</option>
                   {agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
+                    <option key={getEntityId(agent) || agent.email} value={agent.Nom}>
                       {agent.Nom}
                     </option>
                   ))}
@@ -702,6 +848,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                   onChange={handleChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
+                  disabled
                 >
                   <option value="">-- Sélectionner --</option>
                   <option value="operationnel">Opérationnel</option>
@@ -720,8 +867,8 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                   required
                 >
                   <option value="">-- Sélectionner --</option>
-                  {charges.map((charge) => (
-                    <option key={charge.id} value={charge.id}>
+                  {filteredCharges.map((charge) => (
+                    <option key={getEntityId(charge) || charge.designation_Charges} value={charge["designation_Charges"]}>
                       {charge["designation_Charges"]}
                     </option>
                   ))}
@@ -900,10 +1047,9 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">-- Sélectionner --</option>
-                  <option value="cash">Cash</option>
-                  <option value="bank">Banque</option>
-                  <option value="mobile-money">Mobile Money</option>
-                  <option value="check">Chèque</option>
+                  {paymentModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1015,7 +1161,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
             <button
               type="submit"
               disabled={formData.isSubmitting}
-              className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed flex items-center gap-2"
+              className="px-6 py-2 text-white font-medium rounded-lg bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500 hover:from-indigo-600 hover:via-blue-600 hover:to-cyan-600 shadow-md hover:shadow-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-all duration-300"
             >
               {formData.isSubmitting && (
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
@@ -1089,6 +1235,62 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
           </div>
         </div>
       )}
+
+      {showAddCostCenterModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4">
+              <h3 className="text-lg font-bold text-gray-800">Ajouter un centre de coût</h3>
+              <button onClick={() => setShowAddCostCenterModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Désignation *</label>
+                <input
+                  type="text"
+                  value={newCostCenter.Designation}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, Designation: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Approvisionnement Kinshasa"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Région *</label>
+                <select
+                  value={newCostCenter.REGION}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, REGION: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="OUEST">OUEST</option>
+                  <option value="EST">EST</option>
+                  <option value="SUD">SUD</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-4 px-6 py-4 border-t">
+              <button
+                type="button"
+                onClick={() => setShowAddCostCenterModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                disabled={isAddingCostCenter}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCostCenter}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                disabled={isAddingCostCenter}
+              >
+                {isAddingCostCenter ? 'Ajout...' : 'Ajouter'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -46,6 +46,7 @@ export interface Agent {
   email: string;
   Role: string;
   REGION: string;
+  signature?: string | null;
   Derniere_connexion: string | null;
   statut: 'Actif' | 'Inactif';
   Mot_de_passe?: string;

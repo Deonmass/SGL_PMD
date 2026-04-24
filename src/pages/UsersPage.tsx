@@ -72,6 +72,7 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     caisses: { voir: true, creer: true, modifier: true, supprimer: true },
     comptes: { voir: true, creer: true, modifier: true, supprimer: true },
     utilisateurs: { voir: true, creer: true, modifier: true, supprimer: true, reinitialiser_mdp: true, gerer_permissions: true },
+    logs: { voir: true, annuler: true },
     dr_ouest: { valider: true },
     dr_est: { valider: true },
     dr_sud: { valider: true },
@@ -97,6 +98,7 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     caisses: { voir: false },
     comptes: { voir: false },
     utilisateurs: { voir: false },
+    logs: { voir: false, annuler: false },
     dr_ouest: { valider: true },
     dr_est: { valider: false },
     dr_sud: { valider: false },
@@ -113,6 +115,7 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     factures_ffg_validated: { voir: true, establir_op: false },
     paramettre: { voir: false },
     dop_tout: { valider: true },
+    logs: { voir: false, annuler: false },
   },
   'Utilisateur': {
     dashboard: { voir: true },
@@ -121,6 +124,7 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     factures: { voir: true, creer: false, modifier: false, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
     factures_ffg: { voir: true, creer: false, modifier: false, supprimer: false, valider: false, rejeter: false, establir_op: false, marquer_payee: false },
     paramettre: { voir: false },
+    logs: { voir: false, annuler: false },
   },
   'Gestionnaire': {
     dashboard: { voir: true },
@@ -134,6 +138,7 @@ const PREDEFINED_ROLES: Record<string, MenuPermissions> = {
     centres: { voir: true, creer: true, modifier: true, supprimer: false },
     caisses: { voir: true, creer: true, modifier: true, supprimer: false },
     comptes: { voir: true, creer: true, modifier: true, supprimer: false },
+    logs: { voir: false, annuler: false },
   },
 };
 
@@ -219,6 +224,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
       reinitialiser_mdp: false,
       gerer_permissions: false
     },
+    logs: { voir: false, annuler: false },
     dr_ouest: { valider: false },
     dr_est: { valider: false },
     dr_sud: { valider: false },
@@ -800,6 +806,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
           reinitialiser_mdp: false,
           gerer_permissions: false
         },
+        logs: { voir: false, annuler: false },
         dr_ouest: { valider: false },
         dr_est: { valider: false },
         dr_sud: { valider: false },
@@ -853,6 +860,7 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
           reinitialiser_mdp: true,
           gerer_permissions: true
         },
+        logs: { voir: true, annuler: true },
         dr_ouest: { valider: true },
         dr_est: { valider: true },
         dr_sud: { valider: true },
@@ -935,7 +943,10 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
     {
       key: 'utilisateurs',
       label: 'UTILISATEURS',
-      actions: ['voir', 'creer', 'modifier', 'supprimer', 'reinitialiser_mdp', 'gerer_permissions']
+      actions: ['voir', 'creer', 'modifier', 'supprimer', 'reinitialiser_mdp', 'gerer_permissions'],
+      subMenus: [
+        { key: 'logs', label: 'LOGs', actions: ['voir', 'annuler'] }
+      ]
     }
   ];
 
@@ -951,7 +962,8 @@ function UsersPage({ menuTitle = 'Agents' }: UsersPageProps) {
     establir_op: 'Établir OP',
     marquer_payee: 'Marquer payée',
     reinitialiser_mdp: 'Réinitialiser MDP',
-    gerer_permissions: 'Gérer permissions'
+    gerer_permissions: 'Gérer permissions',
+    annuler: 'Annuler action'
   };
 
   // Structure des onglets pour le modal de permissions

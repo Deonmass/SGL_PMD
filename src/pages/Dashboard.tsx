@@ -535,16 +535,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
         if (totalPaidForInvoice < montant) {
           const drValidated = facture['validation DR'] != null && String(facture['validation DR']).trim() !== '';
           const dopValidated = facture['validation DOP'] != null && String(facture['validation DOP']).trim() !== '';
-          const dgValidated = facture['validation DG'] != null && String(facture['validation DG']).trim() !== '';
-          
-          let isValidated = false;
-          if (montant <= 2500) {
-            isValidated = drValidated;
-          } else if (montant <= 10000) {
-            isValidated = drValidated && dopValidated;
-          } else {
-            isValidated = drValidated && dopValidated && dgValidated;
-          }
+          const isValidated = dopValidated;
 
           if (isValidated) {
             bonAPayerMontant += reste;
