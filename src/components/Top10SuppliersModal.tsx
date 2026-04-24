@@ -14,8 +14,10 @@ import {
 } from 'recharts';
 import { formatCurrency } from '../utils/formatters';
 import { dashboardService, type Invoice } from '../services/tableService';
-import InvoiceDetailModal from './InvoiceDetailModal';
+import ViewInvoiceModal from './ViewInvoiceModal';
+import PaiementModal from './PaiementModal';
 import { useAuth } from '../contexts/AuthContext';
+import { Invoice as AppInvoice } from '../types';
 
 interface Top10SuppliersModalProps {
   isOpen: boolean;
@@ -28,6 +30,21 @@ interface Top10SuppliersModalProps {
   loading?: boolean;
   year?: string;
 }
+
+const EMPTY_ANIMATION_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120" viewBox="0 0 180 120">
+  <rect x="24" y="22" width="132" height="82" rx="12" fill="#d7dee3" />
+  <rect x="36" y="34" width="108" height="60" rx="8" fill="#f2f5f7" />
+  <rect x="48" y="72" width="72" height="6" rx="3" fill="#c7d0d6" />
+  <rect x="48" y="82" width="66" height="5" rx="2.5" fill="#d2d9de" />
+  <circle cx="84" cy="56" r="3.2" fill="#8ea0ad" />
+  <circle cx="104" cy="56" r="3.2" fill="#8ea0ad" />
+  <path d="M83 65c3.2-3.6 7.6-3.6 10.8 0" stroke="#8ea0ad" stroke-width="2.5" fill="none" stroke-linecap="round" />
+  <circle cx="124" cy="88" r="16" fill="none" stroke="#9fb1bd" stroke-width="6" />
+  <path d="M136 100l12 12" stroke="#9fb1bd" stroke-width="6" stroke-linecap="round" />
+</svg>`);
 
 function Top10SuppliersModal({
   isOpen,
@@ -52,7 +69,10 @@ function Top10SuppliersModal({
   const [dataLoading, setDataLoading] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<string | null>(null);
   const [selectedInvoices, setSelectedInvoices] = useState<Invoice[]>([]);
-  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [showSupplierInvoicesInChart, setShowSupplierInvoicesInChart] = useState(false);
+  const [supplierLoading, setSupplierLoading] = useState(false);
+  const [viewInvoice, setViewInvoice] = useState<AppInvoice | null>(null);
+  const [paymentInvoice, setPaymentInvoice] = useState<AppInvoice | null>(null);
   const [selectedYear, setSelectedYear] = useState('2026');
   const [selectedMonth, setSelectedMonth] = useState('all');
   const modalRef = useRef<HTMLDivElement>(null);
@@ -98,7 +118,7 @@ function Top10SuppliersModal({
     setDataLoading(true);
     try {
       const region = activeRegion === 'all' ? undefined : activeRegion;
-      const data = await dashboardService.getTop10SuppliersWithUnpaidInvoices(selectedYear, region);
+      const data = await dashboardService.getTop10SuppliersWithUnpaidInvoices(selectedYear, region, selectedMonth);
       
       // Trier par montant décroissant
       const sorted = [...(data || [])].sort((a, b) => b.montantNonPaye - a.montantNonPaye);
@@ -114,6 +134,7 @@ function Top10SuppliersModal({
   };
 
   const handleSupplierClick = async (supplier: string) => {
+    setSupplierLoading(true);
     try {
       // Get all invoices for this supplier from all statuses
       const region = activeRegion === 'all' ? undefined : activeRegion;
@@ -136,6 +157,16 @@ function Top10SuppliersModal({
         filtered = filtered.filter(inv => inv['Région'] === activeRegion);
       }
       
+      // Filter by selected month if needed
+      if (selectedMonth !== 'all') {
+        filtered = filtered.filter((inv: any) => {
+          const dateValue = inv['Date de réception'];
+          if (!dateValue) return false;
+          const month = String(new Date(dateValue).getMonth() + 1).padStart(2, '0');
+          return month === selectedMonth;
+        });
+      }
+
       // Remove duplicates
       const seen = new Set();
       filtered = filtered.filter((inv) => {
@@ -145,11 +176,57 @@ function Top10SuppliersModal({
         return true;
       });
       
-      setSelectedInvoices(filtered);
       setSelectedSupplier(supplier);
-      setShowInvoiceModal(true);
+      setSelectedInvoices(filtered);
+      setShowSupplierInvoicesInChart(true);
     } catch (err) {
       console.error('Erreur lors du chargement des factures:', err);
+    } finally {
+      setSupplierLoading(false);
+    }
+  };
+
+  const handleInvoiceClick = (invoiceNumber: string) => {
+    const normalized = String(invoiceNumber || '').trim();
+    if (!normalized) return;
+
+    const matched = selectedInvoices.find((inv: any) => {
+      const currentNumber = String(inv['Numéro de facture'] || inv.invoiceNumber || '').trim();
+      return currentNumber === normalized;
+    });
+
+    if (!matched) return;
+
+    const statut = String((matched as any)['Statut'] || '').toLowerCase();
+    const isPaid = statut.includes('pay');
+
+    const invoiceForModal: AppInvoice = {
+      id: Number((matched as any).ID || 0),
+      invoiceNumber: String((matched as any)['Numéro de facture'] || ''),
+      supplier: String((matched as any).Fournisseur || ''),
+      receptionDate: String((matched as any)['Date de réception'] || ''),
+      amount: Number((matched as any).Montant || 0),
+      currency: ((matched as any).Devise || 'USD') as 'USD' | 'CDF' | 'EUR',
+      chargeCategory: String((matched as any)['Catégorie de charge'] || ''),
+      urgencyLevel: (String((matched as any)['Niveau urgence'] || 'Normal').toLowerCase().includes('urgent')
+        ? 'Haute'
+        : String((matched as any)['Niveau urgence'] || '').toLowerCase().includes('prior')
+        ? 'Moyenne'
+        : 'Basse') as 'Basse' | 'Moyenne' | 'Haute',
+      status: (isPaid ? 'paid' : 'pending') as 'pending' | 'validated' | 'paid' | 'rejected' | 'overdue' | 'bon-a-payer',
+      region: ((matched as any)['Région'] || 'OUEST') as 'OUEST' | 'SUD' | 'EST' | 'NORD',
+      dueDate: String((matched as any)['Échéance'] || ''),
+      paymentMode: String((matched as any)['Mode de paiement requis'] || ''),
+      attachedInvoiceUrl: String((matched as any)['Facture attachée'] || ''),
+      fileNumber: String((matched as any)['Numéro de dossier'] || ''),
+      motif: String((matched as any)['Motif / Description'] || ''),
+      comments: String((matched as any)['Commentaires'] || ''),
+    };
+
+    if (isPaid) {
+      setPaymentInvoice(invoiceForModal);
+    } else {
+      setViewInvoice(invoiceForModal);
     }
   };
 
@@ -269,12 +346,29 @@ function Top10SuppliersModal({
   const currentSuppliers = getFilteredSuppliers(suppliersData);
   const currentLoading = dataLoading;
 
-  const chartData = currentSuppliers.map((s) => ({
+  const topSuppliersChartData = currentSuppliers.map((s) => ({
     name: s.fournisseur.substring(0, 12),
     fullName: s.fournisseur,
     nombreFactures: s.nombreFactures,
     montant: Math.round(s.montantNonPaye * 100) / 100,
   }));
+
+  const supplierInvoicesChartData = selectedInvoices.map((invoice: any) => {
+    const invoiceNumber = String(invoice['Numéro de facture'] || invoice.invoiceNumber || '').trim();
+    const receptionDate = String(invoice['Date de réception'] || invoice.receptionDate || '');
+    const amount = Number(invoice.Montant ?? invoice.amount ?? 0) || 0;
+    return {
+      name: invoiceNumber ? invoiceNumber.substring(0, 12) : 'Facture',
+      fullName: invoiceNumber || 'Facture',
+      nombreFactures: 1,
+      montant: Math.round(amount * 100) / 100,
+      receptionDate,
+    };
+  });
+
+  const displayedChartData = showSupplierInvoicesInChart && selectedSupplier
+    ? supplierInvoicesChartData
+    : topSuppliersChartData;
 
   const calculateTopSuppliersPercentage = () => {
     if (currentSuppliers.length === 0) return 0;
@@ -371,6 +465,12 @@ function Top10SuppliersModal({
                 })()}
               </div>
               <div className="ml-auto flex items-center gap-4">
+                {currentLoading && (
+                  <div className="flex items-center gap-2 text-xs text-gray-600">
+                    <div className="h-3.5 w-3.5 border-2 border-gray-300 border-t-red-500 rounded-full animate-spin"></div>
+                    <span>Mise à jour...</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <label className="text-xs font-medium text-gray-700">Année:</label>
                   <select 
@@ -401,28 +501,32 @@ function Top10SuppliersModal({
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-6 flex gap-6">
-              {currentLoading ? (
+            <div className="flex-1 overflow-hidden p-6 flex gap-6 min-h-0 relative">
+              {currentSuppliers.length === 0 ? (
                 <div className="flex items-center justify-center w-full">
-                  <div className="text-gray-500">Chargement des données...</div>
-                </div>
-              ) : currentSuppliers.length === 0 ? (
-                <div className="flex items-center justify-center w-full">
-                  <div className="text-gray-500">Aucun fournisseur disponible</div>
+                  <div className="py-10 text-center">
+                    <img src={EMPTY_ANIMATION_SVG} alt="Aucune donnée" className="mx-auto w-40 h-auto animate-bounce" />
+                    <p className="mt-3 text-sm font-semibold text-gray-600">Aucun fournisseur disponible.</p>
+                    <p className="text-xs text-gray-500">Ajustez les filtres (année, mois, région) ou revenez plus tard.</p>
+                  </div>
                 </div>
               ) : (
                 <>
                   {/* Left side - List (30%) */}
-                  <div className="w-3/10 space-y-2 flex-shrink-0">
+                  <div className={`w-3/10 flex flex-col min-h-0 flex-shrink-0 transition-all duration-400 ${currentLoading ? 'opacity-80 scale-[0.995]' : 'opacity-100 scale-100'}`}>
                     <h3 className="text-sm font-semibold text-gray-800 mb-4">
                       Liste des Fournisseurs
                     </h3>
-                    <div className="space-y-2 overflow-y-auto max-h-[55vh]">
+                    <div className="space-y-2 overflow-y-auto flex-1 min-h-0 pr-1">
                       {currentSuppliers.map((supplier, index) => (
                         <div
                           key={supplier.fournisseur}
                           onClick={() => handleSupplierClick(supplier.fournisseur)}
-                          className={`cursor-pointer border rounded-lg p-2 transition-colors border-gray-200 hover:bg-red-50 hover:border-red-300`}
+                          className={`cursor-pointer border rounded-lg p-2 transition-colors ${
+                            selectedSupplier === supplier.fournisseur && showSupplierInvoicesInChart
+                              ? 'border-red-300 bg-red-50'
+                              : 'border-gray-200 hover:bg-red-50 hover:border-red-300'
+                          }`}
                         >
                           <div className="flex items-start justify-between">
                             <div className="flex-1">
@@ -446,94 +550,135 @@ function Top10SuppliersModal({
                   </div>
 
                   {/* Right side - Chart (70%) */}
-                  <div className="flex-1 flex flex-col">
-                    <h3 className="text-sm font-semibold text-gray-800 mb-0">
-                      Graphique
-                    </h3>
-                    {currentSuppliers.length > 0 ? (
-                      <>
-                        <ResponsiveContainer width="100%" height={500}>
-                          <ComposedChart
-                            data={chartData}
-                            margin={{ top: 20, right: 30, left: 30, bottom: 80 }}
-                            onClick={(state) => {
-                              if (state.activeLabel) {
-                                const supplier = chartData.find(d => d.name === state.activeLabel);
-                                if (supplier) {
-                                  handleSupplierClick(supplier.fullName);
-                                }
-                              }
+                  <div className={`flex-1 flex flex-col min-h-0 transition-all duration-400 ${currentLoading ? 'opacity-85 scale-[0.995]' : 'opacity-100 scale-100'}`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-0">
+                        {showSupplierInvoicesInChart && selectedSupplier ? `Graphique - Factures de ${selectedSupplier}` : 'Graphique'}
+                      </h3>
+                      {showSupplierInvoicesInChart && selectedSupplier && (
+                        <div className="flex items-center gap-2">
+                          {supplierLoading && (
+                            <div className="h-3.5 w-3.5 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowSupplierInvoicesInChart(false);
+                              setSelectedSupplier(null);
+                              setSelectedInvoices([]);
                             }}
+                            className="text-[11px] font-semibold text-blue-600 hover:text-blue-700"
                           >
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis
-                              dataKey="name"
-                              angle={0}
-                              textAnchor="middle"
-                              height={80}
-                              tick={{ fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
-                            />
-                            <YAxis
-                              label={{ value: 'Montant (USD)', angle: -90, position: 'insideLeft', fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
-                              tick={{ fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
-                              domain={[0, 'dataMax']}
-                            />
-                            <Tooltip
-                              cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
-                              content={({ active, payload }) => {
-                                if (active && payload && payload.length) {
-                                  const data = payload[0].payload;
-                                  return (
-                                    <div className="bg-white p-2 border border-gray-300 rounded shadow-lg">
-                                      <p className="font-semibold text-xs">
-                                        {data.fullName}
-                                      </p>
-                                      <p className="text-xs font-semibold text-blue-600">
-                                        Montant: ${formatCurrency(data.montant)}
-                                      </p>
-                                    </div>
-                                  );
+                            Retour Top fournisseurs
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {displayedChartData.length > 0 ? (
+                      <>
+                        <div className="flex-1 min-h-[360px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart
+                              data={displayedChartData}
+                              margin={{ top: 20, right: 30, left: 30, bottom: 80 }}
+                              onClick={(state) => {
+                                if (showSupplierInvoicesInChart) {
+                                  if (state.activeLabel) {
+                                    const invoicePoint = displayedChartData.find((d) => d.name === state.activeLabel);
+                                    if (invoicePoint?.fullName) {
+                                      handleInvoiceClick(invoicePoint.fullName);
+                                    }
+                                  }
+                                  return;
                                 }
-                                return null;
-                              }}
-                            />
-                            <Bar
-                              dataKey="montant"
-                              name="Montant (USD)"
-                              radius={[8, 8, 0, 0]}
-                              label={{ 
-                                position: 'top',
-                                formatter: (value: any) => `$${formatCurrency(value)}`,
-                                fill: '#000000',
-                                fontSize: 10,
-                                fontWeight: 'bold'
-                              }}
-                              onClick={(data: any) => {
-                                handleSupplierClick(data.fullName);
+                                if (state.activeLabel) {
+                                  const supplier = displayedChartData.find(d => d.name === state.activeLabel);
+                                  if (supplier) {
+                                    handleSupplierClick(supplier.fullName);
+                                  }
+                                }
                               }}
                             >
-                              {chartData.map((entry, index) => {
-                                const maxMontant = Math.max(...chartData.map(d => d.montant));
-                                const ratio = entry.montant / maxMontant;
-                                const grayValue = Math.round(130 + ratio * 90);
-                                const color = `#${grayValue.toString(16)}${grayValue.toString(16)}${grayValue.toString(16)}`;
-                                return <Cell key={`cell-${index}`} fill={color} />;
-                              })}
-                            </Bar>
-                            <Line
-                              type="monotone"
-                              dataKey="montant"
-                              stroke="#ef4444"
-                              strokeWidth={3}
-                              dot={{ fill: '#dc2626', r: 5 }}
-                              isAnimationActive={true}
-                            />
-                          </ComposedChart>
-                        </ResponsiveContainer>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis
+                                dataKey="name"
+                                angle={0}
+                                textAnchor="middle"
+                                height={80}
+                                tick={{ fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
+                              />
+                              <YAxis
+                                label={{ value: 'Montant (USD)', angle: -90, position: 'insideLeft', fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
+                                tick={{ fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
+                                domain={[0, 'dataMax']}
+                              />
+                              <Tooltip
+                                cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
+                                content={({ active, payload }) => {
+                                  if (active && payload && payload.length) {
+                                    const data = payload[0].payload;
+                                    return (
+                                      <div className="bg-white p-2 border border-gray-300 rounded shadow-lg">
+                                        <p className="font-semibold text-xs">
+                                          {data.fullName}
+                                        </p>
+                                        <p className="text-xs font-semibold text-blue-600">
+                                          Montant: ${formatCurrency(data.montant)}
+                                        </p>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+                              <Bar
+                                dataKey="montant"
+                                name="Montant (USD)"
+                                radius={[8, 8, 0, 0]}
+                                label={{ 
+                                  position: 'top',
+                                  formatter: (value: any) => `$${formatCurrency(value)}`,
+                                  fill: '#000000',
+                                  fontSize: 10,
+                                  fontWeight: 'bold'
+                                }}
+                                onClick={(data: any) => {
+                                  if (showSupplierInvoicesInChart) {
+                                    handleInvoiceClick(String(data.fullName || data.name || ''));
+                                  } else {
+                                    handleSupplierClick(data.fullName);
+                                  }
+                                }}
+                              >
+                                {displayedChartData.map((entry, index) => {
+                                  const maxMontant = Math.max(...displayedChartData.map(d => d.montant), 1);
+                                  const ratio = entry.montant / maxMontant;
+                                  const grayValue = Math.round(130 + ratio * 90);
+                                  const color = `#${grayValue.toString(16)}${grayValue.toString(16)}${grayValue.toString(16)}`;
+                                  return <Cell key={`cell-${index}`} fill={color} />;
+                                })}
+                              </Bar>
+                              <Line
+                                type="monotone"
+                                dataKey="montant"
+                                stroke="#ef4444"
+                                strokeWidth={3}
+                                dot={{ fill: '#dc2626', r: 5 }}
+                                onClick={(data: any) => {
+                                  if (!showSupplierInvoicesInChart) return;
+                                  handleInvoiceClick(String(data?.payload?.fullName || data?.payload?.name || ''));
+                                }}
+                                isAnimationActive={true}
+                              />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
                       </>
                     ) : (
                       <div className="flex items-center justify-center h-96">
-                        <p className="text-gray-500">Aucune donnée disponible</p>
+                        <p className="text-gray-500">
+                          {showSupplierInvoicesInChart ? 'Aucune facture disponible pour ce fournisseur.' : 'Aucune donnée disponible'}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -553,13 +698,20 @@ function Top10SuppliersModal({
         </div>
       )}
 
-      {/* Invoice Detail Modal */}
-      <InvoiceDetailModal
-        isOpen={showInvoiceModal}
-        onClose={() => setShowInvoiceModal(false)}
-        title={`Factures - ${selectedSupplier}`}
-        invoices={selectedInvoices}
-      />
+      {viewInvoice && (
+        <ViewInvoiceModal
+          invoice={viewInvoice}
+          onClose={() => setViewInvoice(null)}
+        />
+      )}
+
+      {paymentInvoice && (
+        <PaiementModal
+          invoice={paymentInvoice}
+          onClose={() => setPaymentInvoice(null)}
+          readOnly
+        />
+      )}
     </>
   );
 }

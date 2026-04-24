@@ -1,11 +1,16 @@
 import { Invoice } from '../types';
 import { Download, X, MoreVertical, FileText, Printer, Star } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import Swal from 'sweetalert2';
 import ContextMenu from './ContextMenu';
 import ViewInvoiceModal from './ViewInvoiceModal';
 import EditInvoiceForm from './EditInvoiceForm';
 import PaiementModal from './PaiementModal';
 import { ordoPaiementService } from '../services/tableService';
+import { supabase } from '../services/supabase';
+import { refreshAllData } from '../hooks/useDataRefresh';
+import { useAuth } from '../contexts/AuthContext';
+import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 
 // Fonctions utilitaires pour formater les dates et données
 const formatDateFr = (dateStr: string | null): string => {
@@ -96,6 +101,7 @@ type SortField = 'receptionDate' | 'amount' | 'dueDate' | null;
 type SortOrder = 'asc' | 'desc';
 
 function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
+  const { agent: currentAgent } = useAuth();
   const [contextMenu, setContextMenu] = useState<{
     invoice: Invoice | null;
     position: { x: number; y: number };
@@ -177,6 +183,61 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
 
   const handlePayInvoice = (invoice: Invoice) => {
     setPaymentModal(invoice);
+  };
+
+  const handleDeleteInvoice = async (invoice: Invoice) => {
+    if (!invoice?.id) {
+      Swal.fire('Erreur', 'Facture invalide, suppression impossible.', 'error');
+      return;
+    }
+
+    const result = await Swal.fire({
+      title: 'Supprimer cette facture ?',
+      text: `La facture ${invoice.invoiceNumber} sera supprimée définitivement.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Supprimer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#9ca3af'
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      try {
+        const actor = buildLogActor(currentAgent);
+        await appendFactureLogByInvoiceNumber(
+          invoice.invoiceNumber,
+          actor,
+          'Suppression',
+          'Facture supprimée depuis le menu contextuel.'
+        );
+        await appendFactureDeletionAuditLog({
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceType: String(activeMenu || '').includes('ffg') ? 'frais-generaux' : 'operationnel',
+          actor,
+          explication: 'Facture supprimée depuis le menu contextuel.',
+        });
+      } catch (logError) {
+        console.error('Erreur journalisation facture (suppression):', logError);
+      }
+
+      const { error } = await supabase
+        .from('FACTURES')
+        .delete()
+        .eq('ID', invoice.id);
+
+      if (error) {
+        Swal.fire('Erreur', `Suppression impossible: ${error.message}`, 'error');
+        return;
+      }
+
+      Swal.fire('Succès', 'Facture supprimée avec succès.', 'success');
+      refreshAllData();
+    } catch (error) {
+      console.error('Erreur suppression facture:', error);
+      Swal.fire('Erreur', 'Une erreur est survenue lors de la suppression.', 'error');
+    }
   };
 
   const handleAddToPaymentOrder = async (invoice: Invoice) => {
@@ -355,32 +416,14 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                       {/* Barre de progression des validations */}
                       <div className="w-full">
                         {(() => {
-                          // Calculer le pourcentage de validation selon les nouvelles règles
-                          const amount = invoice.amount || 0;
-                          // Utiliser le champ validations pour déterminer les validations individuelles
+                          // Nouvelle règle: DR = 50%, DOP = 100% (plus de règle de montant)
                           const validationCount = invoice.validations || 0;
                           const drValidated = validationCount >= 1; // Au moins DR validé
                           const dopValidated = validationCount >= 2; // Au moins DR + DOP validés
-                          const dgValidated = validationCount >= 3; // DR + DOP + DG validés
                           
                           let percentage = 0;
-                          
-                          if (amount <= 2500) {
-                            // Pour les factures de moins de 2500$, DR seul suffit pour 100%
-                            percentage = drValidated ? 100 : 0;
-                          } else if (dopValidated) {
-                            // Si le DOP a signé, passe directement à 100% peu importe le montant
-                            percentage = 100;
-                          } else {
-                            // Anciennes règles pour les autres cas
-                            if (amount <= 10000) {
-                              // DR + DOP nécessaires pour 100%
-                              percentage = (drValidated && dopValidated) ? 100 : (drValidated ? 50 : 0);
-                            } else {
-                              // DR + DOP + DG nécessaires pour 100%
-                              percentage = (validationCount / 3) * 100;
-                            }
-                          }
+                          if (dopValidated) percentage = 100;
+                          else if (drValidated) percentage = 50;
                           
                           return (
                             <div className="flex flex-col gap-1">
@@ -425,6 +468,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
         position={contextMenu.position}
         onView={handleViewInvoice}
         onEdit={handleEditInvoice}
+        onDelete={handleDeleteInvoice}
         onPay={handlePayInvoice}
         onAddToPaymentOrder={handleAddToPaymentOrder}
         onClose={() => setContextMenu(null)}

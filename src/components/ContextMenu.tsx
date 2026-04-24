@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Eye, Edit, Calendar, X, MoreVertical, FileText, CreditCard } from 'lucide-react';
+import { Eye, Edit, Calendar, X, CreditCard, Trash2 } from 'lucide-react';
 import { Invoice } from '../types';
 import { usePermission } from '../hooks/usePermission';
 
@@ -8,18 +8,21 @@ interface ContextMenuProps {
   onView: (invoice: Invoice) => void;
   onEdit: (invoice: Invoice) => void;
   onPay: (invoice: Invoice) => void;
+  onDelete?: (invoice: Invoice) => void;
   onAddToPaymentOrder?: (invoice: Invoice) => void;
   onClose: () => void;
   position: { x: number; y: number };
   activeMenu?: string;
 }
 
-function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onClose, position, activeMenu }: ContextMenuProps) {
+function ContextMenu({ invoice, onView, onEdit, onPay, onDelete, onAddToPaymentOrder, onClose, position, activeMenu }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { canMarkAsPaid, canEdit, canEstablishPaymentOrder } = usePermission();
+  const { canMarkAsPaid, canEdit, canDelete, canEstablishPaymentOrder } = usePermission();
   const isFfgContext = String(activeMenu || '').includes('ffg');
   const scope = isFfgContext ? 'frais-generaux' : 'operationnel';
-  const canEditCurrentScope = canEdit(isFfgContext ? 'factures_ffg' : 'factures');
+  const rootMenuPermissionKey = isFfgContext ? 'factures_ffg' : 'factures';
+  const canEditCurrentScope = canEdit(rootMenuPermissionKey);
+  const canDeleteCurrentScope = canDelete(rootMenuPermissionKey);
   const canAddToPaymentOrder = canEstablishPaymentOrder(scope);
   const canPayCurrentScope = canMarkAsPaid(scope);
 
@@ -85,6 +88,19 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onAddToPaymentOrder, onCl
           >
             <Edit size={16} className="text-gray-600" />
             Modifier
+          </button>
+        )}
+
+        {canDeleteCurrentScope && onDelete && (
+          <button
+            onClick={() => {
+              onDelete(invoice);
+              onClose();
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-red-700 hover:bg-red-50 transition-colors flex items-center gap-3"
+          >
+            <Trash2 size={16} className="text-red-600" />
+            Supprimer
           </button>
         )}
 

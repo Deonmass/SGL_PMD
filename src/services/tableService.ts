@@ -559,16 +559,8 @@ export const dashboardService = {
             const drValidated = facture['validation DR'] != null && String(facture['validation DR']).trim() !== '';
             const dopValidated = facture['validation DOP'] != null && String(facture['validation DOP']).trim() !== '';
             
-            // Check if invoice respects validation rules based on amount
-            let isValidated = false;
-            
-            if (montant <= 2500) {
-              // 0 to 2,500 USD: DR signature required
-              isValidated = drValidated;
-            } else {
-              // > 2,500 USD: DR + DOP signatures required
-              isValidated = drValidated && dopValidated;
-            }
+            // Règle demandée: seule validation DOP rend la facture validée
+            const isValidated = dopValidated;
             
             if (isValidated) {
               // Bon à Payer (validated but unpaid) - add the unpaid amount
@@ -730,16 +722,8 @@ export const dashboardService = {
         const drValidated = f['validation DR'] != null && String(f['validation DR']).trim() !== '';
         const dopValidated = f['validation DOP'] != null && String(f['validation DOP']).trim() !== '';
         
-        // Check if invoice respects validation rules based on amount
-        let isValidated = false;
-        
-        if (montant <= 2500) {
-          // 0 to 2,500 USD: DR signature required
-          isValidated = drValidated;
-        } else {
-          // > 2,500 USD: DR + DOP signatures required
-          isValidated = drValidated && dopValidated;
-        }
+        // Règle demandée: seule validation DOP rend la facture validée
+        const isValidated = dopValidated;
         
         // Return VALIDATED invoices with unpaid amount (Bon à Payer)
         return isValidated;
@@ -810,16 +794,8 @@ export const dashboardService = {
         const drValidated = f['validation DR'] != null && String(f['validation DR']).trim() !== '';
         const dopValidated = f['validation DOP'] != null && String(f['validation DOP']).trim() !== '';
         
-        // Check if invoice respects validation rules based on amount
-        let isValidated = false;
-        
-        if (montant <= 2500) {
-          // 0 to 2,500 USD: DR signature required
-          isValidated = drValidated;
-        } else {
-          // > 2,500 USD: DR + DOP signatures required
-          isValidated = drValidated && dopValidated;
-        }
+        // Règle demandée: seule validation DOP rend la facture validée
+        const isValidated = dopValidated;
         
         // Return NON-VALIDATED invoices with unpaid amount (En attente de validation)
         return !isValidated;
@@ -1711,7 +1687,7 @@ export const dashboardService = {
   },
 
   // Get top 10 suppliers with unpaid invoices
-  async getTop10SuppliersWithUnpaidInvoices(year?: string, region?: string) {
+  async getTop10SuppliersWithUnpaidInvoices(year?: string, region?: string, month: string = 'all') {
     try {
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
@@ -1751,6 +1727,14 @@ export const dashboardService = {
           if (region) {
             const factureRegion = f['Région'] || 'Unknown';
             if (factureRegion !== region) {
+              return;
+            }
+          }
+
+          // Filter by month if provided
+          if (month && month !== 'all') {
+            const invoiceMonth = String(receptionDate.getMonth() + 1).padStart(2, '0');
+            if (invoiceMonth !== month) {
               return;
             }
           }

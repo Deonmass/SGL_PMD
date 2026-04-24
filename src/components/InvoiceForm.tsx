@@ -7,6 +7,7 @@ import Swal from 'sweetalert2';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
+import { buildLogActor } from '../services/activityLogService';
 
 interface InvoiceFormProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -112,11 +113,23 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
   const [filteredSuppliers, setFilteredSuppliers] = useState<Supplier[]>([]);
   const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
   const [showAddSupplierModal, setShowAddSupplierModal] = useState(false);
+  const [showAddChargeModal, setShowAddChargeModal] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenter[]>([]);
   const [charges, setCharges] = useState<Charge[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [newSupplier, setNewSupplier] = useState({ name: '', category: '' });
+  const [newCharge, setNewCharge] = useState({ designation_Charges: '', Bloquant: 'NON', type: 'Opérationnel' });
+  const [showAddCostCenterModal, setShowAddCostCenterModal] = useState(false);
+  const [newCostCenter, setNewCostCenter] = useState({ Designation: '', REGION: agent?.REGION && agent.REGION !== 'TOUT' ? agent.REGION : 'OUEST' });
+  const [isAddingCostCenter, setIsAddingCostCenter] = useState(false);
+  const [isAddingCharge, setIsAddingCharge] = useState(false);
+  const [paymentModeOptions, setPaymentModeOptions] = useState([
+    { value: 'cash', label: 'Cash' },
+    { value: 'bank', label: 'Banque' },
+    { value: 'mobile-money', label: 'Mobile Money' },
+    { value: 'check', label: 'Chèque' },
+  ]);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   
@@ -205,6 +218,93 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
     }
     return chargeType === targetType;
   });
+
+  const handleAddCharge = async () => {
+    const designation = newCharge.designation_Charges.trim();
+    if (!designation) {
+      showError('La désignation de la charge est obligatoire.');
+      return;
+    }
+
+    if (!canCreate('charges')) {
+      showError('Vous n\'avez pas la permission de créer une charge.');
+      return;
+    }
+
+    setIsAddingCharge(true);
+    try {
+      const payload = {
+        designation_Charges: designation,
+        Bloquant: newCharge.Bloquant,
+        type: newCharge.type
+      };
+
+      const { data, error } = await supabase
+        .from('CHARGES')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error) {
+        showError(`Erreur lors de l'ajout de la charge: ${error.message}`);
+        return;
+      }
+
+      if (data) {
+        setCharges((prev) => [data as Charge, ...prev]);
+        setFormData((prev) => ({ ...prev, chargeCategory: String((data as Charge).designation_Charges || designation) }));
+      }
+      setShowAddChargeModal(false);
+      setNewCharge({
+        designation_Charges: '',
+        Bloquant: 'NON',
+        type: normalizeInvoiceType(formData.invoiceType) === 'frais-generaux' ? 'Frais généraux' : 'Opérationnel'
+      });
+      success('Catégorie de charge ajoutée avec succès.');
+    } finally {
+      setIsAddingCharge(false);
+    }
+  };
+
+  const handleAddCostCenter = async () => {
+    const designation = newCostCenter.Designation.trim();
+    if (!designation) {
+      showError('La désignation du centre de coût est obligatoire.');
+      return;
+    }
+    if (!canCreate('centres')) {
+      showError('Vous n\'avez pas la permission de créer un centre de coût.');
+      return;
+    }
+
+    setIsAddingCostCenter(true);
+    try {
+      const payload = {
+        Designation: designation,
+        REGION: newCostCenter.REGION || formData.region || 'OUEST'
+      };
+      const { data, error } = await supabase
+        .from('CENTRE_DE_COUT')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error) {
+        showError(`Erreur lors de l'ajout du centre de coût: ${error.message}`);
+        return;
+      }
+
+      if (data) {
+        setCostCenters((prev) => [data as CostCenter, ...prev]);
+        setFormData((prev) => ({ ...prev, costCenter: getEntityId(data as Record<string, unknown>) }));
+      }
+      setShowAddCostCenterModal(false);
+      setNewCostCenter({ Designation: '', REGION: formData.region || 'OUEST' });
+      success('Centre de coût ajouté avec succès.');
+    } finally {
+      setIsAddingCostCenter(false);
+    }
+  };
 
   // Réinitialiser le fournisseur sélectionné
   const handleSupplierInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -462,6 +562,17 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       }
 
       // Préparer les données pour l'insertion
+      const actor = buildLogActor(agent);
+      const createdLog = [
+        {
+          timestamp: new Date().toISOString(),
+          nom: actor.nom,
+          email: actor.email,
+          modification: 'Ajout',
+          explication: 'Création de la facture dans le système.'
+        }
+      ];
+
       const invoiceData = {
         "Date emission": formData.emissionDate,
         "Date de réception": formData.receptionDate,
@@ -472,7 +583,10 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         "Centre de coût": formData.costCenter ? costCenters.find(c => getEntityId(c) === formData.costCenter)?.Designation || formData.costCenter : '',
         "Gestionnaire": formData.manager ? agents.find(a => getEntityId(a) === formData.manager)?.Nom || formData.manager : '',
         "Type de facture": formData.invoiceType,
-        "Catégorie de charge": formData.chargeCategory,
+        "Catégorie de charge": (() => {
+          const selected = charges.find((c) => String(c.designation_Charges || '') === String(formData.chargeCategory || ''));
+          return selected?.designation_Charges || formData.chargeCategory;
+        })(),
         "Numéro de dossier": formData.invoiceType === 'frais-generaux' ? null : formData.fileNumber,
         "Motif / Description": formData.motif,
         "Devise": formData.currency,
@@ -490,7 +604,8 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         "validation DOP": null,
         "validation DG": null,
         "Rejet": null,
-        "created_by": agent?.email || null
+        "created_by": agent?.email || null,
+        "updated_at": JSON.stringify(createdLog)
       };
 
       // Insérer dans la table FACTURES
@@ -682,9 +797,22 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
               )}
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Centre de coût *
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-semibold text-gray-700">
+                    Centre de coût *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewCostCenter((prev) => ({ ...prev, REGION: formData.region || prev.REGION || 'OUEST' }));
+                      setShowAddCostCenterModal(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
+                  >
+                    <Plus size={12} />
+                    Ajouter
+                  </button>
+                </div>
                 <select
                   name="costCenter"
                   value={formData.costCenter}
@@ -748,9 +876,25 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Catégorie de charge *
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-semibold text-gray-700">
+                    Catégorie de charge *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewCharge((prev) => ({
+                        ...prev,
+                        type: normalizeInvoiceType(formData.invoiceType) === 'frais-generaux' ? 'Frais généraux' : 'Opérationnel'
+                      }));
+                      setShowAddChargeModal(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
+                  >
+                    <Plus size={13} />
+                    Ajouter
+                  </button>
+                </div>
                 <select
                   name="chargeCategory"
                   value={formData.chargeCategory}
@@ -760,7 +904,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                 >
                   <option value="">-- Sélectionner --</option>
                   {filteredCharges.map((charge) => (
-                    <option key={getEntityId(charge) || charge.designation_Charges} value={getEntityId(charge)}>
+                    <option key={getEntityId(charge) || charge.designation_Charges} value={charge.designation_Charges}>
                       {charge["designation_Charges"]}
                     </option>
                   ))}
@@ -939,10 +1083,9 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">-- Sélectionner --</option>
-                  <option value="cash">Cash</option>
-                  <option value="bank">Banque</option>
-                  <option value="mobile-money">Mobile Money</option>
-                  <option value="check">Chèque</option>
+                  {paymentModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1105,7 +1248,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
             <button
               type="submit"
               disabled={formData.isSubmitting}
-              className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-6 py-2 text-white font-medium rounded-lg bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500 hover:from-indigo-600 hover:via-blue-600 hover:to-cyan-600 shadow-md hover:shadow-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-all duration-300"
             >
               {formData.isSubmitting && (
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
@@ -1179,6 +1322,139 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
           </div>
         </div>
       )}
+
+      {/* Modal d'ajout de catégorie de charge */}
+      {showAddChargeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4">
+              <h3 className="text-lg font-bold text-gray-800">Ajouter une catégorie de charge</h3>
+              <button
+                onClick={() => setShowAddChargeModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Désignation *
+                </label>
+                <input
+                  type="text"
+                  value={newCharge.designation_Charges}
+                  onChange={(e) => setNewCharge((prev) => ({ ...prev, designation_Charges: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Analyse laboratoire"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Type de charge *
+                </label>
+                <select
+                  value={newCharge.type}
+                  onChange={(e) => setNewCharge((prev) => ({ ...prev, type: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="Opérationnel">Opérationnel</option>
+                  <option value="Frais généraux">Frais généraux</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Bloquant *
+                </label>
+                <select
+                  value={newCharge.Bloquant}
+                  onChange={(e) => setNewCharge((prev) => ({ ...prev, Bloquant: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="NON">NON</option>
+                  <option value="OUI">OUI</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-4 px-6 py-4 border-t">
+              <button
+                type="button"
+                onClick={() => setShowAddChargeModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                disabled={isAddingCharge}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCharge}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                disabled={isAddingCharge}
+              >
+                {isAddingCharge ? 'Ajout...' : 'Ajouter'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddCostCenterModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4">
+              <h3 className="text-lg font-bold text-gray-800">Ajouter un centre de coût</h3>
+              <button onClick={() => setShowAddCostCenterModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Désignation *</label>
+                <input
+                  type="text"
+                  value={newCostCenter.Designation}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, Designation: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Approvisionnement Kinshasa"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Région *</label>
+                <select
+                  value={newCostCenter.REGION}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, REGION: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="OUEST">OUEST</option>
+                  <option value="EST">EST</option>
+                  <option value="SUD">SUD</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-4 px-6 py-4 border-t">
+              <button
+                type="button"
+                onClick={() => setShowAddCostCenterModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                disabled={isAddingCostCenter}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCostCenter}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                disabled={isAddingCostCenter}
+              >
+                {isAddingCostCenter ? 'Ajout...' : 'Ajouter'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

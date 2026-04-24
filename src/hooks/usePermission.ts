@@ -92,7 +92,7 @@ export function usePermission() {
 
   // Vérifier si c'est un validateur DOP
   const isValidatorDOP = (): boolean => {
-    return hasPermission('factures_pending_dop', 'valider');
+    return hasPermission('factures_pending_dop', 'valider') || hasPermission('factures_ffg_pending_dop', 'valider');
   };
 
   // Vérifier si l'utilisateur peut rejeter au niveau DR
@@ -102,7 +102,7 @@ export function usePermission() {
 
   // Vérifier si l'utilisateur peut rejeter au niveau DOP
   const canRejectDOP = (): boolean => {
-    return hasPermission('factures_pending_dop', 'rejeter');
+    return hasPermission('factures_pending_dop', 'rejeter') || hasPermission('factures_ffg_pending_dop', 'rejeter');
   };
 
   // Vérifier si l'utilisateur peut voir les validations DR
@@ -112,7 +112,7 @@ export function usePermission() {
 
   // Vérifier si l'utilisateur peut voir les validations DOP
   const canViewDOP = (): boolean => {
-    return hasPermission('factures_pending_dop', 'voir');
+    return hasPermission('factures_pending_dop', 'voir') || hasPermission('factures_ffg_pending_dop', 'voir');
   };
 
   // Vérifier si un onglet de factures est visible selon la région
@@ -161,6 +161,11 @@ export function usePermission() {
       hasPermission(invoiceMenu, 'establir_op');
   };
 
+  // Vérifier si l'utilisateur peut gérer sa signature (validateur DR ou DOP)
+  const canManageOwnSignature = (): boolean => {
+    return isValidatorDR() || isValidatorDOP();
+  };
+
   return {
     hasPermission,
     canView,
@@ -176,6 +181,7 @@ export function usePermission() {
     canViewDOP,
     canMarkAsPaid,
     canEstablishPaymentOrder,
+    canManageOwnSignature,
     canViewInvoiceTab,
     getAllPermissions
   };
