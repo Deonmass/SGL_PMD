@@ -9,6 +9,7 @@ import ViewInvoiceModal from '../components/ViewInvoiceModal';
 import PaiementModal from '../components/PaiementModal';
 import { Invoice as GlobalInvoice } from '../types';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
+import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
 interface SearchPageProps {
   activeMenu?: string;
@@ -100,7 +101,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     try {
       let query = supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur"');
+        .select('ID, "Numéro de facture", "Numéro de dossier", Fournisseur, "Gestionnaire", "Centre de coût", "Date de réception", Montant, Statut, Devise, "Région", "Échéance", "Catégorie fournisseur", Rejet');
 
       query = query.eq('Type de facture', selectedInvoiceType);
 
@@ -132,8 +133,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         const totalPaid = paidMap.get(invoiceNum) || 0;
         const restAPayer = Math.max(0, amount - totalPaid);
         const dueDate = f['Échéance'] ? String(f['Échéance']) : null;
-        const statusUpper = String(f.Statut || '').toUpperCase();
-        const isRejected = statusUpper.includes('REJET');
+        const isRejected = isInvoiceEffectivelyRejected(f.Statut, f.Rejet);
 
         return {
           id: String(f.ID),

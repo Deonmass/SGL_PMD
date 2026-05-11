@@ -1,6 +1,6 @@
-import { X, FileText, AlertTriangle, Loader2, Printer, Maximize2, Pencil, Trash2 } from 'lucide-react';
+import { X, FileText, AlertTriangle, Loader2, Printer, Maximize2, RotateCw, RotateCcw, Download, Pencil, Trash2, MessagesSquare } from 'lucide-react';
 import { Invoice } from '../types';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../services/supabase';
 import { useToast } from '../hooks/useToast';
 import { usePermission } from '../hooks/usePermission';
@@ -9,12 +9,53 @@ import { useAuth } from '../contexts/AuthContext';
 import { PDFDocument } from 'pdf-lib';
 import EditInvoiceForm from './EditInvoiceForm';
 import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
+import { isEntryMiseAJour, isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
 interface ViewInvoiceModalProps {
   invoice: Invoice;
   onClose: () => void;
   onRefresh?: () => void;
 }
+
+/** Entrées JSON colonne Rejet : rejets (validateur) ou mises à jour (édition facture). */
+type FactureExchangeEntry = {
+  eventType?: string;
+  datetime?: string;
+  date?: string;
+  raison?: string;
+  /** Niveau de validation pour un rejet : dr | dop */
+  type?: string;
+  name?: string;
+  email?: string;
+};
+
+const exchangeTimestamp = (entry: FactureExchangeEntry) =>
+  new Date(entry.datetime || entry.date || 0).getTime();
+
+const extractStatusAndComment = (raison?: string) => {
+  const text = (raison || '').trim();
+  if (!text) {
+    return { status: '-', comment: '-' };
+  }
+
+  const normalizedLines = text
+    .split('\n')
+    .map((line) => line.replace(/^[\s•\-]+\s*/, '').trim())
+    .filter(Boolean);
+
+  const statusLine = normalizedLines.find((line) => /statut/i.test(line));
+  const commentLine = normalizedLines.find((line) => /(commentaire|raison)/i.test(line));
+
+  const status = statusLine
+    ? statusLine.replace(/^(statut)\s*:\s*/i, '').replace(/^["“]|["”]$/g, '').trim() || '-'
+    : '-';
+
+  const comment = commentLine
+    ? commentLine.replace(/^(commentaire|commentaires|raison)\s*:\s*/i, '').trim() || '-'
+    : text;
+
+  return { status, comment };
+};
 
 function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps) {
   const { success, error: showError } = useToast();
@@ -24,7 +65,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [showRejectionConfirmation, setShowRejectionConfirmation] = useState(false);
   const [rejectionType, setRejectionType] = useState<'dr' | 'dop' | null>(null);
   const [currentInvoice, setCurrentInvoice] = useState(invoice);
-  const [rejections, setRejections] = useState<Array<{ date?: string; datetime?: string; raison: string; type?: string; name?: string; email?: string }>>([]);
+  const [rejections, setRejections] = useState<FactureExchangeEntry[]>([]);
   const [isRejectSubmitting, setIsRejectSubmitting] = useState(false);
   const [dbStatus, setDbStatus] = useState<string>('');
   
@@ -40,6 +81,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [isLoadingValidations, setIsLoadingValidations] = useState(true);
   const [activeTab, setActiveTab] = useState<'visualization' | 'details'>('visualization');
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [viewerRotation, setViewerRotation] = useState(0);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [signatureUrl, setSignatureUrl] = useState<string>('');
   const [showSignaturePlacementModal, setShowSignaturePlacementModal] = useState(false);
@@ -125,86 +167,87 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   };
 
   // Vérifier si la facture est rejetée selon le statut réel de la BDD
-  const isRejected = dbStatus === 'Rejetée';
+  const isRejected = isInvoiceEffectivelyRejected(
+    dbStatus,
+    rejections.length ? JSON.stringify(rejections) : null
+  );
 
   // Vérifier si la facture est "Bon à payer" selon les nouvelles règles
   const isBonAPayer = () => Boolean(validations.dop);
 
-  // Charger TOUS les champs de la facture depuis la base de données
-  useEffect(() => {
-    const loadExistingData = async () => {
-      setIsLoadingValidations(true);
-      try {
-        const { data: invoiceData, error } = await supabase
-          .from('FACTURES')
-          .select('*')
-          .eq('Numéro de facture', invoice.invoiceNumber)
-          .single();
+  const loadExistingData = useCallback(async () => {
+    setIsLoadingValidations(true);
+    try {
+      const { data: invoiceData, error } = await supabase
+        .from('FACTURES')
+        .select('*')
+        .eq('Numéro de facture', invoice.invoiceNumber)
+        .single();
 
-        if (!error && invoiceData) {
-          const data = invoiceData as Record<string, any>;
-          setDbStatus(data["Statut"] || '');
-          setValidations({
-            dr: data["validation DR"] || null,
-            dop: data["validation DOP"] || null,
-            dg: data["validation DG"] || null
-          });
-          setSignatureUrl(data.signature || agent?.signature || '');
-          
-          // Charger les rejets (JSON)
-          if (data["Rejet"]) {
-            try {
-              const rejetsData = typeof data["Rejet"] === 'string' ? JSON.parse(data["Rejet"]) : data["Rejet"];
-              setRejections(Array.isArray(rejetsData) ? rejetsData : []);
-            } catch {
-              console.error('Erreur parsing rejets');
-            }
-          } else {
+      if (!error && invoiceData) {
+        const data = invoiceData as Record<string, any>;
+        setDbStatus(data["Statut"] || '');
+        setValidations({
+          dr: data["validation DR"] || null,
+          dop: data["validation DOP"] || null,
+          dg: data["validation DG"] || null
+        });
+        setSignatureUrl(data.signature || agent?.signature || '');
+
+        if (data["Rejet"]) {
+          try {
+            const rejetsData = typeof data["Rejet"] === 'string' ? JSON.parse(data["Rejet"]) : data["Rejet"];
+            setRejections(Array.isArray(rejetsData) ? rejetsData : []);
+          } catch {
+            console.error('Erreur parsing rejets');
             setRejections([]);
           }
-          
-          // Mettre à jour currentInvoice avec tous les champs de la base de données
-          setCurrentInvoice({
-            ...invoice,
-            id: data["ID"] || invoice.id,
-            invoiceNumber: data["Numéro de facture"] || invoice.invoiceNumber,
-            emissionDate: data["Date emission"],
-            receptionDate: data["Date de réception"],
-            supplier: data["Fournisseur"] || invoice.supplier,
-            supplierCategory: data["Catégorie fournisseur"],
-            region: data["Région"] || invoice.region,
-            costCenter: data["Centre de coût"],
-            manager: data["Gestionnaire"],
-            invoiceType: data["Type de facture"],
-            chargeCategory: data["Catégorie de charge"] || invoice.chargeCategory,
-            fileNumber: data["Numéro de dossier"],
-            motif: data["Motif / Description"],
-            currency: data["Devise"] || invoice.currency,
-            exchangeRate: data["Taux facture"],
-            amount: data["Montant"] || invoice.amount,
-            comments: data["Commentaires"],
-            paymentDelay: data["Délais de paiement"],
-            dueDate: data["Échéance"],
-            paymentMode: data["Mode de paiement requis"],
-            urgencyLevel: data["Niveau urgence"] || invoice.urgencyLevel,
-            status: data["Statut"] ? (data["Statut"].toLowerCase().includes('rejet') ? 'rejected' : 'pending') : invoice.status,
-            attachedInvoiceUrl: data["Facture attachée"],
-            created_by: data["created_by"]
-          } as any);
-          
-          console.log('Toutes les données chargées:', data);
-        } else if (error) {
-          console.error('Erreur lors du chargement:', error);
+        } else {
+          setRejections([]);
         }
-      } catch (err) {
-        console.error('Erreur générale:', err);
-      } finally {
-        setIsLoadingValidations(false);
-      }
-    };
 
-    loadExistingData();
+        setCurrentInvoice({
+          ...invoice,
+          id: data["ID"] || invoice.id,
+          invoiceNumber: data["Numéro de facture"] || invoice.invoiceNumber,
+          emissionDate: data["Date emission"],
+          receptionDate: data["Date de réception"],
+          supplier: data["Fournisseur"] || invoice.supplier,
+          supplierCategory: data["Catégorie fournisseur"],
+          region: data["Région"] || invoice.region,
+          costCenter: data["Centre de coût"],
+          manager: data["Gestionnaire"],
+          invoiceType: data["Type de facture"],
+          chargeCategory: data["Catégorie de charge"] || invoice.chargeCategory,
+          fileNumber: data["Numéro de dossier"],
+          motif: data["Motif / Description"],
+          currency: data["Devise"] || invoice.currency,
+          exchangeRate: data["Taux facture"],
+          amount: data["Montant"] || invoice.amount,
+          comments: data["Commentaires"],
+          paymentDelay: data["Délais de paiement"],
+          dueDate: data["Échéance"],
+          paymentMode: data["Mode de paiement requis"],
+          urgencyLevel: data["Niveau urgence"] || invoice.urgencyLevel,
+          status: data["Statut"] ? (data["Statut"].toLowerCase().includes('rejet') ? 'rejected' : 'pending') : invoice.status,
+          attachedInvoiceUrl: data["Facture attachée"],
+          created_by: data["created_by"]
+        } as any);
+
+        console.log('Toutes les données chargées:', data);
+      } else if (error) {
+        console.error('Erreur lors du chargement:', error);
+      }
+    } catch (err) {
+      console.error('Erreur générale:', err);
+    } finally {
+      setIsLoadingValidations(false);
+    }
   }, [invoice.invoiceNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void loadExistingData();
+  }, [loadExistingData]);
 
   const handleValidation = async (type: 'dr' | 'dop') => {
     setValidationType(type);
@@ -552,6 +595,34 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     setShowRejectionConfirmation(true);
   };
 
+  const rotateViewerRight = () => {
+    setViewerRotation((deg) => (deg + 90) % 360);
+  };
+
+  const rotateViewerLeft = () => {
+    setViewerRotation((deg) => (deg - 90 + 360) % 360);
+  };
+
+  const handleDownloadInvoice = () => {
+    const url = currentInvoice.attachedInvoiceUrl;
+    if (!url) return;
+
+    // Note: l'attribut `download` peut être ignoré selon le navigateur si l'URL est cross-origin.
+    // On tente quand même, puis on bascule vers un `open` si nécessaire.
+    const fileName = `Facture_${currentInvoice.invoiceNumber || 'download'}.pdf`;
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
   const handleFullscreen = () => {
     if (!iframeRef.current) return;
     
@@ -630,15 +701,15 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     
     try {
       // Créer le nouvel enregistrement de rejet
-      const newRejection = {
+      const newRejection: FactureExchangeEntry = {
+        eventType: 'rejet',
         datetime: new Date().toISOString(),
         raison: rejectionReason,
-        type: rejectionType,
+        type: rejectionType || undefined,
         name: agent?.Nom || '',
         email: agent?.email || ''
       };
 
-      // Ajouter au tableau existant
       const updatedRejections = [...rejections, newRejection];
 
       const { error } = await supabase
@@ -647,7 +718,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
           "Statut": 'Rejetée',
           "Rejet": JSON.stringify(updatedRejections)
         })
-        .eq('ID', invoice.id);
+        .eq('ID', currentInvoice.id);
 
       if (error) {
         showError('Erreur lors du rejet: ' + error.message);
@@ -770,22 +841,60 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
               {/* Contenu des onglets */}
               <div className=" bg-white flex-1 overflow-y-auto">
                 {activeTab === 'visualization' && currentInvoice.attachedInvoiceUrl && (
-                  <div className="p-4 h-full">
-                    <div className="border border-gray-300 rounded-lg overflow-hidden bg-white relative group h-full">
-                      <iframe
-                        ref={iframeRef}
-                        src={getPlacementViewerUrl(currentInvoice.attachedInvoiceUrl)}
-                        title="Invoice PDF"
-                        className="w-full h-full border-0"
-                        allowFullScreen
-                      />
-                      <button
-                        onClick={handleFullscreen}
-                        className="absolute top-3 right-3 bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100"
-                        title="Plein écran"
+                  <div className="p-4 h-full min-h-[min(70vh,32rem)] flex flex-col">
+                    <div className="border border-gray-300 rounded-lg bg-white relative group flex-1 min-h-0 flex items-center justify-center overflow-auto">
+                      <div
+                        className="transition-transform duration-300 ease-out shrink-0"
+                        style={{
+                          transform: `rotate(${viewerRotation}deg)`,
+                          transformOrigin: 'center center',
+                          width: viewerRotation % 180 === 0 ? '100%' : 'min(85vh, 100%)',
+                          height: viewerRotation % 180 === 0 ? '100%' : 'min(85vh, 100%)',
+                          minHeight: viewerRotation % 180 === 0 ? 'min(50vh,24rem)' : 'min(50vw,36rem)'
+                        }}
                       >
-                        <Maximize2 size={18} className="text-gray-700" />
-                      </button>
+                        <iframe
+                          ref={iframeRef}
+                          src={getPlacementViewerUrl(currentInvoice.attachedInvoiceUrl)}
+                          title="Invoice PDF"
+                          className="w-full h-full min-h-[min(50vh,24rem)] border-0 block"
+                          allowFullScreen
+                        />
+                      </div>
+                      <div className="absolute top-3 right-3 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={rotateViewerLeft}
+                          className="bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg"
+                          title="Tourner à gauche (-90°)"
+                        >
+                          <RotateCcw size={18} className="text-gray-700" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={rotateViewerRight}
+                          className="bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg"
+                          title="Tourner à droite (+90°)"
+                        >
+                          <RotateCw size={18} className="text-gray-700" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadInvoice}
+                          className="bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg"
+                          title="Télécharger la facture"
+                        >
+                          <Download size={18} className="text-gray-700" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleFullscreen}
+                          className="bg-white/90 hover:bg-white p-2 rounded-lg shadow-lg"
+                          title="Plein écran"
+                        >
+                          <Maximize2 size={18} className="text-gray-700" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1006,7 +1115,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                     {canViewDR() && (
                       <div className="border-l-4 border-blue-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
                         <div className="mb-2">
-                          <p className="text-xs font-bold text-blue-300">En attente validation DR</p>
+                          <p className="text-xs font-bold text-blue-300">Validation DR</p>
                           <p className="text-[11px] text-emerald-300 font-semibold">
                             Validé le {getValidationDetails(validations.dr).validatedAt}
                           </p>
@@ -1053,7 +1162,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                     {canViewDOP() && (
                       <div className="border-l-4 border-amber-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
                         <div className="mb-2">
-                          <p className="text-xs font-bold text-amber-300">En attente validation DOP</p>
+                          <p className="text-xs font-bold text-amber-300">Validation DOP</p>
                           <p className="text-[11px] text-emerald-300 font-semibold">
                             Validé le {getValidationDetails(validations.dop).validatedAt}
                           </p>
@@ -1107,37 +1216,68 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                   </div>
                 )}
 
-              {/* Historique des rejets si la facture a été rejetée */}
               {rejections.length > 0 && (
-                <div className="bg-slate-800 rounded-lg p-3 border border-red-900/50 mt-6">
-                  <h3 className="text-base font-semibold text-red-300 mb-3 flex items-center gap-2">
-                    <AlertTriangle size={16} className="text-red-600" />
-                    Historique des rejets
+                <div className="bg-slate-800/90 rounded-lg p-3 border border-slate-600/60 mt-6">
+                  <h3 className="text-base font-semibold text-slate-100 mb-2 flex items-center gap-2 shrink-0">
+                    <MessagesSquare size={17} className="text-sky-400" />
+                    Historique d&apos;échanges
                   </h3>
-                  <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-                    {rejections.map((rejection, idx) => {
-                      const rawDate = rejection.datetime || rejection.date;
-                      const by = rejection.name || 'Utilisateur';
-                      const level = (rejection.type || '').toUpperCase();
+                  <div className="space-y-3">
+                    {[...rejections]
+                      .sort((a, b) => exchangeTimestamp(a) - exchangeTimestamp(b))
+                      .map((entry, idx) => {
+                        const rawDate = entry.datetime || entry.date;
+                        const isUpdate = isEntryMiseAJour(entry as Record<string, unknown>);
+                        const by = entry.name || 'Utilisateur';
+                        const level = (entry.type || '').toUpperCase();
 
-                      return (
-                        <div key={idx} className="flex">
-                          <div className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 shadow-sm">
-                            <div className="flex items-center justify-between gap-2 mb-1">
-                              <div className="text-[11px] font-semibold text-slate-100">
-                                {by}{level ? ` • ${level}` : ''}
+                        if (isUpdate) {
+                          const { status, comment } = extractStatusAndComment(entry.raison);
+                          return (
+                            <div key={idx} className="flex w-full justify-end">
+                              <div className="max-w-[min(92%,20rem)] rounded-2xl rounded-br-md bg-sky-900/50 border border-sky-700/50 px-3 py-2.5 shadow-md ml-auto text-left">
+                                <div className="text-[10px] text-sky-200/90 mb-2 leading-snug break-words">
+                                  <span className="font-semibold text-sky-50">{by}</span>
+                                </div>
+                                <div className="text-[11px] text-slate-100 leading-relaxed space-y-1.5">
+                                  <p className="break-words">
+                                    <span className="font-semibold text-sky-100">Statut:</span> {status}
+                                  </p>
+                                  <p className="break-words">
+                                    <span className="font-semibold text-sky-100">Commentaire:</span>
+                                  </p>
+                                  <p className="whitespace-pre-wrap break-words text-slate-200/95">{comment}</p>
+                                </div>
+                                <div className="mt-2 pt-1.5 border-t border-sky-700/40 text-[9px] text-sky-300/80 lowercase">
+                                  mise à jour
+                                  {level ? ` · ${level.toLowerCase()}` : ''}
+                                  {' · '}
+                                  {formatDateTime(rawDate)}
+                                </div>
                               </div>
-                              <div className="text-[10px] text-slate-400 whitespace-nowrap">
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div key={idx} className="flex w-full justify-start">
+                            <div className="max-w-[min(92%,20rem)] rounded-2xl rounded-bl-md bg-slate-900 border border-red-900/40 px-3 py-2.5 shadow-md">
+                              <div className="text-[10px] text-slate-300 mb-1.5 font-semibold">
+                                {by}
+                              </div>
+                              <p className="text-[11px] text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
+                                {entry.raison}
+                              </p>
+                              <div className="mt-2 pt-1.5 border-t border-red-800/40 text-[9px] text-slate-400 lowercase">
+                                rejet
+                                {level ? ` · ${level.toLowerCase()}` : ''}
+                                {' · '}
                                 {formatDateTime(rawDate)}
                               </div>
                             </div>
-                            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap break-words w-full">
-                              {rejection.raison}
-                            </p>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -1385,9 +1525,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             invoice={currentInvoice}
             onSubmit={() => {
               setEditModalOpen(false);
+              void loadExistingData();
               refreshAllData();
-              window.dispatchEvent(new Event('modalClosed'));
-              handleClose();
             }}
             onCancel={() => setEditModalOpen(false)}
           />

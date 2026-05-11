@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
 // COMPTES
 export interface Compte {
@@ -407,7 +408,7 @@ export const dashboardService = {
     try {
       let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, Montant, "Statut", "Date de réception", "Échéance", "validation DR", "validation DOP","validation DG", "Numéro de facture", "Région", "Type de facture"');
+        .select('ID, Montant, "Statut", "Date de réception", "Échéance", "validation DR", "validation DOP","validation DG", "Numéro de facture", "Région", "Type de facture", Rejet');
 
       const yearBounds = getYearBounds(year);
       if (yearBounds) {
@@ -500,7 +501,7 @@ export const dashboardService = {
           const montant = parseFloat(facture.Montant) || 0;
           const statut = facture.Statut?.toLowerCase() || '';
           const invoiceNumber = facture['Numéro de facture'];
-          const isRejeted = statut.includes('rejet');
+          const isRejeted = isInvoiceEffectivelyRejected(facture.Statut, facture.Rejet);
 
           processedCount++;
           
@@ -603,7 +604,7 @@ export const dashboardService = {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -643,10 +644,8 @@ export const dashboardService = {
         }
 
         const montant = parseFloat(f.Montant) || 0;
-        const statut = f.Statut?.toLowerCase() || '';
-        
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) return false;
 
         // Calculate unpaid amount
         const totalPaid = facturesAvecPaiements.get(f['Numéro de facture']) || 0;
@@ -666,7 +665,7 @@ export const dashboardService = {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -706,10 +705,8 @@ export const dashboardService = {
         }
 
         const montant = parseFloat(f.Montant) || 0;
-        const statut = f.Statut?.toLowerCase() || '';
-        
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) return false;
 
         // Calculate unpaid amount
         const totalPaid = facturesAvecPaiements.get(f['Numéro de facture']) || 0;
@@ -738,7 +735,7 @@ export const dashboardService = {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -778,10 +775,8 @@ export const dashboardService = {
         }
 
         const montant = parseFloat(f.Montant) || 0;
-        const statut = f.Statut?.toLowerCase() || '';
-        
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) return false;
 
         // Calculate unpaid amount
         const totalPaid = facturesAvecPaiements.get(f['Numéro de facture']) || 0;
@@ -812,7 +807,7 @@ export const dashboardService = {
       console.log('=== DEBUG GETPAYEEINVOICES ===');
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -858,10 +853,7 @@ export const dashboardService = {
           }
         }
 
-        const statut = f.Statut?.toLowerCase() || '';
-        
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) {
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) {
           console.log(`  -> Exclue (rejetée): ${f.Statut}`);
           return false;
         }
@@ -887,7 +879,7 @@ export const dashboardService = {
       console.log('=== DEBUG GETPARTIELLEMENTPAYEEINVOICES ===');
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -935,8 +927,7 @@ export const dashboardService = {
           }
         }
         
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) {
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) {
           console.log(`  -> Exclue (rejetée): ${f.Statut}`);
           return false;
         }
@@ -964,7 +955,7 @@ export const dashboardService = {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Facture attachée", "Catégorie de charge", "Niveau urgence", "Région", Devise, "Échéance", "Délais de paiement", Rejet');
       
       if (error) throw error;
 
@@ -985,8 +976,7 @@ export const dashboardService = {
           }
         }
 
-        const statut = f.Statut?.toLowerCase() || '';
-        return statut.includes('rejet');
+        return isInvoiceEffectivelyRejected(f.Statut, f.Rejet);
       });
     } catch (err) {
       console.error('Erreur dans getRejeteesInvoices():', err);
@@ -999,7 +989,7 @@ export const dashboardService = {
     try {
       const { data: factures, error } = await supabase
         .from('FACTURES')
-        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Échéance", "Facture attachée", "Catégorie de charge", "Délais de paiement", "Région"');
+        .select('ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Échéance", "Facture attachée", "Catégorie de charge", "Délais de paiement", "Région", Rejet');
       
       if (error) throw error;
 
@@ -1023,10 +1013,7 @@ export const dashboardService = {
           }
         }
 
-        const statut = f.Statut?.toLowerCase() || '';
-        
-        // Exclude rejected invoices
-        if (statut.includes('rejet')) return false;
+        if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) return false;
         
         // Check if due date is in the past
         if (f['Échéance']) {
@@ -1566,7 +1553,7 @@ export const dashboardService = {
     try {
       const { data: factures, error: facturesError } = await supabase
         .from('FACTURES')
-        .select('ID, Montant, "Catégorie de charge", Fournisseur, Statut, "Date de réception", "Numéro de facture", "Région"');
+        .select('ID, Montant, "Catégorie de charge", Fournisseur, Statut, "Date de réception", "Numéro de facture", "Région", Rejet');
 
       if (facturesError) throw facturesError;
 
@@ -1644,8 +1631,7 @@ export const dashboardService = {
         supplier.totalMontant += montant;
         supplier.count += 1;
 
-        // Check if rejected
-        if (statut.toLowerCase().includes('rejet')) {
+        if (isInvoiceEffectivelyRejected(statut, f.Rejet)) {
           totalRejected += montant;
           supplier.totalRejected += montant;
         } else {
@@ -2013,7 +1999,7 @@ export const dashboardService = {
     try {
       let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, Montant, "Statut", "Date de réception", "Numéro de facture", "Région"');
+        .select('ID, Montant, "Statut", "Date de réception", "Numéro de facture", "Région", Rejet');
 
       const yearBounds = getYearBounds(year);
       if (yearBounds) {
@@ -2082,10 +2068,7 @@ export const dashboardService = {
           const receptionMonth = receptionDate.getMonth() + 1;
           const montant = parseFloat(f.Montant) || 0;
           const invoiceNumber = f['Numéro de facture'];
-          const statut = f.Statut?.toLowerCase() || '';
-          
-          // Skip rejected invoices
-          if (statut.includes('rejet')) {
+          if (isInvoiceEffectivelyRejected(f.Statut, f.Rejet)) {
             return;
           }
 

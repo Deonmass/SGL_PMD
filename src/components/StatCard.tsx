@@ -21,6 +21,8 @@ interface StatCardProps {
   onDetailClick?: () => void;
   icon?: 'calculator' | 'x-circle' | 'alert' | 'trending' | 'none';
   variant?: 'default' | 'compact';
+  /** Montant principal plus petit (ex. cartes compact de l’onglet Global factures) */
+  compactAmountSize?: 'default' | 'reduced';
   onHover?: boolean;
 }
 
@@ -43,6 +45,7 @@ function StatCard({
   onDetailClick,
   icon = 'none',
   variant = 'default',
+  compactAmountSize = 'default',
   onHover = true
 }: StatCardProps) {
   const [isHovered, setIsHovered] = useState(false);
@@ -121,6 +124,8 @@ function StatCard({
 
   const hoverGradient = getGradientFromBg(bgColor);
 
+  const compactIsReduced = compactAmountSize === 'reduced';
+
   // Variant compact - like in the image
   if (variant === 'compact') {
     return (
@@ -130,8 +135,8 @@ function StatCard({
         onClick={onDetailClick}
         className={`relative overflow-hidden rounded-2xl transition-all duration-300 ease-out cursor-pointer ${bgColor} ${isHovered ? 'shadow-2xl transform scale-105' : 'shadow-lg'}`}
         style={{
-          padding: '1.5rem',
-          minHeight: '200px',
+          padding: compactIsReduced ? '1.25rem' : '1.5rem',
+          minHeight: compactIsReduced ? '176px' : '200px',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between'
@@ -149,10 +154,18 @@ function StatCard({
 
         {/* Center section: main value */}
         <div>
-          <p className={`${textColor} text-4xl font-bold`}>
+          <p
+            className={`${textColor} font-bold leading-tight tracking-tight ${
+              compactIsReduced ? 'text-2xl sm:text-3xl' : 'text-4xl'
+            }`}
+          >
             {formatCurrency(value)}
           </p>
-          <p className={`${textColor} text-sm font-medium opacity-80 mt-1`}>
+          <p
+            className={`${textColor} font-medium opacity-80 mt-1 ${
+              compactIsReduced ? 'text-xs sm:text-sm' : 'text-sm'
+            }`}
+          >
             {currency}
           </p>
         </div>

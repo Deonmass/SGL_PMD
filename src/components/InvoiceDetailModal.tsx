@@ -1,5 +1,5 @@
 import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical, Filter, Search, RefreshCw } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Invoice as DbInvoice } from '../services/tableService';
 import { Invoice as ContextInvoice, InvoiceStatus } from '../types';
 import { formatCurrency, formatMoney } from '../utils/formatters';
@@ -132,19 +132,24 @@ function InvoiceDetailModal({
     !normalizedTitle.includes('partiellement');
   const displayTitle = isPaidReportMode ? 'Relevé des factures payées' : title;
 
+  const [localInvoices, setLocalInvoices] = useState<DbInvoice[]>(invoices);
+  useEffect(() => {
+    setLocalInvoices(invoices);
+  }, [invoices]);
+
   useEffect(() => {
     if (isOpen) {
-      loadInvoicePayments();
+      loadInvoicePayments(localInvoices);
     }
-  }, [isOpen, invoices]);
+  }, [isOpen, localInvoices]);
 
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
     if (isOpen) {
-      loadInvoicePayments();
+      loadInvoicePayments(localInvoices);
     }
   });
 
-  const loadInvoicePayments = async () => {
+  const loadInvoicePayments = async (sourceInvoices: DbInvoice[] = localInvoices) => {
     setLoading(true);
     try {
       const { data: paiements } = await supabase
@@ -170,9 +175,9 @@ function InvoiceDetailModal({
       }
 
       // Filter invoices by region if agent has a specific region
-      let filteredInvoices = agent?.REGION && agent.REGION !== 'TOUT' 
-        ? invoices.filter(inv => (inv as any)['Région'] === agent.REGION)
-        : invoices;
+      let filteredInvoices = agent?.REGION && agent.REGION !== 'TOUT'
+        ? sourceInvoices.filter(inv => (inv as any)['Région'] === agent.REGION)
+        : sourceInvoices;
 
       // Enforce invoice type scope when provided (operationnel / frais-generaux)
       if (invoiceTypeScope && filteredInvoices.length > 0) {
@@ -228,6 +233,70 @@ function InvoiceDetailModal({
       setLoading(false);
     }
   };
+
+  const isOpenRef = useRef(isOpen);
+  const viewInvoiceModalOpenRef = useRef(viewInvoiceModal.isOpen);
+  const paiementModalOpenRef = useRef(paiementModal.isOpen);
+  const localInvoicesRef = useRef(localInvoices);
+
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  useEffect(() => {
+    viewInvoiceModalOpenRef.current = viewInvoiceModal.isOpen;
+  }, [viewInvoiceModal.isOpen]);
+
+  useEffect(() => {
+    paiementModalOpenRef.current = paiementModal.isOpen;
+  }, [paiementModal.isOpen]);
+
+  useEffect(() => {
+    localInvoicesRef.current = localInvoices;
+  }, [localInvoices]);
+
+  const refreshInvoicesFromDb = async (sourceInvoices: DbInvoice[]) => {
+    const invoiceNumbers = (sourceInvoices || [])
+      .map((inv: any) => inv['Numéro de facture'])
+      .filter(Boolean);
+
+    if (!invoiceNumbers.length) return [];
+
+    const { data, error } = await supabase
+      .from('FACTURES')
+      .select(
+        'ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Région", "Catégorie de charge", "Niveau urgence", "Échéance", "Délais de paiement", "validation DR", "validation DOP", "validation DG", "Facture attachée", Devise, Rejet'
+      )
+      .in('Numéro de facture', invoiceNumbers);
+
+    if (error) throw new Error(error.message);
+
+    return (data || []) as DbInvoice[];
+  };
+
+  // Actualiser la liste des factures quand on ferme un modal de détail (ViewInvoiceModal / PaiementModal)
+  useEffect(() => {
+    const handler = async () => {
+      if (!isOpenRef.current) return;
+
+      // Ne recharge que si c'est un modal de "détail facture" qui vient de se fermer,
+      // pas si le modal InvoiceDetailModal lui-même se ferme.
+      if (!viewInvoiceModalOpenRef.current && !paiementModalOpenRef.current) return;
+
+      const source = localInvoicesRef.current;
+      if (!source?.length) return;
+
+      const updated = await refreshInvoicesFromDb(source);
+      if (!updated?.length) return;
+
+      setLocalInvoices(updated);
+      await loadInvoicePayments(updated);
+    };
+
+    window.addEventListener('modalClosed', handler);
+    return () => window.removeEventListener('modalClosed', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handlePrint = () => {
     const printWindow = window.open('', '', 'width=1400,height=900');

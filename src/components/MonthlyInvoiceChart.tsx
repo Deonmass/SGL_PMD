@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Expand, X } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { MonthlyInvoiceStats } from '../services/tableService';
+import { formatNumber } from '../utils/formatters';
 
 interface MonthlyInvoiceChartProps {
   data: MonthlyInvoiceStats[];
@@ -25,7 +26,7 @@ export default function MonthlyInvoiceChart({ data, loading }: MonthlyInvoiceCha
 
   const formatAmount = (value?: number) => {
     const amount = Number(value || 0);
-    return `${Math.round(amount).toLocaleString()} USD`;
+    return `${formatNumber(Math.round(amount))} USD`;
   };
 
   const activePoint = activeIndex !== null && data[activeIndex] ? data[activeIndex] : null;
@@ -138,7 +139,7 @@ export default function MonthlyInvoiceChart({ data, loading }: MonthlyInvoiceCha
               showDenseLabels
                 ? ({ x, y, value, index }: any) => (
                     <text x={x} y={y - 10} fill={item.color} fontSize={10} textAnchor="middle">
-                      {`${Math.round(Number(value || 0)).toLocaleString()}$ | ${data[index]?.[item.countKey] || 0}f`}
+                      {`${formatNumber(Math.round(Number(value || 0)))}$ | ${data[index]?.[item.countKey] || 0}f`}
                     </text>
                   )
                 : undefined

@@ -10,6 +10,7 @@ import { Invoice } from '../types';
 import * as XLSX from 'xlsx';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { formatMoney } from '../utils/formatters';
+import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
 interface Facture {
   ID: string;
@@ -40,6 +41,7 @@ interface Facture {
   "Facture attachée"?: string;
   "Commentaires"?: string;
   created_by?: string;
+  Rejet?: string | null;
 }
 
 interface ValidationPageProps {
@@ -251,9 +253,8 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
             console.log(`*** FILTRAGE 2026-00652 ***: statut=${invoice.Statut}, dansFacturesAvecPaiements=${facturesAvecPaiements.has('2026-00652')}`);
           }
           
-          // Exclure les factures rejetées
-          if (invoice.Statut === 'Rejetée') {
-            console.log(`Facture ${invoice["Numéro de facture"]}: Rejetée, exclusion`);
+          if (isInvoiceEffectivelyRejected(invoice.Statut, invoice.Rejet)) {
+            console.log(`Facture ${invoice["Numéro de facture"]}: Rejetée (effectif), exclusion`);
             return false;
           }
 
@@ -367,10 +368,13 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           });
         }
 
-        // Filtrer les factures payées
         allData = (rejectedData || []).filter(invoice => {
           if (facturesAvecPaiements.has(invoice["Numéro de facture"])) {
             console.log(`Facture ${invoice["Numéro de facture"]}: Paiement détecté, exclusion`);
+            return false;
+          }
+          if (!isInvoiceEffectivelyRejected(invoice.Statut, invoice.Rejet)) {
+            console.log(`Facture ${invoice["Numéro de facture"]}: dernière entrée Rejet ≠ rejet, exclusion liste rejetées`);
             return false;
           }
           return true;
@@ -636,7 +640,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       chargeCategory: inv["Catégorie de charge"] || 'Non spécifié',
       urgencyLevel: inv["Niveau urgence"] as 'Haute' | 'Moyenne' | 'Basse',
       status: (() => {
-        const finalStatus = inv.Statut === 'Rejetée' ? 'rejected' :
+        const finalStatus = isInvoiceEffectivelyRejected(inv.Statut, inv.Rejet) ? 'rejected' :
                inv.Statut === 'Échue' ? 'overdue' :
                isBonAPayer ? 'bon-a-payer' : 
                inv.Statut === 'En attente validation DR' ? 'pending' : 

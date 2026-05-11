@@ -205,3 +205,51 @@ export const buildFactureUpdateExplanation = (
 
   return `Mise à jour des champs: ${changedFields.join(', ')}.`;
 };
+
+/** Texte structuré pour l'historique d'échanges (colonne Rejet) — détail champ par champ. */
+export const buildFactureUpdateDetailedExplanation = (
+  beforeValues: Record<string, unknown>,
+  afterValues: Record<string, unknown>
+) => {
+  const labels: Record<string, string> = {
+    'Date emission': "date d'émission",
+    'Date de réception': 'date de réception',
+    'Numéro de facture': 'numéro de facture',
+    Fournisseur: 'fournisseur',
+    'Catégorie fournisseur': 'catégorie fournisseur',
+    Région: 'région',
+    'Centre de coût': 'centre de coût',
+    Gestionnaire: 'gestionnaire',
+    'Type de facture': 'type de facture',
+    'Catégorie de charge': 'catégorie de charge',
+    'Numéro de dossier': 'numéro de dossier',
+    'Motif / Description': 'motif / description',
+    Devise: 'devise',
+    'Taux facture': 'taux facture',
+    Montant: 'montant',
+    'Niveau urgence': 'niveau urgence',
+    'Délais de paiement': 'délais de paiement',
+    Échéance: 'échéance',
+    'Mode de paiement requis': 'mode de paiement requis',
+    'Facture attachée': 'facture attachée',
+    Commentaires: 'commentaires',
+    Statut: 'statut',
+  };
+
+  const lines: string[] = [];
+  Object.keys(beforeValues).forEach((key) => {
+    const before = asText(beforeValues[key]);
+    const after = asText(afterValues[key]);
+    if (before === after) return;
+    const label = labels[key] || key;
+    const de = before || '—';
+    const a = after || '—';
+    lines.push(`${label} : « ${de} » → « ${a} »`);
+  });
+
+  if (!lines.length) {
+    return 'Mise à jour enregistrée ; aucun changement détecté sur les champs suivis.';
+  }
+
+  return ['Modifications apportées :', ...lines.map((l) => `• ${l}`)].join('\n');
+};

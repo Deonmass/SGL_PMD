@@ -6,7 +6,12 @@ import { useToast } from '../hooks/useToast';
 import { Invoice } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
-import { appendFactureLogById, buildFactureUpdateExplanation, buildLogActor } from '../services/activityLogService';
+import {
+  appendFactureLogById,
+  buildFactureUpdateDetailedExplanation,
+  buildFactureUpdateExplanation,
+  buildLogActor,
+} from '../services/activityLogService';
 
 interface EditInvoiceFormProps {
   invoice: Invoice;
@@ -591,10 +596,70 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
         "Statut": newStatus
       };
 
+      const afterValues: Record<string, unknown> = {
+        'Date emission': invoiceData['Date emission'],
+        'Date de réception': invoiceData['Date de réception'],
+        'Numéro de facture': invoiceData['Numéro de facture'],
+        Fournisseur: invoiceData['Fournisseur'],
+        'Catégorie fournisseur': invoiceData['Catégorie fournisseur'],
+        Région: invoiceData['Région'],
+        'Centre de coût': invoiceData['Centre de coût'],
+        Gestionnaire: invoiceData['Gestionnaire'],
+        'Type de facture': invoiceData['Type de facture'],
+        'Catégorie de charge': invoiceData['Catégorie de charge'],
+        'Numéro de dossier': invoiceData['Numéro de dossier'],
+        'Motif / Description': invoiceData['Motif / Description'],
+        Devise: invoiceData['Devise'],
+        'Taux facture': invoiceData['Taux facture'],
+        Montant: invoiceData['Montant'],
+        'Niveau urgence': invoiceData['Niveau urgence'],
+        'Délais de paiement': invoiceData['Délais de paiement'],
+        Échéance: invoiceData['Échéance'],
+        'Mode de paiement requis': invoiceData['Mode de paiement requis'],
+        'Facture attachée': invoiceData['Facture attachée'],
+        Commentaires: invoiceData['Commentaires'],
+        Statut: invoiceData['Statut'],
+      };
+
+      const { data: rejetRow, error: rejetSelectError } = await supabase
+        .from('FACTURES')
+        .select('Rejet')
+        .eq('ID', invoice.id)
+        .single();
+
+      if (rejetSelectError) {
+        console.error('Erreur lecture Rejet (édition):', rejetSelectError);
+      }
+
+      let exchangeHistory: Record<string, unknown>[] = [];
+      const rawRejet = rejetRow?.Rejet as unknown;
+      if (rawRejet) {
+        try {
+          const parsed = typeof rawRejet === 'string' ? JSON.parse(rawRejet) : rawRejet;
+          exchangeHistory = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          exchangeHistory = [];
+        }
+      }
+
+      const exchangeComment = buildFactureUpdateDetailedExplanation(beforeValues, afterValues);
+      exchangeHistory.push({
+        eventType: 'mise à jour',
+        datetime: new Date().toISOString(),
+        name: agent?.Nom || '',
+        email: agent?.email || '',
+        raison: exchangeComment,
+      });
+
+      const invoiceDataWithHistory = {
+        ...invoiceData,
+        Rejet: JSON.stringify(exchangeHistory),
+      };
+
       // Mettre à jour dans la table FACTURES
       const { data, error } = await supabase
         .from('FACTURES')
-        .update(invoiceData)
+        .update(invoiceDataWithHistory)
         .eq('ID', invoice.id)
         .select()
         .single();

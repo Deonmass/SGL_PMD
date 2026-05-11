@@ -15,6 +15,7 @@ import { supabase } from '../services/supabase';
 import { formatCurrency } from '../utils/formatters';
 import { useAuth } from '../contexts/AuthContext';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
+import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
 interface DashboardProps {
   activeMenu?: string;
@@ -104,6 +105,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
   const [costCenterData, setCostCenterData] = useState<Array<{ centre: string; montant: number; nombreFactures: number; montantPaye: number; montantNonPaye: number }>>([]);
   const [supplierCategories, setSupplierCategories] = useState<Array<{ category: string; color: string; count: number; montant: number; nombreFournisseurs: number; montantPaye: number; soldeAPayer: number }>>([]);
   const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string | null>(null);
+  const [hoveredSupplierCategory, setHoveredSupplierCategory] = useState<string | null>(null);
   const [suppliersByCategory, setSuppliersByCategory] = useState<Array<{ fournisseur: string; montant: number; nombreFactures: number; montantPaye: number; solde: number }>>([]);
   const [selectedSupplierForModal, setSelectedSupplierForModal] = useState<string | null>(null);
   const [supplierInvoices, setSupplierInvoices] = useState<any[]>([]);
@@ -438,7 +440,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
     try {
       let facturesQuery = supabase
         .from('FACTURES')
-        .select('ID, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Numéro de facture", "Région", "Catégorie de charge", "Type de facture"')
+        .select('ID, Montant, "Statut", "Date de réception", "validation DR", "validation DOP", "validation DG", "Numéro de facture", "Région", "Catégorie de charge", "Type de facture", Rejet')
         .eq('Type de facture', invoiceTypeScope);
 
       if (selectedYear) {
@@ -497,11 +499,9 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
         }
 
         const montant = parseFloat(facture.Montant) || 0;
-        const statut = facture.Statut?.toLowerCase() || '';
         const invoiceNumber = facture['Numéro de facture'];
 
-        // Exclus les factures rejetées
-        if (statut.includes('rejet')) return;
+        if (isInvoiceEffectivelyRejected(facture.Statut, facture.Rejet)) return;
 
         totalMontant += montant;
         totalFactures += 1;
@@ -897,10 +897,9 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
           return amountPaid === 0;
         });
       } else if (filterType === 'rejected') {
-        invoices = invoices.filter(inv => {
-          const statut = inv['Statut']?.toLowerCase() || '';
-          return statut.includes('rejet');
-        });
+        invoices = invoices.filter(inv =>
+          isInvoiceEffectivelyRejected(inv['Statut'], inv['Rejet'])
+        );
       }
 
       setModal({
@@ -1118,6 +1117,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     textColor="text-white"
                     onDetailClick={() => openModal('total')}
                     variant="compact"
+                    compactAmountSize="reduced"
                     icon="calculator"
                     onHover={true}
                   />
@@ -1132,6 +1132,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     textColor="text-white"
                     onDetailClick={() => openModal('nonPayee')}
                     variant="compact"
+                    compactAmountSize="reduced"
                     icon="x-circle"
                     onHover={true}
                   />
@@ -1146,6 +1147,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     textColor="text-white"
                     onDetailClick={() => openModal('bonAPayer')}
                     variant="compact"
+                    compactAmountSize="reduced"
                     icon="alert"
                     onHover={true}
                   />
@@ -1160,6 +1162,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     textColor="text-white"
                     onDetailClick={() => openModal('payee')}
                     variant="compact"
+                    compactAmountSize="reduced"
                     icon="trending"
                     onHover={true}
                   />
@@ -1735,54 +1738,121 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
               </div>
             ) : (
               // Affichage des catégories
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {supplierCategories.map((category) => (
-                  <div
-                    key={category.category}
-                    onClick={() => {
-                      setSelectedSupplierCategory(category.category);
-                      loadSuppliersByCategory(category.category);
-                    }}
-                    className={`${category.color} rounded-lg p-6 text-white cursor-pointer transform transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
-                  >
-                    <h3 className="text-lg font-bold mb-4">{category.category}</h3>
-                    
-                    <div className="grid grid-cols-3 gap-4 mb-4">
-                      {/* Factures */}
-                      <div className="bg-white bg-opacity-20 rounded p-3">
-                        <p className="text-xs opacity-90">Factures</p>
-                        <p className="text-2xl font-bold">{category.count}</p>
-                      </div>
-                      
-                      {/* Fournisseurs */}
-                      <div className="bg-white bg-opacity-20 rounded p-3">
-                        <p className="text-xs opacity-90">Fournisseurs</p>
-                        <p className="text-2xl font-bold">{category.nombreFournisseurs}</p>
-                      </div>
-                      
-                      {/* Total */}
-                      <div className="bg-white bg-opacity-20 rounded p-3">
-                        <p className="text-xs opacity-90">Total</p>
-                        <p className="text-sm font-bold">{formatCurrency(category.montant)}</p>
-                      </div>
-                    </div>
+              (() => {
+                // Map couleur Tailwind → valeurs CSS directes pour border + bg badge
+                const colorMap: Record<string, { border: string; badgeBg: string; badgeText: string; hoverRing: string }> = {
+                  'bg-blue-500':   { border: '#3b82f6', badgeBg: '#eff6ff', badgeText: '#1d4ed8', hoverRing: '#3b82f6' },
+                  'bg-purple-500': { border: '#a855f7', badgeBg: '#faf5ff', badgeText: '#7e22ce', hoverRing: '#a855f7' },
+                  'bg-pink-500':   { border: '#ec4899', badgeBg: '#fdf2f8', badgeText: '#be185d', hoverRing: '#ec4899' },
+                  'bg-red-500':    { border: '#ef4444', badgeBg: '#fef2f2', badgeText: '#b91c1c', hoverRing: '#ef4444' },
+                  'bg-orange-500': { border: '#f97316', badgeBg: '#fff7ed', badgeText: '#c2410c', hoverRing: '#f97316' },
+                  'bg-yellow-500': { border: '#eab308', badgeBg: '#fefce8', badgeText: '#854d0e', hoverRing: '#eab308' },
+                  'bg-green-500':  { border: '#22c55e', badgeBg: '#f0fdf4', badgeText: '#15803d', hoverRing: '#22c55e' },
+                  'bg-cyan-500':   { border: '#06b6d4', badgeBg: '#ecfeff', badgeText: '#0e7490', hoverRing: '#06b6d4' },
+                };
+                const fallbackColor = { border: '#6b7280', badgeBg: '#f9fafb', badgeText: '#374151', hoverRing: '#6b7280' };
 
-                    <div className="grid grid-cols-2 gap-4 text-sm border-t border-white border-opacity-20 pt-3">
-                      {/* Payé */}
-                      <div>
-                        <p className="text-xs opacity-80">Payé</p>
-                        <p className="font-bold">{formatCurrency(category.montantPaye)}</p>
-                      </div>
-                      
-                      {/* Solde à payer */}
-                      <div className="text-right">
-                        <p className="text-xs opacity-80">Solde à payer</p>
-                        <p className="font-bold">{formatCurrency(category.soldeAPayer)}</p>
-                      </div>
-                    </div>
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {supplierCategories.map((category) => {
+                      const isHovered = hoveredSupplierCategory === category.category;
+                      const c = colorMap[category.color] ?? fallbackColor;
+
+                      return (
+                        <div
+                          key={category.category}
+                          onMouseEnter={() => setHoveredSupplierCategory(category.category)}
+                          onMouseLeave={() => setHoveredSupplierCategory(null)}
+                          onClick={() => {
+                            setSelectedSupplierCategory(category.category);
+                            loadSuppliersByCategory(category.category);
+                          }}
+                          style={{
+                            border: isHovered
+                              ? '1px solid rgba(255,255,255,0.35)'
+                              : '1px solid #e5e7eb',
+                            borderLeft: `3px solid ${c.border}`,
+                            boxShadow: isHovered
+                              ? `0 12px 28px -8px ${c.border}66, 0 6px 16px -6px ${c.border}44, 0 2px 6px rgba(0,0,0,0.12)`
+                              : '0 1px 2px rgba(0,0,0,0.05), 0 4px 14px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.06)',
+                          }}
+                          className={`${isHovered ? category.color : 'bg-white'} p-4 cursor-pointer transition-all duration-300 ${
+                            isHovered ? 'text-white scale-[1.02]' : 'text-gray-900'
+                          }`}
+                        >
+                          {/* Titre + badge nombre de factures */}
+                          <div className="flex items-start justify-between mb-2">
+                            <h3 className="text-sm font-bold leading-snug">{category.category}</h3>
+                            <span
+                              className="text-[10px] font-bold px-1.5 py-0.5 ml-1.5 shrink-0 transition-colors"
+                              style={isHovered
+                                ? { background: 'rgba(255,255,255,0.25)', color: '#fff' }
+                                : { background: c.badgeBg, color: c.badgeText }}
+                            >
+                              {category.count} facture{category.count > 1 ? 's' : ''}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 mb-2">
+                            {/* Fournisseurs */}
+                            <div
+                              className="p-2 transition-colors"
+                              style={isHovered
+                                ? {
+                                    background: 'rgba(255,255,255,0.18)',
+                                    border: '1px solid rgba(255,255,255,0.28)',
+                                    boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+                                  }
+                                : {
+                                    background: c.badgeBg,
+                                    border: `1px solid ${c.border}33`,
+                                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                  }}
+                            >
+                              <p className="text-[9px] font-semibold uppercase tracking-wide opacity-75 mb-0.5">Fournisseurs</p>
+                              <p className="text-lg font-extrabold leading-none">{category.nombreFournisseurs}</p>
+                            </div>
+
+                            {/* Total */}
+                            <div
+                              className="col-span-2 p-2 transition-colors"
+                              style={isHovered
+                                ? {
+                                    background: 'rgba(255,255,255,0.18)',
+                                    border: '1px solid rgba(255,255,255,0.28)',
+                                    boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+                                  }
+                                : {
+                                    background: c.badgeBg,
+                                    border: `1px solid ${c.border}33`,
+                                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                  }}
+                            >
+                              <p className="text-[9px] font-semibold uppercase tracking-wide opacity-75 mb-0.5">Montant total</p>
+                              <p className="text-base font-extrabold leading-tight">{formatCurrency(category.montant)}</p>
+                            </div>
+                          </div>
+
+                          {/* Payé / Solde */}
+                          <div
+                            className="grid grid-cols-2 gap-2 text-xs pt-2 border-t transition-colors"
+                            style={{ borderColor: isHovered ? 'rgba(255,255,255,0.2)' : '#e5e7eb' }}
+                          >
+                            <div>
+                              <p className="text-[9px] font-semibold uppercase tracking-wide opacity-70 mb-0.5">Payé</p>
+                              <p className="font-bold text-xs">{formatCurrency(category.montantPaye)}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[9px] font-semibold uppercase tracking-wide opacity-70 mb-0.5">Solde à payer</p>
+                              <p className="font-bold text-xs">{formatCurrency(category.soldeAPayer)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
+                );
+              })()
             )}
             
             {supplierCategories.length === 0 && !selectedSupplierCategory && (
