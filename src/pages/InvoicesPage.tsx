@@ -16,8 +16,9 @@ interface InvoicesPageProps {
 
 function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', onMenuChange }: InvoicesPageProps) {
   const isFfgContext = String(activeMenu || '').startsWith('factures-ffg');
-  const { canView, canCreate, canEdit, canDelete } = usePermission();
+  const { canView, canCreate, getInvoiceVisibilityScope } = usePermission();
   const { agent } = useAuth();
+  const visibilityScope = getInvoiceVisibilityScope(isFfgContext ? 'factures_ffg' : 'factures');
   
   const [selectedRegion, setSelectedRegion] = useState(agent?.REGION || 'all');
 
@@ -34,6 +35,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
       status: 'pending',
       region: 'OUEST',
       validations: 0,
+      created_by: 'demo@sgl.cd',
     },
     {
       id: 2,
@@ -47,6 +49,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
       status: 'validated',
       region: 'OUEST',
       validations: 1,
+      created_by: 'demo@sgl.cd',
     },
     {
       id: 3,
@@ -60,6 +63,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
       status: 'validated',
       region: 'SUD',
       validations: 2,
+      created_by: 'dr.sud@sgl.cd',
     },
     {
       id: 4,
@@ -73,6 +77,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
       status: 'pending',
       region: 'EST',
       validations: 0,
+      created_by: 'dr.est@sgl.cd',
     },
     {
       id: 5,
@@ -86,6 +91,7 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
       status: 'validated',
       region: 'OUEST',
       validations: 1,
+      created_by: 'dop@sgl.cd',
     },
   ]);
 
@@ -107,6 +113,18 @@ function InvoicesPage({ filterType = 'all', activeMenu, menuTitle = 'Factures', 
   filtered = selectedRegion === 'all'
     ? filtered
     : filtered.filter(inv => inv.region === selectedRegion);
+
+  // Filter by visibility permission
+  if (visibilityScope === 'mine') {
+    const userEmail = String(agent?.email || '').toLowerCase();
+    const userName = String(agent?.Nom || '').toLowerCase();
+    filtered = filtered.filter(inv => {
+      const createdBy = String(inv.created_by || '').toLowerCase();
+      return Boolean(createdBy) && (createdBy === userEmail || createdBy === userName);
+    });
+  } else if (visibilityScope === 'region' && agent?.REGION && agent.REGION !== 'TOUT') {
+    filtered = filtered.filter(inv => inv.region === agent.REGION);
+  }
 
   // Calculate totals
   const totalUSD = filtered

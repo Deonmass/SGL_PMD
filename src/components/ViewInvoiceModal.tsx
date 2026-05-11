@@ -49,6 +49,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [activePlacementResize, setActivePlacementResize] = useState<null | 'se' | 'nw'>(null);
   const [placementDragOffset, setPlacementDragOffset] = useState({ x: 0, y: 0 });
   const placementAreaRef = useRef<HTMLDivElement>(null);
+  const modalExportRef = useRef<HTMLDivElement>(null);
 
   const parseValidationData = (value: unknown): { date: string | null; name?: string; email?: string } | null => {
     if (!value) return null;
@@ -112,6 +113,14 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     return {
       dateLabel: `✓ Validé le ${formattedDate}`,
       byLabel: parsed.name ? `Par ${parsed.name}` : ''
+    };
+  };
+
+  const getValidationDetails = (value: unknown) => {
+    const parsed = parseValidationData(value);
+    return {
+      validatedAt: parsed?.date ? formatDateTime(parsed.date) : '-',
+      validatedBy: parsed?.name || '-'
     };
   };
 
@@ -568,6 +577,49 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     window.print();
   };
 
+  const handleExportModalToPdf = () => {
+    if (!modalExportRef.current) {
+      showError('Aucune donnée à exporter.');
+      return;
+    }
+
+    const clonedContent = modalExportRef.current.cloneNode(true) as HTMLElement;
+    const printWindow = window.open('', '', 'width=1400,height=900');
+    if (!printWindow) {
+      showError('Impossible d’ouvrir la fenêtre d’export PDF.');
+      return;
+    }
+
+    const styleSheets = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map((node) => node.outerHTML)
+      .join('\n');
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Export PDF - Facture ${currentInvoice.invoiceNumber}</title>
+          ${styleSheets}
+          <style>
+            body { margin: 0; padding: 16px; background: #ffffff; }
+            @media print {
+              @page { size: A4 landscape; margin: 8mm; }
+              body { margin: 0; padding: 0; }
+            }
+          </style>
+        </head>
+        <body>${clonedContent.outerHTML}</body>
+      </html>
+    `);
+    printWindow.document.close();
+    setTimeout(() => {
+      printWindow.focus();
+      printWindow.print();
+      printWindow.close();
+    }, 400);
+  };
+
   const getPlacementViewerUrl = (url?: string | null) => {
     if (!url) return '';
     const hash = 'toolbar=0&navpanes=0&scrollbar=0&zoom=page-width';
@@ -638,7 +690,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-[95vw] max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+      <div ref={modalExportRef} className="bg-white rounded-lg shadow-xl w-[95vw] max-w-6xl h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4 flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -664,6 +716,13 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportModalToPdf}
+              className="text-gray-500 hover:text-red-600 transition-colors"
+              title="Exporter en PDF"
+            >
+              <FileText size={24} />
+            </button>
             <button
               onClick={handlePrint}
               className="text-gray-500 hover:text-blue-600 transition-colors"
@@ -929,11 +988,10 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             </div>
 
             {/* Colonne droite - 30% : Validations et rejet */}
-            <div className="flex-1 lg:flex-[0.3] mt-0 flex flex-col">
+            <div className="flex-1 lg:flex-[0.3] mt-0 flex flex-col h-full bg-slate-900 border-l border-slate-800">
               {/* Bloc de validation DR, DOP, DG */}
-              <div className="bg-gray-0 rounded-lg p-3 mb-3 ">
-                <h3 className="text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                  <AlertTriangle size={16} className="text-blue-600" />
+              <div className="flex-1 overflow-y-auto p-3">
+                <h3 className="text-base font-semibold text-slate-100 mb-3">
                   Validation
                 </h3>
                 
@@ -941,25 +999,21 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                 {isLoadingValidations ? (
                   <div className="flex items-center justify-center py-4">
                     <Loader2 className="animate-spin text-blue-600" size={20} />
-                    <span className="ml-2 text-xs text-gray-600">Chargement des validations...</span>
+                    <span className="ml-2 text-xs text-slate-300">Chargement des validations...</span>
                   </div>
                 ) : (
                   <div className="space-y-4">
                     {/* Section DR */}
                     {canViewDR() && (
-                      <div className="border-l-4 border-blue-500 pl-3 pr-3 py-2 bg-blue-50 rounded">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-blue-900">En attente validation DR</span>
-                          {(() => {
-                            const validation = getValidationDisplay(validations.dr);
-                            if (!validation) return null;
-                            return (
-                              <span className="text-[11px] text-green-700 font-semibold text-right leading-tight">
-                                <span className="block">{validation.dateLabel}</span>
-                                {validation.byLabel && <span className="block text-green-600">{validation.byLabel}</span>}
-                              </span>
-                            );
-                          })()}
+                      <div className="border-l-4 border-blue-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
+                        <div className="mb-2">
+                          <p className="text-xs font-bold text-blue-300">En attente validation DR</p>
+                          <p className="text-[11px] text-emerald-300 font-semibold">
+                            Validé le {getValidationDetails(validations.dr).validatedAt}
+                          </p>
+                          <p className="text-[11px] text-emerald-400 font-semibold">
+                            Par {getValidationDetails(validations.dr).validatedBy}
+                          </p>
                         </div>
                         {!validations.dr && (
                           <div className="flex gap-2">
@@ -998,19 +1052,15 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
                     {/* Section DOP */}
                     {canViewDOP() && (
-                      <div className="border-l-4 border-amber-500 pl-3 pr-3 py-2 bg-amber-50 rounded">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-amber-900">En attente validation DOP</span>
-                          {(() => {
-                            const validation = getValidationDisplay(validations.dop);
-                            if (!validation) return null;
-                            return (
-                              <span className="text-[11px] text-green-700 font-semibold text-right leading-tight">
-                                <span className="block">{validation.dateLabel}</span>
-                                {validation.byLabel && <span className="block text-green-600">{validation.byLabel}</span>}
-                              </span>
-                            );
-                          })()}
+                      <div className="border-l-4 border-amber-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
+                        <div className="mb-2">
+                          <p className="text-xs font-bold text-amber-300">En attente validation DOP</p>
+                          <p className="text-[11px] text-emerald-300 font-semibold">
+                            Validé le {getValidationDetails(validations.dop).validatedAt}
+                          </p>
+                          <p className="text-[11px] text-emerald-400 font-semibold">
+                            Par {getValidationDetails(validations.dop).validatedBy}
+                          </p>
                         </div>
                         {!validations.dop && (
                           <div className="flex gap-2">
@@ -1060,8 +1110,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
               {/* Historique des rejets si la facture a été rejetée */}
               {rejections.length > 0 && (
-                <div className="bg-gradient-to-b from-red-50 to-white rounded-lg p-3 border border-red-200 mt-6">
-                  <h3 className="text-base font-semibold text-red-800 mb-3 flex items-center gap-2">
+                <div className="bg-slate-800 rounded-lg p-3 border border-red-900/50 mt-6">
+                  <h3 className="text-base font-semibold text-red-300 mb-3 flex items-center gap-2">
                     <AlertTriangle size={16} className="text-red-600" />
                     Historique des rejets
                   </h3>
@@ -1073,16 +1123,16 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
                       return (
                         <div key={idx} className="flex">
-                          <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+                          <div className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 shadow-sm">
                             <div className="flex items-center justify-between gap-2 mb-1">
-                              <div className="text-[11px] font-semibold text-gray-800">
+                              <div className="text-[11px] font-semibold text-slate-100">
                                 {by}{level ? ` • ${level}` : ''}
                               </div>
-                              <div className="text-[10px] text-gray-500 whitespace-nowrap">
+                              <div className="text-[10px] text-slate-400 whitespace-nowrap">
                                 {formatDateTime(rawDate)}
                               </div>
                             </div>
-                            <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap break-words w-full">
+                            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap break-words w-full">
                               {rejection.raison}
                             </p>
                           </div>
@@ -1092,10 +1142,10 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                   </div>
                 </div>
               )}
-
+              </div>
               {(canEditCurrentInvoice || canDeleteCurrentInvoice) && (
-                <div className="mt-auto pt-3 sticky bottom-0 bg-white/95 backdrop-blur-sm">
-                  <div className="rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
+                <div className="mt-auto bg-slate-900 border-t border-slate-800 p-3">
+                  <div className="rounded-lg bg-slate-800/70 p-2 border border-slate-700">
                     <div className="flex items-center gap-2">
                       {canEditCurrentInvoice && (
                         <button
@@ -1343,7 +1393,6 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             onCancel={() => setEditModalOpen(false)}
           />
         )}
-      </div>
     </div>
   );
 }

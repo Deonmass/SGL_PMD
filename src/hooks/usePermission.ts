@@ -3,6 +3,8 @@ import { useAuth } from '../contexts/AuthContext';
 export function usePermission() {
   const { agent } = useAuth();
 
+  type InvoiceVisibilityScope = 'mine' | 'region' | 'all';
+
   // Fonction pour rechercher récursivement dans l'objet permissions
   const searchPermissionRecursive = (obj: any, targetKey: string, targetAction: string): boolean => {
     if (!obj || typeof obj !== 'object') {
@@ -33,6 +35,30 @@ export function usePermission() {
     }
 
     return false;
+  };
+
+  const findMenuPermissionsRecursive = (obj: any, targetKey: string): Record<string, unknown> | null => {
+    if (!obj || typeof obj !== 'object') {
+      return null;
+    }
+
+    for (const key in obj) {
+      if (key.toLowerCase() === targetKey.toLowerCase()) {
+        const value = obj[key];
+        if (value && typeof value === 'object') {
+          return value as Record<string, unknown>;
+        }
+      }
+
+      if (typeof obj[key] === 'object' && obj[key] !== null) {
+        const nested = findMenuPermissionsRecursive(obj[key], targetKey);
+        if (nested) {
+          return nested;
+        }
+      }
+    }
+
+    return null;
   };
 
   // Parse des permissions
@@ -166,6 +192,25 @@ export function usePermission() {
     return isValidatorDR() || isValidatorDOP();
   };
 
+  // Obtenir le niveau de visibilité sur les factures
+  const getInvoiceVisibilityScope = (menu: 'factures' | 'factures_ffg' = 'factures'): InvoiceVisibilityScope => {
+    const perms = getPermissions();
+    if (!perms) {
+      return agent?.REGION === 'TOUT' ? 'all' : 'region';
+    }
+
+    const menuPerms = findMenuPermissionsRecursive(perms, menu);
+    if (!menuPerms) {
+      return agent?.REGION === 'TOUT' ? 'all' : 'region';
+    }
+
+    if (menuPerms.voir_tout === true) return 'all';
+    if (menuPerms.voir_factures_region === true) return 'region';
+    if (menuPerms.voir_mes_factures === true) return 'mine';
+
+    return agent?.REGION === 'TOUT' ? 'all' : 'region';
+  };
+
   return {
     hasPermission,
     canView,
@@ -183,6 +228,7 @@ export function usePermission() {
     canEstablishPaymentOrder,
     canManageOwnSignature,
     canViewInvoiceTab,
+    getInvoiceVisibilityScope,
     getAllPermissions
   };
 }

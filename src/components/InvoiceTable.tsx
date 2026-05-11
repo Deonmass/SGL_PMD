@@ -353,7 +353,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                       <td className="px-4 py-2 text-[11px] font-semibold">
                         <button
                           onClick={() => handleViewInvoice(invoice)}
-                          className="text-blue-600 hover:text-blue-800 hover:underline transition-all duration-200 transform hover:scale-105"
+                          className="block w-full text-left text-blue-600 hover:text-blue-800 hover:underline transition-all duration-200"
                         >
                           {invoice.invoiceNumber}
                         </button>

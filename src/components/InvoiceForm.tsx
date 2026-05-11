@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { X, Plus, Upload, FileText, AlertCircle } from 'lucide-react';
+import { X, Plus, Upload, FileText, AlertCircle, Loader2, Save, Ban } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { cloudStorageService } from '../services/cloudStorage';
 import { useToast } from '../hooks/useToast';
@@ -81,7 +81,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
     // Affectation organisationnelle
     region: agent?.REGION || '',
     costCenter: '',
-    manager: '',
+    manager: String(agent?.ID || ''),
     
     // Typologie de la facture
     invoiceType: invoiceTypeScope,
@@ -132,6 +132,10 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
   ]);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [invoiceNumberCheck, setInvoiceNumberCheck] = useState<{
+    status: 'idle' | 'checking' | 'available' | 'duplicate' | 'error';
+    message: string;
+  }>({ status: 'idle', message: '' });
   
   const supplierInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -202,6 +206,81 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
 
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!agent) return;
+
+    const region = String(agent.REGION || '');
+    const fallbackManagerId = String(agent.ID || '');
+    const currentAgent = agents.find((a) => {
+      const sameId = Number(getEntityId(a)) === Number(agent.ID);
+      const sameEmail = String(a.email || '').toLowerCase() === String(agent.email || '').toLowerCase();
+      return sameId || sameEmail;
+    });
+    const currentAgentId = currentAgent ? getEntityId(currentAgent) : fallbackManagerId;
+
+    setFormData((prev) => ({
+      ...prev,
+      region: agent.REGION === 'TOUT' ? prev.region : (prev.region || region),
+      manager: prev.manager || currentAgentId
+    }));
+  }, [agents, agent]);
+
+  useEffect(() => {
+    const rawInvoiceNumber = String(formData.invoiceNumber || '').trim();
+    if (!rawInvoiceNumber) {
+      setInvoiceNumberCheck({ status: 'idle', message: '' });
+      return;
+    }
+
+    let isCancelled = false;
+    setInvoiceNumberCheck({ status: 'checking', message: 'Vérification en cours...' });
+
+    const timeout = setTimeout(async () => {
+      try {
+        const { data: existingInvoices, error: duplicateCheckError } = await supabase
+          .from('FACTURES')
+          .select('"Numéro de facture"')
+          .ilike('"Numéro de facture"', rawInvoiceNumber)
+          .limit(10);
+
+        if (duplicateCheckError) {
+          if (!isCancelled) {
+            setInvoiceNumberCheck({
+              status: 'error',
+              message: 'Impossible de vérifier ce numéro pour le moment.'
+            });
+          }
+          return;
+        }
+
+        const duplicateFound = (existingInvoices || []).some((invoice) => {
+          const existingNumber = (invoice as Record<string, unknown>)['Numéro de facture'];
+          return normalizeInvoiceNumber(String(existingNumber ?? '')) === normalizeInvoiceNumber(rawInvoiceNumber);
+        });
+
+        if (!isCancelled) {
+          setInvoiceNumberCheck(
+            duplicateFound
+              ? { status: 'duplicate', message: 'Ce numéro de facture existe déjà.' }
+              : { status: 'available', message: 'Numéro de facture disponible.' }
+          );
+        }
+      } catch {
+        if (!isCancelled) {
+          setInvoiceNumberCheck({
+            status: 'error',
+            message: 'Impossible de vérifier ce numéro pour le moment.'
+          });
+        }
+      }
+    }, 450);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [formData.invoiceNumber]);
 
   useEffect(() => {
     if (invoiceTypeScope && formData.invoiceType !== invoiceTypeScope) {
@@ -503,6 +582,13 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
     return invoice;
   }, [formData.invoiceAmount, formData.currency, formData.exchangeRate]);
 
+  const isSubmitDisabled = useMemo(() => {
+    if (formData.isSubmitting || formData.isUploading) return true;
+    if (invoiceNumberCheck.status === 'checking' || invoiceNumberCheck.status === 'duplicate') return true;
+    if (formData.invoiceType === 'operationnel' && !String(formData.fileNumber || '').trim()) return true;
+    return false;
+  }, [formData.isSubmitting, formData.isUploading, invoiceNumberCheck.status, formData.invoiceType, formData.fileNumber]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -531,6 +617,12 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       if (!cleanedInvoiceNumber) {
         showError('Le numéro de facture est obligatoire.');
         Swal.fire('Erreur', 'Le numéro de facture est obligatoire.', 'error');
+        return;
+      }
+
+      if (formData.invoiceType === 'operationnel' && !String(formData.fileNumber || '').trim()) {
+        showError('Le numéro de dossier est obligatoire pour une facture opérationnelle.');
+        Swal.fire('Erreur', 'Le numéro de dossier est obligatoire pour une facture opérationnelle.', 'error');
         return;
       }
 
@@ -708,6 +800,25 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 />
+                {formData.invoiceNumber.trim() ? (
+                  <div className="mt-2 flex items-center gap-2 text-xs">
+                    {invoiceNumberCheck.status === 'checking' && (
+                      <>
+                        <Loader2 size={13} className="animate-spin text-blue-600" />
+                        <span className="text-blue-700">{invoiceNumberCheck.message}</span>
+                      </>
+                    )}
+                    {invoiceNumberCheck.status === 'available' && (
+                      <span className="text-green-700">{invoiceNumberCheck.message}</span>
+                    )}
+                    {invoiceNumberCheck.status === 'duplicate' && (
+                      <span className="text-red-700">{invoiceNumberCheck.message}</span>
+                    )}
+                    {invoiceNumberCheck.status === 'error' && (
+                      <span className="text-amber-700">{invoiceNumberCheck.message}</span>
+                    )}
+                  </div>
+                ) : null}
               </div>
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
@@ -912,7 +1023,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
               </div>
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Numéro de dossier
+                  Numéro de dossier {formData.invoiceType === 'operationnel' ? '*' : ''}
                 </label>
                 <input
                   type="text"
@@ -924,6 +1035,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                   }`}
                   disabled={formData.invoiceType === 'frais-generaux'}
                   placeholder={formData.invoiceType === 'frais-generaux' ? 'Non applicable pour frais généraux' : ''}
+                  required={formData.invoiceType === 'operationnel'}
                 />
               </div>
               <div className="col-span-3">
@@ -1241,18 +1353,20 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
             <button
               type="button"
               onClick={onCancel}
-              className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+              className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 flex items-center gap-2"
             >
+              <Ban size={16} />
               Annuler
             </button>
             <button
               type="submit"
-              disabled={formData.isSubmitting}
+              disabled={isSubmitDisabled}
                 className="px-6 py-2 text-white font-medium rounded-lg bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500 hover:from-indigo-600 hover:via-blue-600 hover:to-cyan-600 shadow-md hover:shadow-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-all duration-300"
             >
               {formData.isSubmitting && (
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
               )}
+              {!formData.isSubmitting && <Save size={16} />}
               {formData.isSubmitting ? 'Enregistrement...' : 'Enregistrer'}
             </button>
           </div>

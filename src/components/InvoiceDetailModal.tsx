@@ -810,15 +810,6 @@ function InvoiceDetailModal({
                 <p className="text-base font-bold text-gray-900">{filteredInvoices.length}</p>
               </div>
             </div>
-            {currencyRows.length > 1 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {currencyRows.map(([currency, totals]) => (
-                  <span key={currency} className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold bg-white border border-gray-300 text-gray-700">
-                    {currency}: {formatMoney(totals.total, currency)}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* Tableau des factures */}
@@ -905,7 +896,7 @@ function InvoiceDetailModal({
                 <p className="text-xs text-gray-500">Ajustez les filtres ou actualisez les données.</p>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full text-sm whitespace-nowrap">
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b bg-gray-200">
                     {isPaidReportMode ? (
@@ -944,6 +935,9 @@ function InvoiceDetailModal({
                         </th>
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                           Échéance
+                        </th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                          Validation
                         </th>
                         <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
                           Montant
@@ -1102,6 +1096,36 @@ function InvoiceDetailModal({
                               return dueDate 
                                 ? dueDate.toLocaleDateString('fr-FR')
                                 : 'N/A';
+                            })()}
+                          </td>
+                          <td className="py-2 px-3">
+                            {(() => {
+                              const drValidated = invoice['validation DR'] != null && String(invoice['validation DR']).trim() !== '';
+                              const dopValidated = invoice['validation DOP'] != null && String(invoice['validation DOP']).trim() !== '';
+                              let percentage = 0;
+                              if (dopValidated) percentage = 100;
+                              else if (drValidated) percentage = 50;
+
+                              return (
+                                <div className="w-24">
+                                  <div className="relative w-full bg-gray-200 rounded-full h-4">
+                                    <div
+                                      className="h-4 rounded-full transition-all duration-300"
+                                      style={{
+                                        width: `${percentage}%`,
+                                        background: percentage === 0 ? '#e5e7eb' :
+                                          percentage <= 50 ? '#34d399' :
+                                            '#10b981'
+                                      }}
+                                    ></div>
+                                    <span className="absolute inset-0 flex items-center justify-center">
+                                      <span className={`text-[9px] font-bold ${percentage > 50 ? 'text-white' : 'text-gray-700'}`}>
+                                        {Math.round(percentage)}%
+                                      </span>
+                                    </span>
+                                  </div>
+                                </div>
+                              );
                             })()}
                           </td>
                           <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors">

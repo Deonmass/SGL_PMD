@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { RefreshCw, FileText, Search, Filter, Download, Eye, Edit, Trash2, DollarSign, AlertCircle, Calendar } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { useToast } from '../hooks/useToast';
@@ -39,6 +39,7 @@ interface Facture {
   "Mode de paiement requis"?: string;
   "Facture attachée"?: string;
   "Commentaires"?: string;
+  created_by?: string;
 }
 
 interface ValidationPageProps {
@@ -74,8 +75,9 @@ const EMPTY_ANIMATION_SVG =
 </svg>`);
 
 function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoiceTypeScope = 'operationnel' }: ValidationPageProps) {
-  const { canView } = usePermission();
+  const { canView, getInvoiceVisibilityScope } = usePermission();
   const { agent } = useAuth();
+  const visibilityScope = getInvoiceVisibilityScope(String(activeMenu || '').startsWith('factures-ffg') ? 'factures_ffg' : 'factures');
   const { error } = useToast();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +87,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [allInvoices, setAllInvoices] = useState<Facture[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const exportContainerRef = useRef<HTMLDivElement>(null);
 
   // Déterminer le filtre selon le menu actif
   const getStatusFilter = () => {
@@ -116,7 +119,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     console.log('statusFilter calculated:', statusFilter);
     setSelectedStatus(statusFilter);
     loadInvoices(statusFilter);
-  }, [activeMenu, invoiceTypeScope]);
+  }, [activeMenu, invoiceTypeScope, visibilityScope, agent?.email, agent?.REGION]);
 
   useEffect(() => {
     // Appeler filterInvoices quand allInvoices change
@@ -483,9 +486,20 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
         }
       })));
       
-      const scopedData = allData.filter((invoice: any) =>
+      let scopedData = allData.filter((invoice: any) =>
         normalizeInvoiceType(invoice['Type de facture']) === normalizeInvoiceType(invoiceTypeScope)
       );
+
+      if (visibilityScope === 'mine') {
+        const userEmail = String(agent?.email || '').toLowerCase();
+        const userName = String(agent?.Nom || '').toLowerCase();
+        scopedData = scopedData.filter((invoice: any) => {
+          const createdBy = String(invoice.created_by || '').toLowerCase();
+          return Boolean(createdBy) && (createdBy === userEmail || createdBy === userName);
+        });
+      } else if (visibilityScope === 'region' && agent?.REGION && agent.REGION !== 'TOUT') {
+        scopedData = scopedData.filter((invoice: any) => invoice['Région'] === agent.REGION);
+      }
       setAllInvoices(scopedData);
       
       // Debug détaillé
@@ -827,6 +841,89 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     XLSX.writeFile(wb, fileName);
   };
 
+  const handleExportToPdf = () => {
+    if (!exportContainerRef.current) {
+      alert('Aucune donnée à exporter');
+      return;
+    }
+
+    const clonedContent = exportContainerRef.current.cloneNode(true) as HTMLElement;
+    const statsCardsSection = clonedContent.querySelector('[data-export-stats="cards"]');
+    if (statsCardsSection) {
+      const totalsByCurrency = Object.entries(stats.totalsByCurrency);
+      const totalAmountLabel = totalsByCurrency.length === 0
+        ? '0'
+        : totalsByCurrency.map(([currency, amount]) => formatMoney(amount, currency)).join(' | ');
+
+      const tableWrapper = document.createElement('div');
+      tableWrapper.className = 'mb-4';
+      tableWrapper.innerHTML = `
+        <table style="width:100%; border-collapse:collapse; font-family:Arial,sans-serif; font-size:12px;">
+          <thead>
+            <tr style="background:#e5e7eb; color:#111827;">
+              <th style="padding:10px; border:1px solid #d1d5db; text-align:left;">Total Factures</th>
+              <th style="padding:10px; border:1px solid #d1d5db; text-align:left;">Montant Total</th>
+              <th style="padding:10px; border:1px solid #d1d5db; text-align:left;">Factures Urgentes</th>
+              <th style="padding:10px; border:1px solid #d1d5db; text-align:left;">Factures Échues</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:10px; border:1px solid #d1d5db; font-weight:700; color:#7c3aed;">${stats.count.toLocaleString()}</td>
+              <td style="padding:10px; border:1px solid #d1d5db; font-weight:700; color:#db2777;">${totalAmountLabel}</td>
+              <td style="padding:10px; border:1px solid #d1d5db; font-weight:700; color:#d97706;">${stats.urgent.toLocaleString()}</td>
+              <td style="padding:10px; border:1px solid #d1d5db; font-weight:700; color:#059669;">${stats.overdue.toLocaleString()}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+      statsCardsSection.replaceWith(tableWrapper);
+    }
+    const printWindow = window.open('', '', 'width=1400,height=900');
+    if (!printWindow) {
+      alert('Impossible d’ouvrir la fenêtre d’export PDF.');
+      return;
+    }
+
+    const styleSheets = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map((node) => node.outerHTML)
+      .join('\n');
+
+    const exportDate = new Date().toLocaleString('fr-FR');
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Export PDF - ${menuTitle}</title>
+          ${styleSheets}
+          <style>
+            body { margin: 0; padding: 16px; background: #ffffff; }
+            @media print {
+              @page { size: A4 landscape; margin: 8mm; }
+              body { margin: 0; padding: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div style="margin-bottom:12px; border-bottom:2px solid #111827; padding-bottom:8px;">
+            <h1 style="margin:0; font-size:20px; font-weight:700; color:#111827;">${menuTitle} - Export PDF</h1>
+            <p style="margin:4px 0 0; font-size:12px; color:#4b5563;">
+              Généré le ${exportDate} | Région: ${selectedRegion === 'all' ? 'Toutes' : selectedRegion} | Année: ${selectedYear} | Mois: ${selectedMonth === 'all' ? 'Tous' : selectedMonth}
+            </p>
+          </div>
+          ${clonedContent.outerHTML}
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    setTimeout(() => {
+      printWindow.focus();
+      printWindow.print();
+      printWindow.close();
+    }, 400);
+  };
+
   if (!canView('factures')) {
     return <AccessDenied message="Vous n'avez pas accès à la validation des factures." />;
   }
@@ -965,6 +1062,14 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
               <Download size={14} />
               Excel
             </button>
+            <button
+              onClick={handleExportToPdf}
+              className="flex items-center gap-1 px-2 py-1 text-sm bg-gradient-to-r from-red-500 to-red-600 text-white rounded hover:from-red-600 hover:to-red-700 transition-all duration-200"
+              title="Exporter la liste en PDF"
+            >
+              <FileText size={14} />
+              PDF
+            </button>
           </div>
         </div>
       </div>
@@ -978,9 +1083,9 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           </div>
         </div>
       ) : (
-        <>
+        <div ref={exportContainerRef}>
         {/* Cartes de statistiques */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4">
+      <div data-export-stats="cards" className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4">
         <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg shadow-lg p-4 hover:shadow-2xl transition-all duration-300 hover:scale-105 cursor-pointer text-white">
           <div className="flex items-center justify-between">
             <div className="flex-1">
@@ -1075,7 +1180,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
         )}
       </div>
-        </>
+        </div>
       )}
     </div>
   );

@@ -3,6 +3,7 @@ import { RefreshCw, AlertCircle, Calendar, FileText } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { useToast } from '../hooks/useToast';
 import { usePermission } from '../hooks/usePermission';
+import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
 import PaymentsTable from '../components/PaymentsTable';
 import { Invoice, InvoiceStatus } from '../types';
@@ -40,7 +41,8 @@ interface Facture {
 }
 
 function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope = 'operationnel' }: PaiementsPageProps) {
-  const { canView } = usePermission();
+  const { canView, getInvoiceVisibilityScope } = usePermission();
+  const { agent } = useAuth();
   const { error } = useToast();
   const [invoices, setInvoices] = useState<(Invoice & { 
     totalPaid: number;
@@ -60,6 +62,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope =
 
   // Déterminer le mode selon activeMenu
   const isPaid = activeMenu === 'factures-paid' || activeMenu === 'factures-ffg-paid';
+  const visibilityScope = getInvoiceVisibilityScope(String(activeMenu || '').startsWith('factures-ffg') ? 'factures_ffg' : 'factures');
   const pageTitle = isPaid ? 'Factures Payées' : 'Factures Partiellement Payées';
   const pageDescription = isPaid 
     ? 'Factures complètement payées' 
@@ -67,7 +70,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope =
 
   useEffect(() => {
     loadPayments();
-  }, [selectedRegion, selectedYear, activeMenu, invoiceTypeScope]);
+  }, [selectedRegion, selectedYear, activeMenu, invoiceTypeScope, visibilityScope, agent?.email, agent?.REGION]);
 
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
     loadPayments();
@@ -165,6 +168,7 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope =
             dueDate: f["Échéance"],
             paymentMode: f["Mode de paiement requis"],
             urgencyLevel: f["Niveau urgence"],
+            created_by: f.created_by,
             totalPaid,
             lastPaymentDate,
             payments: paiements
@@ -175,10 +179,22 @@ function PaiementsPage({ activeMenu, menuTitle, onMenuChange, invoiceTypeScope =
 
       // Filtrer selon le type (payé vs partiellement payé)
       let filtered = facturesAvecPaiements;
+
+      if (visibilityScope === 'mine') {
+        const userEmail = String(agent?.email || '').toLowerCase();
+        const userName = String(agent?.Nom || '').toLowerCase();
+        filtered = filtered.filter((f: any) => {
+          const createdBy = String(f.created_by || '').toLowerCase();
+          return Boolean(createdBy) && (createdBy === userEmail || createdBy === userName);
+        });
+      } else if (visibilityScope === 'region' && agent?.REGION && agent.REGION !== 'TOUT') {
+        filtered = filtered.filter((f: any) => f.region === agent.REGION);
+      }
+
       if (isPaid) {
-        filtered = facturesAvecPaiements.filter((f: any) => f.totalPaid >= f.amount - 0.01);
+        filtered = filtered.filter((f: any) => f.totalPaid >= f.amount - 0.01);
       } else {
-        filtered = facturesAvecPaiements.filter((f: any) => f.totalPaid < f.amount - 0.01);
+        filtered = filtered.filter((f: any) => f.totalPaid < f.amount - 0.01);
       }
 
       console.log(`Après filtre ${isPaid ? 'payé' : 'partiellement'}:`, filtered.length);
