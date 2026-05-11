@@ -422,6 +422,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       ...prev,
       [validationType]: validationPayload
     }));
+    setDbStatus(newStatus);
 
     if (signedPdfUrl) {
       setCurrentInvoice((prev) => ({
@@ -460,7 +461,6 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       // Pas de signature configurée: validation normale
       await runValidation(null);
       success(`Validation ${validationType.toUpperCase()} enregistrée avec succès.`);
-      refreshAllData();
       setShowValidationModal(false);
       setValidationType(null);
     } catch (e) {
@@ -477,7 +477,6 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       const signedPdfUrl = await buildSignedPdf();
       await runValidation(signedPdfUrl);
       success(`Validation ${validationType.toUpperCase()} avec signature enregistrée.`);
-      refreshAllData();
       setShowSignaturePlacementModal(false);
       setShowValidationModal(false);
       setValidationType(null);
@@ -669,13 +668,13 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       }
 
       success('Facture rejetée avec succès!');
-      refreshAllData();
       setRejections(updatedRejections);
       setShowRejectionConfirmation(false);
       setRejectionReason('');
       setRejectionType(null);
       
       // Mettre à jour le statut local
+      setDbStatus('Rejetée');
       setCurrentInvoice(prev => ({
         ...prev,
         status: 'rejected'

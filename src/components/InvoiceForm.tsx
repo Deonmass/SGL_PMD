@@ -61,6 +61,14 @@ function normalizeInvoiceNumber(value?: string | null) {
   return String(value || '').trim().toLowerCase();
 }
 
+function canonicalizeInvoiceNumber(value?: string | null) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
 function getEntityId(entity: Record<string, unknown>) {
   const id = entity.id ?? entity.ID;
   return id !== undefined && id !== null ? String(id) : '';
@@ -132,6 +140,8 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
   ]);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [existingInvoiceNumbers, setExistingInvoiceNumbers] = useState<string[]>([]);
+  const [isLoadingInvoiceRegistry, setIsLoadingInvoiceRegistry] = useState(false);
   const [invoiceNumberCheck, setInvoiceNumberCheck] = useState<{
     status: 'idle' | 'checking' | 'available' | 'duplicate' | 'error';
     message: string;
@@ -139,6 +149,41 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
   
   const supplierInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const loadAllInvoiceNumbers = async (): Promise<string[]> => {
+    const pageSize = 1000;
+    let offset = 0;
+    let allNumbers: string[] = [];
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from('FACTURES')
+        .select('"Numéro de facture"')
+        .range(offset, offset + pageSize - 1);
+
+      if (error) {
+        throw error;
+      }
+
+      const batch = (data || [])
+        .map((row) => String((row as Record<string, unknown>)['Numéro de facture'] || '').trim())
+        .filter(Boolean);
+
+      allNumbers = allNumbers.concat(batch);
+      hasMore = batch.length === pageSize;
+      offset += pageSize;
+    }
+
+    return allNumbers;
+  };
+
+  const findDuplicateByCanonical = (rawNumber: string, registry: string[]) => {
+    const canonicalCandidate = canonicalizeInvoiceNumber(rawNumber);
+    if (!canonicalCandidate) return null;
+
+    return registry.find((existing) => canonicalizeInvoiceNumber(existing) === canonicalCandidate) || null;
+  };
 
   // Filtrer les centres de coût par région
   const filteredCostCenters = useMemo(() => {
@@ -199,8 +244,15 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         } else {
           setCharges(chargesData || []);
         }
+
+        setIsLoadingInvoiceRegistry(true);
+        const loadedInvoiceNumbers = await loadAllInvoiceNumbers();
+        setExistingInvoiceNumbers(loadedInvoiceNumbers);
       } catch (error) {
         console.error('Erreur générale de chargement:', error);
+      }
+      finally {
+        setIsLoadingInvoiceRegistry(false);
       }
     };
 
@@ -233,36 +285,32 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       return;
     }
 
+    const canonicalCandidate = canonicalizeInvoiceNumber(rawInvoiceNumber);
+    if (!canonicalCandidate || canonicalCandidate.length < 2) {
+      setInvoiceNumberCheck({
+        status: 'error',
+        message: 'Numéro invalide. Saisissez au moins 2 caractères alphanumériques.'
+      });
+      return;
+    }
+
+    if (isLoadingInvoiceRegistry) {
+      setInvoiceNumberCheck({ status: 'checking', message: 'Chargement du registre de vérification...' });
+      return;
+    }
+
     let isCancelled = false;
     setInvoiceNumberCheck({ status: 'checking', message: 'Vérification en cours...' });
 
     const timeout = setTimeout(async () => {
       try {
-        const { data: existingInvoices, error: duplicateCheckError } = await supabase
-          .from('FACTURES')
-          .select('"Numéro de facture"')
-          .ilike('"Numéro de facture"', rawInvoiceNumber)
-          .limit(10);
-
-        if (duplicateCheckError) {
-          if (!isCancelled) {
-            setInvoiceNumberCheck({
-              status: 'error',
-              message: 'Impossible de vérifier ce numéro pour le moment.'
-            });
-          }
-          return;
-        }
-
-        const duplicateFound = (existingInvoices || []).some((invoice) => {
-          const existingNumber = (invoice as Record<string, unknown>)['Numéro de facture'];
-          return normalizeInvoiceNumber(String(existingNumber ?? '')) === normalizeInvoiceNumber(rawInvoiceNumber);
-        });
+        const duplicateValue = findDuplicateByCanonical(rawInvoiceNumber, existingInvoiceNumbers);
+        const duplicateFound = Boolean(duplicateValue);
 
         if (!isCancelled) {
           setInvoiceNumberCheck(
             duplicateFound
-              ? { status: 'duplicate', message: 'Ce numéro de facture existe déjà.' }
+              ? { status: 'duplicate', message: `Doublon détecté: "${duplicateValue}" est équivalent à "${rawInvoiceNumber}".` }
               : { status: 'available', message: 'Numéro de facture disponible.' }
           );
         }
@@ -280,7 +328,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       isCancelled = true;
       clearTimeout(timeout);
     };
-  }, [formData.invoiceNumber]);
+  }, [formData.invoiceNumber, existingInvoiceNumbers, isLoadingInvoiceRegistry]);
 
   useEffect(() => {
     if (invoiceTypeScope && formData.invoiceType !== invoiceTypeScope) {
@@ -584,10 +632,12 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
 
   const isSubmitDisabled = useMemo(() => {
     if (formData.isSubmitting || formData.isUploading) return true;
+    if (isLoadingInvoiceRegistry) return true;
     if (invoiceNumberCheck.status === 'checking' || invoiceNumberCheck.status === 'duplicate') return true;
+    if (invoiceNumberCheck.status === 'error') return true;
     if (formData.invoiceType === 'operationnel' && !String(formData.fileNumber || '').trim()) return true;
     return false;
-  }, [formData.isSubmitting, formData.isUploading, invoiceNumberCheck.status, formData.invoiceType, formData.fileNumber]);
+  }, [formData.isSubmitting, formData.isUploading, invoiceNumberCheck.status, formData.invoiceType, formData.fileNumber, isLoadingInvoiceRegistry]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -620,34 +670,32 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         return;
       }
 
+      if (isLoadingInvoiceRegistry) {
+        showError('Le registre de vérification est en cours de chargement. Réessayez dans un instant.');
+        Swal.fire('Patientez', 'Le registre de vérification est en cours de chargement. Réessayez dans un instant.', 'warning');
+        return;
+      }
+
+      const duplicateValueFromCache = findDuplicateByCanonical(cleanedInvoiceNumber, existingInvoiceNumbers);
+      if (duplicateValueFromCache) {
+        const duplicateMessage = `Le numéro "${cleanedInvoiceNumber}" est considéré comme doublon de "${duplicateValueFromCache}" (espaces et caractères spéciaux ignorés).`;
+        showError(duplicateMessage);
+        Swal.fire('Doublon détecté', duplicateMessage, 'error');
+        return;
+      }
+
       if (formData.invoiceType === 'operationnel' && !String(formData.fileNumber || '').trim()) {
         showError('Le numéro de dossier est obligatoire pour une facture opérationnelle.');
         Swal.fire('Erreur', 'Le numéro de dossier est obligatoire pour une facture opérationnelle.', 'error');
         return;
       }
 
-      // Bloquer les doublons avant insertion (opérationnel + FFG).
-      // La normalisation est alignée avec l'index SQL: trim + lower.
-      const { data: existingInvoices, error: duplicateCheckError } = await supabase
-        .from('FACTURES')
-        .select('"Numéro de facture"')
-        .ilike('"Numéro de facture"', cleanedInvoiceNumber)
-        .limit(1);
-
-      if (duplicateCheckError) {
-        console.error('Erreur vérification doublon facture:', duplicateCheckError);
-        showError('Impossible de vérifier les doublons pour le numéro de facture.');
-        Swal.fire('Erreur', 'Impossible de vérifier les doublons pour le numéro de facture.', 'error');
-        return;
-      }
-
-      const duplicateFound = (existingInvoices || []).some((invoice) => {
-        const existingNumber = (invoice as Record<string, unknown>)['Numéro de facture'];
-        return normalizeInvoiceNumber(String(existingNumber ?? '')) === normalizeInvoiceNumber(cleanedInvoiceNumber);
-      });
-
-      if (duplicateFound) {
-        const duplicateMessage = `Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`;
+      // Vérification approfondie juste avant insertion pour éviter tout doublon
+      // même si la variante diffère par espaces/séparateurs/caractères spéciaux.
+      const latestInvoiceNumbers = await loadAllInvoiceNumbers();
+      const duplicateValue = findDuplicateByCanonical(cleanedInvoiceNumber, latestInvoiceNumbers);
+      if (duplicateValue) {
+        const duplicateMessage = `Le numéro "${cleanedInvoiceNumber}" est équivalent à "${duplicateValue}" (espaces/caractères spéciaux ignorés).`;
         showError(duplicateMessage);
         Swal.fire('Doublon détecté', duplicateMessage, 'error');
         return;
