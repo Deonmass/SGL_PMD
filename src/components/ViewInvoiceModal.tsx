@@ -6,7 +6,7 @@ import { useToast } from '../hooks/useToast';
 import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import { useAuth } from '../contexts/AuthContext';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFImage } from 'pdf-lib';
 import EditInvoiceForm from './EditInvoiceForm';
 import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import { isEntryMiseAJour, isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
@@ -345,22 +345,75 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const buildSignedPdf = async (): Promise<string | null> => {
     if (!currentInvoice.attachedInvoiceUrl || !signatureUrl) return null;
 
+    const normalizeUrlForFetch = (url: string) => url.split('#')[0];
+    const isPdfBytes = (buffer: ArrayBuffer) => {
+      const view = new Uint8Array(buffer.slice(0, 5));
+      return String.fromCharCode(...view) === '%PDF-';
+    };
+    const extractFacturesObjectPath = (url: string) => {
+      const cleaned = normalizeUrlForFetch(url);
+      const marker = '/storage/v1/object/public/factures/';
+      const markerIndex = cleaned.indexOf(marker);
+      if (markerIndex === -1) return null;
+      const start = markerIndex + marker.length;
+      const pathWithQuery = cleaned.slice(start);
+      const pathOnly = pathWithQuery.split('?')[0];
+      return decodeURIComponent(pathOnly);
+    };
+
     const [pdfRes, signatureRes] = await Promise.all([
-      fetch(currentInvoice.attachedInvoiceUrl),
-      fetch(signatureUrl)
+      fetch(normalizeUrlForFetch(currentInvoice.attachedInvoiceUrl)),
+      fetch(normalizeUrlForFetch(signatureUrl))
     ]);
 
-    if (!pdfRes.ok) throw new Error('Impossible de charger le PDF de la facture.');
-    if (!signatureRes.ok) throw new Error('Impossible de charger la signature enregistrée.');
+    if (!pdfRes.ok) {
+      throw new Error(`Impossible de charger le PDF de la facture (HTTP ${pdfRes.status}).`);
+    }
+    if (!signatureRes.ok) {
+      throw new Error(`Impossible de charger la signature enregistrée (HTTP ${signatureRes.status}).`);
+    }
 
-    const pdfBytes = await pdfRes.arrayBuffer();
+    let pdfBytes = await pdfRes.arrayBuffer();
+    if (!isPdfBytes(pdfBytes)) {
+      console.warn('[SignatureValidation] Réponse non-PDF via URL facture, tentative fallback Supabase Storage.', {
+        invoiceUrl: currentInvoice.attachedInvoiceUrl,
+        contentType: pdfRes.headers.get('content-type')
+      });
+
+      const objectPath = extractFacturesObjectPath(currentInvoice.attachedInvoiceUrl);
+      if (objectPath) {
+        const { data: fileBlob, error: downloadError } = await supabase.storage
+          .from('factures')
+          .download(objectPath);
+        if (downloadError) {
+          throw new Error(`PDF invalide via URL publique et échec fallback storage: ${downloadError.message}`);
+        }
+        pdfBytes = await fileBlob.arrayBuffer();
+      }
+    }
+
+    if (!isPdfBytes(pdfBytes)) {
+      throw new Error('Le fichier facture récupéré n’est pas un PDF valide. Vérifiez le lien "Facture attachée".');
+    }
+
     const signatureBytes = await signatureRes.arrayBuffer();
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const pages = pdfDoc.getPages();
     if (!pages.length) throw new Error('PDF vide.');
 
     const page = pages[0];
-    const pngImage = await pdfDoc.embedPng(signatureBytes);
+    const signatureContentType = signatureRes.headers.get('content-type')?.toLowerCase() || '';
+    let signatureImage: PDFImage;
+    if (signatureContentType.includes('jpeg') || signatureContentType.includes('jpg')) {
+      signatureImage = await pdfDoc.embedJpg(signatureBytes);
+    } else {
+      try {
+        signatureImage = await pdfDoc.embedPng(signatureBytes);
+      } catch {
+        // Fallback pour anciennes signatures JPEG sans content-type fiable.
+        signatureImage = await pdfDoc.embedJpg(signatureBytes);
+      }
+    }
     const { width: pageWidth, height: pageHeight } = page.getSize();
     const boxW = (signaturePlacement.w / 100) * pageWidth;
     const boxH = (signaturePlacement.h / 100) * pageHeight;
@@ -368,7 +421,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     const boxY = pageHeight - (signaturePlacement.y / 100) * pageHeight - boxH;
     // Rendu "contain" pour reproduire exactement le comportement visuel de l'overlay
     // (object-contain): jamais de déformation, centrage dans la box de placement.
-    const imageRatio = pngImage.width / Math.max(pngImage.height, 0.0001);
+    const imageRatio = signatureImage.width / Math.max(signatureImage.height, 0.0001);
     const boxRatio = boxW / Math.max(boxH, 0.0001);
     let drawW = boxW;
     let drawH = boxH;
@@ -380,7 +433,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     const drawX = boxX + (boxW - drawW) / 2;
     const drawY = boxY + (boxH - drawH) / 2;
 
-    page.drawImage(pngImage, {
+    page.drawImage(signatureImage, {
       x: drawX,
       y: drawY,
       width: drawW,
@@ -514,16 +567,47 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   };
 
   const confirmPlacementAndValidate = async () => {
-    if (!validationType) return;
+    if (!validationType) {
+      console.error('[SignatureValidation] validationType manquant, action annulée.');
+      showError('Validation impossible: type de validation introuvable.');
+      return;
+    }
+
+    if (!currentInvoice.attachedInvoiceUrl) {
+      console.error('[SignatureValidation] attachedInvoiceUrl manquant.');
+      showError('Validation impossible: facture PDF introuvable.');
+      return;
+    }
+
+    if (!signatureUrl) {
+      console.error('[SignatureValidation] signatureUrl manquant.');
+      showError('Validation impossible: signature introuvable. Rechargez votre signature puis réessayez.');
+      return;
+    }
+
+    console.log('[SignatureValidation] Début validation signée', {
+      invoiceNumber: currentInvoice.invoiceNumber,
+      validationType,
+      attachedInvoiceUrl: currentInvoice.attachedInvoiceUrl,
+      signatureUrl
+    });
+
     setIsSubmitting(true);
     try {
+      console.log('[SignatureValidation] Génération PDF signé...');
       const signedPdfUrl = await buildSignedPdf();
+      console.log('[SignatureValidation] PDF signé généré', { signedPdfUrl });
+
+      console.log('[SignatureValidation] Mise à jour validation...');
       await runValidation(signedPdfUrl);
+      console.log('[SignatureValidation] Validation enregistrée.');
+
       success(`Validation ${validationType.toUpperCase()} avec signature enregistrée.`);
       setShowSignaturePlacementModal(false);
       setShowValidationModal(false);
       setValidationType(null);
     } catch (e) {
+      console.error('[SignatureValidation] Echec validation signée:', e);
       showError(`Erreur signature/validation: ${e instanceof Error ? e.message : 'Erreur inconnue'}`);
     } finally {
       setIsSubmitting(false);
