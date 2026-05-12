@@ -784,7 +784,11 @@ function InvoiceDetailModal({
   return (
     <>
       <div className={`fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4 ${isFullscreen ? 'p-0' : ''}`}>
-        <div className={`bg-white rounded-lg shadow-xl overflow-hidden flex flex-col ${isFullscreen ? 'w-full h-screen' : 'max-w-[1400px] w-full h-[95vh]'}`}>
+        <div
+          className={`bg-white rounded-lg shadow-xl overflow-hidden flex flex-col ${
+            isFullscreen ? 'w-full h-screen' : 'w-full max-w-[calc(100vw-2rem)] h-[95vh]'
+          }`}
+        >
           {/* En-tête */}
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-gray-200 border-b p-4 shadow-md">
             <h2 className="text-lg font-bold text-gray-900">{displayTitle}</h2>
@@ -1005,7 +1009,7 @@ function InvoiceDetailModal({
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
                           Échéance
                         </th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs w-16 min-w-[3.5rem]">
                           Validation
                         </th>
                         <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
@@ -1146,10 +1150,7 @@ function InvoiceDetailModal({
                           )}
                           <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
                             {invoice['Catégorie de charge'] === 'Bulletin de liquidation' ? (
-                              <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
-                                <span className="w-2 h-2 bg-blue-600 rounded-full"></span>
-                                Bulletin de liquidation
-                              </span>
+                              <span className="text-blue-600 font-semibold">Bulletin de liquidation</span>
                             ) : (
                               invoice['Catégorie de charge'] || 'N/A'
                             )}
@@ -1176,10 +1177,10 @@ function InvoiceDetailModal({
                               else if (drValidated) percentage = 50;
 
                               return (
-                                <div className="w-24">
-                                  <div className="relative w-full bg-gray-200 rounded-full h-4">
+                                <div className="w-14 shrink-0">
+                                  <div className="relative w-full bg-gray-200 rounded-full h-3">
                                     <div
-                                      className="h-4 rounded-full transition-all duration-300"
+                                      className="h-3 rounded-full transition-all duration-300"
                                       style={{
                                         width: `${percentage}%`,
                                         background: percentage === 0 ? '#e5e7eb' :
@@ -1188,7 +1189,7 @@ function InvoiceDetailModal({
                                       }}
                                     ></div>
                                     <span className="absolute inset-0 flex items-center justify-center">
-                                      <span className={`text-[9px] font-bold ${percentage > 50 ? 'text-white' : 'text-gray-700'}`}>
+                                      <span className={`text-[8px] font-bold leading-none ${percentage > 50 ? 'text-white' : 'text-gray-700'}`}>
                                         {Math.round(percentage)}%
                                       </span>
                                     </span>

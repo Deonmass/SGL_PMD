@@ -1,4 +1,4 @@
-import { X, FileText, AlertTriangle, Loader2, Printer, Maximize2, RotateCw, RotateCcw, Download, Pencil, Trash2, MessagesSquare } from 'lucide-react';
+import { X, FileText, AlertTriangle, Loader2, Printer, Maximize2, RotateCw, RotateCcw, Download, Pencil, Trash2, MessagesSquare, Undo2 } from 'lucide-react';
 import { Invoice } from '../types';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../services/supabase';
@@ -78,6 +78,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationType, setValidationType] = useState<'dr' | 'dop' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [withdrawSaving, setWithdrawSaving] = useState<null | 'dr' | 'dop'>(null);
   const [isLoadingValidations, setIsLoadingValidations] = useState(true);
   const [activeTab, setActiveTab] = useState<'visualization' | 'details'>('visualization');
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -166,14 +167,43 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     };
   };
 
+  /** True lorsque la validation en base contient une date de signature exploitable */
+  const hasValidatorSigned = (value: unknown) => {
+    const parsed = parseValidationData(value);
+    if (!parsed?.date) return false;
+    const t = new Date(parsed.date).getTime();
+    return !Number.isNaN(t);
+  };
+
+  /** Retrait réservé à l'agent dont l'email (prioritaire) ou le nom correspond à l'enregistrement de signature */
+  const isCurrentAgentValidationSigner = (value: unknown) => {
+    const parsed = parseValidationData(value);
+    if (!parsed?.date) return false;
+    const myEmail = String(agent?.email || '')
+      .trim()
+      .toLowerCase();
+    const signedEmail = String(parsed.email || '')
+      .trim()
+      .toLowerCase();
+    if (myEmail && signedEmail && myEmail === signedEmail) return true;
+    const myName = String(agent?.Nom || '')
+      .trim()
+      .toLowerCase();
+    const signedName = String(parsed.name || '')
+      .trim()
+      .toLowerCase();
+    if (myName && signedName && myName === signedName) return true;
+    return false;
+  };
+
   // Vérifier si la facture est rejetée selon le statut réel de la BDD
   const isRejected = isInvoiceEffectivelyRejected(
     dbStatus,
     rejections.length ? JSON.stringify(rejections) : null
   );
 
-  // Vérifier si la facture est "Bon à payer" selon les nouvelles règles
-  const isBonAPayer = () => Boolean(validations.dop);
+  // Vérifier si la facture est "Bon à payer" selon les nouvelles règles (signature DOP enregistrée)
+  const isBonAPayer = () => hasValidatorSigned(validations.dop);
 
   const loadExistingData = useCallback(async () => {
     setIsLoadingValidations(true);
@@ -525,6 +555,104 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         ...prev,
         attachedInvoiceUrl: `${signedPdfUrl}?v=${Date.now()}`
       }));
+    }
+  };
+
+  /** Facture FFG : statuts avec suffixe " - FFG" comme ailleurs dans l'app */
+  const isFfgScopeInvoice = () => {
+    const t = String(currentInvoice.invoiceType || '').toLowerCase();
+    return t.includes('frais') || t.includes('général') || t.includes('generaux') || t.includes('ffg');
+  };
+
+  const statutEnAttenteDr = () =>
+    isFfgScopeInvoice() ? 'En attente validation DR - FFG' : 'En attente validation DR';
+  const statutEnAttenteDop = () =>
+    isFfgScopeInvoice() ? 'En attente validation DOP - FFG' : 'En attente validation DOP';
+
+  const withdrawValidation = async (kind: 'dr' | 'dop') => {
+    if (isRejected) {
+      showError('Impossible de retirer une validation sur une facture rejetée.');
+      return;
+    }
+    if (kind === 'dr') {
+      if (!hasValidatorSigned(validations.dr)) return;
+      if (!isCurrentAgentValidationSigner(validations.dr)) {
+        showError('Seul le validateur qui a signé peut retirer cette validation DR.');
+        return;
+      }
+      const dopAlso = hasValidatorSigned(validations.dop);
+      const msg = dopAlso
+        ? 'Retirer la validation DR ? La validation DOP sera également annulée et la facture repassera en « En attente validation DR ».'
+        : 'Retirer la validation DR ? La facture repassera en « En attente validation DR ».';
+      if (!window.confirm(msg)) return;
+    } else {
+      if (!hasValidatorSigned(validations.dop)) return;
+      if (!isCurrentAgentValidationSigner(validations.dop)) {
+        showError('Seul le validateur qui a signé peut retirer cette validation DOP.');
+        return;
+      }
+      if (
+        !window.confirm(
+          'Retirer la validation DOP ? La facture repassera en attente de validation DOP (ou DR si la validation DR est absente).'
+        )
+      ) {
+        return;
+      }
+    }
+
+    setWithdrawSaving(kind);
+    try {
+      const updateData: Record<string, unknown> = {};
+      let nextStatus = '';
+
+      if (kind === 'dr') {
+        updateData['validation DR'] = null;
+        updateData['validation DOP'] = null;
+        updateData['Date emission'] = null;
+        nextStatus = statutEnAttenteDr();
+      } else {
+        updateData['validation DOP'] = null;
+        nextStatus = hasValidatorSigned(validations.dr) ? statutEnAttenteDop() : statutEnAttenteDr();
+      }
+      updateData.Statut = nextStatus;
+
+      const { error } = await supabase
+        .from('FACTURES')
+        .update(updateData)
+        .eq('Numéro de facture', currentInvoice.invoiceNumber);
+
+      if (error) throw new Error(error.message);
+
+      try {
+        const actor = buildLogActor(agent);
+        const label = kind === 'dr' ? 'Retrait validation DR' : 'Retrait validation DOP';
+        const expl =
+          kind === 'dr'
+            ? `Validations DR et DOP effacées. Nouveau statut : ${nextStatus}.`
+            : `Validation DOP effacée. Nouveau statut : ${nextStatus}.`;
+        await appendFactureLogByInvoiceNumber(currentInvoice.invoiceNumber, actor, label, expl);
+      } catch (logError) {
+        console.warn('Journalisation retrait validation:', logError);
+      }
+
+      setValidations((prev) => ({
+        ...prev,
+        dr: kind === 'dr' ? null : prev.dr,
+        dop: kind === 'dr' || kind === 'dop' ? null : prev.dop
+      }));
+      setDbStatus(nextStatus);
+      if (kind === 'dr') {
+        setCurrentInvoice((prev) => ({ ...prev, emissionDate: undefined }));
+      }
+
+      await loadExistingData();
+      refreshAllData();
+      onRefresh?.();
+      success(kind === 'dr' ? 'Validation DR retirée.' : 'Validation DOP retirée.');
+    } catch (e) {
+      showError(`Erreur : ${e instanceof Error ? e.message : 'inconnue'}`);
+    } finally {
+      setWithdrawSaving(null);
     }
   };
 
@@ -1199,19 +1327,30 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                     {canViewDR() && (
                       <div className="border-l-4 border-blue-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
                         <div className="mb-2">
-                          <p className="text-xs font-bold text-blue-300">Validation DR</p>
-                          <p className="text-[11px] text-emerald-300 font-semibold">
-                            Validé le {getValidationDetails(validations.dr).validatedAt}
+                          <p className="text-xs font-bold text-blue-300">
+                            {hasValidatorSigned(validations.dr)
+                              ? 'Validation DR'
+                              : 'En attente validation DR'}
                           </p>
-                          <p className="text-[11px] text-emerald-400 font-semibold">
-                            Par {getValidationDetails(validations.dr).validatedBy}
-                          </p>
+                          {hasValidatorSigned(validations.dr) && (() => {
+                            const d = getValidationDetails(validations.dr);
+                            return (
+                              <>
+                                <p className="text-[11px] text-emerald-300 font-semibold">
+                                  Validé le {d.validatedAt}
+                                </p>
+                                {d.validatedBy !== '-' && (
+                                  <p className="text-[11px] text-emerald-400 font-semibold">Par {d.validatedBy}</p>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
-                        {!validations.dr && (
+                        {!hasValidatorSigned(validations.dr) && (
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleValidation('dr')}
-                              disabled={isSubmitting || isRejected || !isValidatorDR()}
+                              disabled={isSubmitting || isRejected || withdrawSaving !== null || !isValidatorDR()}
                               className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
                                 isValidatorDR() && !isRejected
                                   ? 'bg-blue-600 text-white hover:bg-blue-700'
@@ -1227,7 +1366,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                             </button>
                             <button
                               onClick={() => handleRejectClick('dr')}
-                              disabled={isSubmitting || isRejected || !canRejectDR()}
+                              disabled={isSubmitting || isRejected || withdrawSaving !== null || !canRejectDR()}
                               className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
                                 canRejectDR() && !isRejected
                                   ? 'bg-red-600 text-white hover:bg-red-700'
@@ -1239,6 +1378,24 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                             </button>
                           </div>
                         )}
+                        {hasValidatorSigned(validations.dr) && isCurrentAgentValidationSigner(validations.dr) && (
+                          <div className="mt-2 pt-2 border-t border-slate-600/40">
+                            <button
+                              type="button"
+                              onClick={() => void withdrawValidation('dr')}
+                              disabled={isRejected || isSubmitting || withdrawSaving !== null}
+                              className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-sky-500/40 bg-slate-800/80 px-2 py-1.5 text-[11px] font-medium text-sky-200 hover:bg-slate-700/90 disabled:cursor-not-allowed disabled:opacity-40"
+                              title="Retirer votre validation DR (annule aussi la DOP si elle était enregistrée)"
+                            >
+                              {withdrawSaving === 'dr' ? (
+                                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                              ) : (
+                                <Undo2 className="h-3.5 w-3.5 shrink-0" />
+                              )}
+                              Retirer la validation DR
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -1246,19 +1403,30 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                     {canViewDOP() && (
                       <div className="border-l-4 border-amber-500 pl-3 pr-3 py-2 bg-slate-800 rounded border border-slate-700">
                         <div className="mb-2">
-                          <p className="text-xs font-bold text-amber-300">Validation DOP</p>
-                          <p className="text-[11px] text-emerald-300 font-semibold">
-                            Validé le {getValidationDetails(validations.dop).validatedAt}
+                          <p className="text-xs font-bold text-amber-300">
+                            {hasValidatorSigned(validations.dop)
+                              ? 'Validation DOP'
+                              : 'En attente validation DOP'}
                           </p>
-                          <p className="text-[11px] text-emerald-400 font-semibold">
-                            Par {getValidationDetails(validations.dop).validatedBy}
-                          </p>
+                          {hasValidatorSigned(validations.dop) && (() => {
+                            const d = getValidationDetails(validations.dop);
+                            return (
+                              <>
+                                <p className="text-[11px] text-emerald-300 font-semibold">
+                                  Validé le {d.validatedAt}
+                                </p>
+                                {d.validatedBy !== '-' && (
+                                  <p className="text-[11px] text-emerald-400 font-semibold">Par {d.validatedBy}</p>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
-                        {!validations.dop && (
+                        {!hasValidatorSigned(validations.dop) && (
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleValidation('dop')}
-                              disabled={isSubmitting || isRejected || !isValidatorDOP()}
+                              disabled={isSubmitting || isRejected || withdrawSaving !== null || !isValidatorDOP()}
                               className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
                                 isValidatorDOP() && !isRejected
                                   ? 'bg-blue-600 text-white hover:bg-blue-700'
@@ -1278,7 +1446,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                             </button>
                             <button
                               onClick={() => handleRejectClick('dop')}
-                              disabled={isSubmitting || isRejected || !canRejectDOP()}
+                              disabled={isSubmitting || isRejected || withdrawSaving !== null || !canRejectDOP()}
                               className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
                                 canRejectDOP() && !isRejected
                                   ? 'bg-red-600 text-white hover:bg-red-700'
@@ -1291,6 +1459,24 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                               }
                             >
                               Rejeter
+                            </button>
+                          </div>
+                        )}
+                        {hasValidatorSigned(validations.dop) && isCurrentAgentValidationSigner(validations.dop) && (
+                          <div className="mt-2 pt-2 border-t border-slate-600/40">
+                            <button
+                              type="button"
+                              onClick={() => void withdrawValidation('dop')}
+                              disabled={isRejected || isSubmitting || withdrawSaving !== null}
+                              className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-amber-500/45 bg-slate-800/80 px-2 py-1.5 text-[11px] font-medium text-amber-100 hover:bg-slate-700/90 disabled:cursor-not-allowed disabled:opacity-40"
+                              title="Retirer votre validation DOP"
+                            >
+                              {withdrawSaving === 'dop' ? (
+                                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                              ) : (
+                                <Undo2 className="h-3.5 w-3.5 shrink-0" />
+                              )}
+                              Retirer la validation DOP
                             </button>
                           </div>
                         )}

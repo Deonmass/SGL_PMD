@@ -485,7 +485,7 @@ function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollap
       {/* Toggle sur la séparation droite (position demandée) */}
       <button
         onClick={onToggleCollapse}
-        className="absolute top-20 -right-3 h-10 w-7 rounded-r-md bg-slate-800 border border-slate-500 border-l-0 text-slate-200 hover:text-white hover:bg-slate-700 transition z-[200] shadow-2xl ring-1 ring-black/30 flex items-center justify-center"
+        className="absolute top-20 -right-3 h-10 w-7 rounded-r-md bg-slate-800 border border-slate-500 border-l-0 text-slate-200 hover:text-white hover:bg-slate-700 transition z-40 shadow-2xl ring-1 ring-black/30 flex items-center justify-center"
         title={isCollapsed ? 'Afficher le menu' : 'Réduire le menu'}
       >
         {isCollapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}

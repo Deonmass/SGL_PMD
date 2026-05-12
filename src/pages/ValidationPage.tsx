@@ -61,21 +61,6 @@ function normalizeInvoiceType(value?: string | null) {
   return normalized;
 }
 
-const EMPTY_ANIMATION_SVG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120" viewBox="0 0 180 120">
-  <rect x="24" y="22" width="132" height="82" rx="12" fill="#d7dee3" />
-  <rect x="36" y="34" width="108" height="60" rx="8" fill="#f2f5f7" />
-  <rect x="48" y="72" width="72" height="6" rx="3" fill="#c7d0d6" />
-  <rect x="48" y="82" width="66" height="5" rx="2.5" fill="#d2d9de" />
-  <circle cx="84" cy="56" r="3.2" fill="#8ea0ad" />
-  <circle cx="104" cy="56" r="3.2" fill="#8ea0ad" />
-  <path d="M83 65c3.2-3.6 7.6-3.6 10.8 0" stroke="#8ea0ad" stroke-width="2.5" fill="none" stroke-linecap="round" />
-  <circle cx="124" cy="88" r="16" fill="none" stroke="#9fb1bd" stroke-width="6" />
-  <path d="M136 100l12 12" stroke="#9fb1bd" stroke-width="6" stroke-linecap="round" />
-</svg>`);
-
 function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoiceTypeScope = 'operationnel' }: ValidationPageProps) {
   const { canView, getInvoiceVisibilityScope } = usePermission();
   const { agent } = useAuth();
@@ -134,7 +119,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     // Écouter les événements de fermeture de modal pour recharger les données
     const handleModalClose = () => {
       console.log('Modal fermé - rechargement des données...');
-      loadInvoices(selectedStatus);
+      loadInvoices(selectedStatus, { silent: true });
     };
 
     // Ajouter l'écouteur d'événements
@@ -147,19 +132,94 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   }, [selectedStatus]);
 
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
-    loadInvoices(selectedStatus);
+    loadInvoices(selectedStatus, { silent: true });
   });
 
-  const loadInvoices = async (statusFilter: string) => {
-    setLoading(true);
+  const loadInvoices = async (statusFilter: string, options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       // Charger les factures selon le contexte
-      let allData = [];
-      
-      if (statusFilter === 'En attente validation DR' || 
-          statusFilter === 'En attente validation DOP' || 
-          statusFilter === 'En attente validation DG') {
-        // Pour les zones d'attente, ne charger QUE les factures avec ce statut exact, sans filtre supplémentaire
+      let allData: any[] = [];
+
+      const isDrValidated = (invoice: Record<string, unknown>) =>
+        invoice['validation DR'] != null && String(invoice['validation DR']).trim() !== '';
+      const isDopValidated = (invoice: Record<string, unknown>) =>
+        invoice['validation DOP'] != null && String(invoice['validation DOP']).trim() !== '';
+
+      const loadPaiementsSet = async () => {
+        const { data: paiements, error: paiementsError } = await supabase
+          .from('PAIEMENTS')
+          .select('NumeroFacture, montantPaye');
+
+        const facturesAvecPaiements = new Set<string>();
+        if (paiements && !paiementsError) {
+          paiements.forEach((p: { NumeroFacture?: string; montantPaye?: unknown }) => {
+            const paidAmount = parseFloat(String(p.montantPaye || 0)) || 0;
+            const invoiceNumber = p.NumeroFacture;
+            if (paidAmount > 0 && invoiceNumber) {
+              facturesAvecPaiements.add(String(invoiceNumber).trim());
+            }
+          });
+        }
+        return facturesAvecPaiements;
+      };
+
+      if (statusFilter === 'En attente validation DOP') {
+        // Inclut : statut DOP + factures encore en « DR » mais déjà validées côté DR (50 %),
+        // car le Statut n’a pas toujours été recalé après validation DR.
+        const [{ data: dopStatRows, error: errDop }, { data: drStatRows, error: errDr }] = await Promise.all([
+          supabase
+            .from('FACTURES')
+            .select('*')
+            .eq('Statut', 'En attente validation DOP')
+            .order('"Date de réception"', { ascending: false }),
+          supabase
+            .from('FACTURES')
+            .select('*')
+            .eq('Statut', 'En attente validation DR')
+            .order('"Date de réception"', { ascending: false })
+        ]);
+
+        if (errDop || errDr) {
+          console.error('Erreur chargement factures DOP:', errDop || errDr);
+          error('Erreur lors du chargement des factures');
+          return;
+        }
+
+        const byId = new Map<string, Record<string, unknown>>();
+        for (const row of [...(dopStatRows || []), ...(drStatRows || [])]) {
+          byId.set(String((row as Record<string, unknown>).ID), row as Record<string, unknown>);
+        }
+        const merged = Array.from(byId.values());
+
+        const facturesAvecPaiements = await loadPaiementsSet();
+
+        allData = merged.filter((invoice) => {
+          const num = String(invoice['Numéro de facture'] || '').trim();
+          if (facturesAvecPaiements.has(num)) {
+            return false;
+          }
+          if (isInvoiceEffectivelyRejected(invoice.Statut, invoice.Rejet)) {
+            return false;
+          }
+          if (isDopValidated(invoice)) {
+            return false;
+          }
+          const st = String(invoice.Statut || '');
+          if (st === 'En attente validation DOP') {
+            return true;
+          }
+          if (st === 'En attente validation DR' && isDrValidated(invoice)) {
+            return true;
+          }
+          return false;
+        });
+      } else if (
+        statusFilter === 'En attente validation DR' ||
+        statusFilter === 'En attente validation DG'
+      ) {
+        // Pour DR / DG : statut exact
         const { data: pendingData, error: pendingError } = await supabase
           .from('FACTURES')
           .select('*')
@@ -172,33 +232,14 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           return;
         }
 
-        // Charger les paiements existants pour exclure les factures avec paiements
-        const { data: paiements, error: paiementsError } = await supabase
-          .from('PAIEMENTS')
-          .select('NumeroFacture, montantPaye');
+        const facturesAvecPaiements = await loadPaiementsSet();
 
-        const facturesAvecPaiements = new Set();
-        if (paiements && !paiementsError) {
-          paiements.forEach((p: any) => {
-            // Vérifier si le montant payé est supérieur à 0 (même pour les paiements partiels)
-            const paidAmount = parseFloat(p.montantPaye) || 0;
-            const invoiceNumber = p.NumeroFacture; // Utiliser directement la colonne NumeroFacture
-            
-            if (paidAmount > 0 && invoiceNumber) {
-              facturesAvecPaiements.add(invoiceNumber);
-            }
-          });
-        }
-
-        // Filtrer les factures payées
-        allData = (pendingData || []).filter(invoice => {
-          if (facturesAvecPaiements.has(invoice["Numéro de facture"])) {
-            console.log(`Facture ${invoice["Numéro de facture"]}: Paiement détecté, exclusion`);
+        allData = (pendingData || []).filter((invoice) => {
+          if (facturesAvecPaiements.has(String(invoice['Numéro de facture'] || '').trim())) {
             return false;
           }
           return true;
         });
-        
       } else if (statusFilter === 'Validée') {
         // Pour la zone validée, charger TOUTES les factures sauf les rejetées
         // et filtrer celles qui respectent les règles de validation selon le montant
@@ -522,7 +563,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       console.error('Erreur générale:', err);
       error('Erreur lors du chargement des factures');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -1172,17 +1213,9 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
         </div>
       </div>
 
-      {/* Tableau des factures avec menu contextuel */}
+      {/* Tableau des factures avec menu contextuel — toujours monté pour ne pas fermer ViewInvoiceModal au rafraîchissement */}
       <div className="px-0 pb-4">
-        {invoices.length === 0 ? (
-          <div className="py-12 text-center">
-            <img src={EMPTY_ANIMATION_SVG} alt="Aucune donnée" className="mx-auto w-40 h-auto animate-bounce" />
-            <p className="mt-3 text-sm font-semibold text-gray-600">Aucune facture trouvée pour ces filtres.</p>
-            <p className="text-xs text-gray-500">Modifiez la recherche, la région, l'année ou le mois.</p>
-          </div>
-        ) : (
-          <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
-        )}
+        <InvoiceTable invoices={invoices} activeMenu={activeMenu} agent={agent} />
       </div>
         </div>
       )}
