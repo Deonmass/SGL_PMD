@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { RefreshCw, Search, X, ChevronDown } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import InvoiceDetailModal from '../components/InvoiceDetailModal';
 import PaiementModal from '../components/PaiementModal';
@@ -10,7 +10,15 @@ import MonthlyInvoiceChart from '../components/MonthlyInvoiceChart';
 import SkeletonCard from '../components/SkeletonCard';
 import SkeletonGrid from '../components/SkeletonGrid';
 import ViewInvoiceModal from '../components/ViewInvoiceModal';
-import { dashboardService, type DashboardStats, type TopSupplier, type Invoice, type MonthlyInvoiceStats } from '../services/tableService';
+import {
+  dashboardService,
+  type DashboardStats,
+  type TopSupplier,
+  type Invoice,
+  type MonthlyInvoiceStats,
+  type SupplierAgedInvoicesGrouped,
+  type AgedBalanceInvoiceRow,
+} from '../services/tableService';
 import { supabase } from '../services/supabase';
 import { formatCurrency } from '../utils/formatters';
 import { useAuth } from '../contexts/AuthContext';
@@ -82,6 +90,69 @@ interface Top10Supplier {
   montantNonPaye: number;
 }
 
+function formatAgedBalanceDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString('fr-FR');
+}
+
+function sumAgedBalanceMoney(rows: AgedBalanceInvoiceRow[]) {
+  return rows.reduce(
+    (acc, r) => ({
+      montant: acc.montant + r.montant,
+      paye: acc.paye + r.paye,
+      solde: acc.solde + r.solde,
+    }),
+    { montant: 0, paye: 0, solde: 0 }
+  );
+}
+
+function AgedBalanceStatutBadge({ statut, rejet }: { statut: string | null; rejet?: unknown }) {
+  const rejected = isInvoiceEffectivelyRejected(statut ?? '', rejet);
+  const label = rejected ? 'Rejetée' : statut?.trim() || '—';
+  const s = label
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+
+  let cn = 'bg-gray-100 text-gray-800 ring-1 ring-gray-200/80';
+  if (rejected || s.includes('rejet')) {
+    cn = 'bg-red-100 text-red-800 ring-1 ring-red-200/80';
+  } else if (s.includes('partiel')) {
+    cn = 'bg-amber-100 text-amber-900 ring-1 ring-amber-200/80';
+  } else if (s.includes('non') && s.includes('pay')) {
+    cn = 'bg-orange-100 text-orange-800 ring-1 ring-orange-200/80';
+  } else if (s.includes('payee') || s === 'paye') {
+    cn = 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200/80';
+  } else if (s.includes('bon')) {
+    cn = 'bg-sky-100 text-sky-800 ring-1 ring-sky-200/80';
+  } else if (s.includes('attente') || s.includes('encours')) {
+    cn = 'bg-violet-100 text-violet-800 ring-1 ring-violet-200/80';
+  } else if (s.includes('echue') || s.includes('retard')) {
+    cn = 'bg-rose-100 text-rose-800 ring-1 ring-rose-200/80';
+  }
+
+  return (
+    <span
+      className={`inline-flex max-w-[9.5rem] items-center truncate rounded-full px-2 py-0.5 text-[10px] font-semibold ${cn}`}
+      title={label}
+    >
+      {label}
+    </span>
+  );
+}
+
+const AGED_BALANCE_CATEGORY_BLOCKS: Array<{
+  key: keyof SupplierAgedInvoicesGrouped;
+  title: string;
+  accent: string;
+}> = [
+  { key: 'zero30', title: 'Catégorie 1 : 0–30 jours', accent: 'border-l-green-600' },
+  { key: 'thirty60', title: 'Catégorie 2 : 31–60 jours', accent: 'border-l-amber-500' },
+  { key: 'sixty90', title: 'Catégorie 3 : 61–90 jours', accent: 'border-l-orange-600' },
+  { key: 'plus90', title: 'Catégorie 4 : plus de 90 jours', accent: 'border-l-red-600' },
+];
+
 function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardProps) {
   const { agent } = useAuth();
   const [activeTab, setActiveTab] = useState(1);
@@ -97,6 +168,12 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
   const [urgencyStats, setUrgencyStats] = useState<UrgencyStats | null>(null);
   const [ageStats, setAgeStats] = useState<AgeStats | null>(null);
   const [supplierAgeData, setSupplierAgeData] = useState<SupplierAgeRow[]>([]);
+  const [balanceAgeSupplierInput, setBalanceAgeSupplierInput] = useState('');
+  const [balanceAgeSupplierSelected, setBalanceAgeSupplierSelected] = useState<string | null>(null);
+  const [balanceAgeSupplierSuggestionsOpen, setBalanceAgeSupplierSuggestionsOpen] = useState(false);
+  const [balanceAgeSupplierGrouped, setBalanceAgeSupplierGrouped] = useState<SupplierAgedInvoicesGrouped | null>(null);
+  const [balanceAgeSupplierLoading, setBalanceAgeSupplierLoading] = useState(false);
+  const [balanceAgeSupplierDetailError, setBalanceAgeSupplierDetailError] = useState<string | null>(null);
   const [bulletinSupplierData, setBulletinSupplierData] = useState<BulletinSupplierBreakdown[]>([]);
   const [bulletinGlobalStats, setBulletinGlobalStats] = useState<DashboardStats | null>(null);
   const [bulletinUrgencyStats, setBulletinUrgencyStats] = useState<UrgencyStats | null>(null);
@@ -134,6 +211,15 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
     { id: 5, label: 'Centre des coûts' },
     { id: 6, label: 'Catégorie Fournisseurs' }
   ].filter((tab) => invoiceTypeScope === 'frais-generaux' ? ![2, 3].includes(tab.id) : true);
+
+  const balanceAgeSupplierPickList = useMemo(() => {
+    const namesArr = supplierAgeData.map((r) => r.fournisseur).filter(Boolean);
+    const names = Array.from(new Set(namesArr));
+    names.sort((a, b) => a.localeCompare(b, 'fr'));
+    const q = balanceAgeSupplierInput.trim().toLowerCase();
+    if (!q) return names.slice(0, 40);
+    return names.filter((n) => n.toLowerCase().includes(q)).slice(0, 40);
+  }, [supplierAgeData, balanceAgeSupplierInput]);
 
   useEffect(() => {
     if (invoiceTypeScope === 'frais-generaux' && (activeTab === 2 || activeTab === 3)) {
@@ -601,6 +687,41 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
   useEffect(() => {
     loadDashboardData();
   }, [selectedYear, selectedMonth, selectedRegionBulletin, invoiceTypeScope]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!balanceAgeSupplierSelected) {
+      setBalanceAgeSupplierGrouped(null);
+      setBalanceAgeSupplierLoading(false);
+      setBalanceAgeSupplierDetailError(null);
+      return;
+    }
+    setBalanceAgeSupplierDetailError(null);
+    setBalanceAgeSupplierLoading(true);
+    dashboardService
+      .getSupplierAgedInvoicesGrouped(
+        balanceAgeSupplierSelected,
+        selectedYear,
+        selectedRegionBulletin,
+        invoiceTypeScope
+      )
+      .then((data) => {
+        if (!cancelled) setBalanceAgeSupplierGrouped(data);
+      })
+      .catch((err) => {
+        console.error('Erreur lors du chargement du détail balance âgée par fournisseur:', err);
+        if (!cancelled) {
+          setBalanceAgeSupplierGrouped(null);
+          setBalanceAgeSupplierDetailError('Impossible de charger le détail des factures.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBalanceAgeSupplierLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [balanceAgeSupplierSelected, selectedYear, selectedRegionBulletin, invoiceTypeScope]);
 
   // Synchroniser selectedRegionBulletin avec la région de l'agent connecté
   useEffect(() => {
@@ -1575,10 +1696,258 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
 
             {/* Tableau par fournisseur */}
             <div className="mt-8">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
-                <h3 className="text-lg font-semibold text-gray-800">Tableau par fournisseur</h3>
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
+                  <h3 className="text-lg font-semibold text-gray-800">Tableau par fournisseur</h3>
+                </div>
+                <div className="relative z-20 min-w-[min(100%,20rem)] max-w-md flex-1">
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                    Fournisseur (détail par tranche)
+                  </label>
+                  <div className="relative">
+                    <Search
+                      className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                    <input
+                      type="text"
+                      value={balanceAgeSupplierInput}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setBalanceAgeSupplierInput(v);
+                        setBalanceAgeSupplierSelected(null);
+                        setBalanceAgeSupplierSuggestionsOpen(true);
+                      }}
+                      onFocus={() => setBalanceAgeSupplierSuggestionsOpen(true)}
+                      onBlur={() => {
+                        window.setTimeout(() => setBalanceAgeSupplierSuggestionsOpen(false), 200);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setBalanceAgeSupplierSuggestionsOpen(false);
+                      }}
+                      placeholder="Tapez pour filtrer ou choisir un fournisseur…"
+                      autoComplete="off"
+                      className="h-9 w-full rounded-md border border-gray-300 bg-white pl-9 pr-9 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                    />
+                    {balanceAgeSupplierInput.trim() !== '' && (
+                      <button
+                        type="button"
+                        className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                        title="Effacer"
+                        aria-label="Effacer la sélection fournisseur"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setBalanceAgeSupplierInput('');
+                          setBalanceAgeSupplierSelected(null);
+                          setBalanceAgeSupplierGrouped(null);
+                          setBalanceAgeSupplierDetailError(null);
+                          setBalanceAgeSupplierSuggestionsOpen(false);
+                        }}
+                      >
+                        <X className="h-4 w-4" strokeWidth={2} />
+                      </button>
+                    )}
+                  </div>
+                  {balanceAgeSupplierSuggestionsOpen && (
+                    <ul
+                      className="absolute left-0 right-0 top-full z-[200] mt-1 max-h-52 overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-xl"
+                      role="listbox"
+                    >
+                      <li>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-gray-600 hover:bg-indigo-50"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setBalanceAgeSupplierSelected(null);
+                            setBalanceAgeSupplierInput('');
+                            setBalanceAgeSupplierGrouped(null);
+                            setBalanceAgeSupplierDetailError(null);
+                            setBalanceAgeSupplierSuggestionsOpen(false);
+                          }}
+                        >
+                          Aucun (masquer le détail)
+                        </button>
+                      </li>
+                      {balanceAgeSupplierPickList.length === 0 ? (
+                        <li className="px-3 py-2 text-xs text-gray-500">Aucun fournisseur correspondant.</li>
+                      ) : (
+                        balanceAgeSupplierPickList.map((s) => (
+                          <li key={s}>
+                            <button
+                              type="button"
+                              className="w-full px-3 py-2 text-left text-gray-900 hover:bg-indigo-50"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setBalanceAgeSupplierSelected(s);
+                                setBalanceAgeSupplierInput(s);
+                                setBalanceAgeSupplierSuggestionsOpen(false);
+                              }}
+                            >
+                              {s}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
+                </div>
               </div>
+
+              {balanceAgeSupplierSelected && (
+                <div className="mb-6 space-y-4">
+                  {balanceAgeSupplierLoading ? (
+                    <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-4 py-6 text-sm text-gray-600">
+                      <div
+                        className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-red-500"
+                        aria-hidden
+                      />
+                      <span>Chargement des factures…</span>
+                    </div>
+                  ) : balanceAgeSupplierDetailError ? (
+                    <p className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-800">
+                      {balanceAgeSupplierDetailError}
+                    </p>
+                  ) : balanceAgeSupplierGrouped ? (
+                    (() => {
+                      const g = balanceAgeSupplierGrouped;
+                      const hasAny =
+                        g.zero30.length + g.thirty60.length + g.sixty90.length + g.plus90.length > 0;
+                      if (!hasAny) {
+                        return (
+                          <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                            Aucune facture pour ce fournisseur avec les filtres actuels (année, région, type).
+                          </p>
+                        );
+                      }
+                      const allRows = AGED_BALANCE_CATEGORY_BLOCKS.flatMap(({ key }) => g[key]);
+                      const grand = sumAgedBalanceMoney(allRows);
+
+                      return (
+                        <div className="overflow-hidden border border-gray-200 bg-white shadow-sm">
+                          {AGED_BALANCE_CATEGORY_BLOCKS.map(({ key, title, accent }) => {
+                            const rows = g[key];
+                            if (!rows.length) return null;
+                            const catTotals = sumAgedBalanceMoney(rows);
+                            return (
+                              <details
+                                key={key}
+                                className={`group border-l-4 ${accent} border-gray-200 bg-white`}
+                              >
+                                <summary className="flex cursor-pointer list-none items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800 [&::-webkit-details-marker]:hidden">
+                                  <ChevronDown
+                                    className="h-4 w-4 shrink-0 text-gray-500 transition-transform duration-200 group-open:rotate-180"
+                                    aria-hidden
+                                    strokeWidth={2}
+                                  />
+                                  <span>{title}</span>
+                                  <span className="ml-auto text-xs font-normal text-gray-500">
+                                    {rows.length} facture{rows.length > 1 ? 's' : ''}
+                                  </span>
+                                </summary>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full min-w-[760px] text-left text-xs">
+                                    <thead className="border-b border-gray-200 bg-white text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+                                      <tr>
+                                        <th className="px-3 py-1.5">N° facture</th>
+                                        <th className="px-3 py-1.5">Date reçu</th>
+                                        <th className="px-3 py-1.5">Date échue</th>
+                                        <th className="px-3 py-1.5">Statut</th>
+                                        <th className="px-3 py-1.5 text-right">Montant</th>
+                                        <th className="px-3 py-1 text-right leading-tight">Payé</th>
+                                        <th className="px-3 py-1 text-right leading-tight">Solde</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 text-gray-800">
+                                      {rows.map((inv) => (
+                                        <tr key={inv.ID ?? inv.numeroFacture} className="hover:bg-gray-50/80">
+                                          <td className="px-3 py-1.5 font-mono tabular-nums">
+                                            <button
+                                              type="button"
+                                              className="cursor-pointer bg-transparent p-0 text-left font-mono font-bold text-indigo-700 hover:text-indigo-900 hover:underline"
+                                              title="Voir la facture"
+                                              onClick={() =>
+                                                setInvoiceForViewModal({
+                                                  ID: inv.ID,
+                                                  'Numéro de facture': inv.numeroFacture,
+                                                  'Date de réception': inv.dateReception,
+                                                  Montant: inv.montant,
+                                                  Statut: inv.statut,
+                                                  Rejet: inv.rejet,
+                                                  Fournisseur: balanceAgeSupplierSelected,
+                                                })
+                                              }
+                                            >
+                                              {inv.numeroFacture}
+                                            </button>
+                                          </td>
+                                          <td className="px-3 py-1.5">{formatAgedBalanceDate(inv.dateReception)}</td>
+                                          <td className="px-3 py-1.5">{formatAgedBalanceDate(inv.dateEcheance)}</td>
+                                          <td className="px-3 py-1.5">
+                                            <AgedBalanceStatutBadge statut={inv.statut ?? null} rejet={inv.rejet} />
+                                          </td>
+                                          <td className="px-3 py-1.5 text-right font-bold tabular-nums">
+                                            {formatCurrency(inv.montant)}
+                                          </td>
+                                          <td className="px-3 py-1 text-right font-bold tabular-nums leading-tight">
+                                            {formatCurrency(inv.paye)}
+                                          </td>
+                                          <td className="px-3 py-1 text-right font-bold tabular-nums leading-tight text-red-800">
+                                            {formatCurrency(inv.solde)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                    <tfoot>
+                                      <tr className="border-t border-gray-200 bg-gray-50 text-gray-900 leading-tight">
+                                        <td className="px-3 py-1 text-xs font-bold" colSpan={4}>
+                                          Totaux ({rows.length} facture{rows.length > 1 ? 's' : ''})
+                                        </td>
+                                        <td className="px-3 py-1 text-right text-xs font-bold tabular-nums">
+                                          {formatCurrency(catTotals.montant)}
+                                        </td>
+                                        <td className="px-3 py-1 text-right text-xs font-bold tabular-nums leading-tight">
+                                          {formatCurrency(catTotals.paye)}
+                                        </td>
+                                        <td className="px-3 py-1 text-right text-xs font-bold text-red-800 tabular-nums leading-tight">
+                                          {formatCurrency(catTotals.solde)}
+                                        </td>
+                                      </tr>
+                                    </tfoot>
+                                  </table>
+                                </div>
+                              </details>
+                            );
+                          })}
+                          <div className="border-t-2 border-slate-300 bg-slate-100 px-3 py-1 text-xs leading-tight text-gray-900">
+                            <div className="mx-auto grid w-full min-w-[760px] max-w-full grid-cols-7 gap-y-0.5">
+                              <div className="col-span-5" aria-hidden />
+                              <div className="py-0.5 pr-1 text-right font-medium text-gray-600">Montant fact.</div>
+                              <div className="py-0.5 text-right font-bold tabular-nums">
+                                {formatCurrency(grand.montant)}
+                              </div>
+                              <div className="col-span-5" aria-hidden />
+                              <div className="py-0.5 pr-1 text-right font-medium text-gray-600">Montant payé</div>
+                              <div className="py-0.5 text-right font-bold tabular-nums">
+                                {formatCurrency(grand.paye)}
+                              </div>
+                              <div className="col-span-5" aria-hidden />
+                              <div className="py-0.5 pr-1 text-right font-medium text-gray-600">Solde</div>
+                              <div className="py-0.5 text-right font-bold text-red-800 tabular-nums">
+                                {formatCurrency(grand.solde)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : null}
+                </div>
+              )}
+
+              {!balanceAgeSupplierSelected && (
               <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
                 <table className="w-full">
                   <thead className="bg-gray-50 border-b border-gray-200">
@@ -1630,6 +1999,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           </div>
         );
@@ -2172,7 +2542,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
           invoice={{
             id: invoiceForViewModal.ID,
             invoiceNumber: invoiceForViewModal['Numéro de facture'],
-            supplier: selectedSupplierForModal || '',
+            supplier: invoiceForViewModal.Fournisseur || selectedSupplierForModal || '',
             receptionDate: invoiceForViewModal['Date de réception'],
             amount: parseFloat(invoiceForViewModal.Montant) || 0,
             currency: 'USD' as const,

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, RefreshCw, Download, ClipboardList, X, FileDown, FileSpreadsheet } from 'lucide-react';
+import { Search, RefreshCw, Download, ClipboardList, X, FileDown, FileSpreadsheet, RotateCcw } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 import fontkit from '@pdf-lib/fontkit';
@@ -13,8 +13,6 @@ import PaiementModal from '../components/PaiementModal';
 import { Invoice as GlobalInvoice } from '../types';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
-
-type RelevePeriodeType = 'annee' | 'mois' | 'semestre' | 'trimestre' | 'personnalise';
 
 function stripDiacriticsForPdf(text: string): string {
   return String(text || '')
@@ -30,6 +28,14 @@ function formatReleveDueDate(d: string | null): string {
   return t.toLocaleDateString('fr-FR');
 }
 
+function isReleveInvoiceEchue(inv: Invoice): boolean {
+  return inv.status === 'ÉCHUE';
+}
+
+function isReleveInvoiceFullyPaid(inv: Invoice): boolean {
+  return inv.status === 'PAYÉE';
+}
+
 async function embedSearchPagePdfFontsAndLogo(pdf: PDFDocument) {
   pdf.registerFontkit(fontkit);
   let font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -41,13 +47,14 @@ async function embedSearchPagePdfFontsAndLogo(pdf: PDFDocument) {
       const regBuf = await calibri.arrayBuffer();
       const calBold = await fetch(`${base}fonts/Calibri-Bold.ttf`);
       const boldBuf = calBold.ok ? await calBold.arrayBuffer() : regBuf;
-      font = await pdf.embedFont(regBuf, { subset: true });
-      fontBold = await pdf.embedFont(boldBuf, { subset: true });
+      // subset:false évite un bug fréquent (caractères espacés / illisibles) avec TTF + fontkit
+      font = await pdf.embedFont(regBuf, { subset: false });
+      fontBold = await pdf.embedFont(boldBuf, { subset: false });
     } else {
       const regBuf = await fetch(`${base}fonts/Carlito-Regular.ttf`).then((r) => r.arrayBuffer());
       const boldBuf = await fetch(`${base}fonts/Carlito-Bold.ttf`).then((r) => r.arrayBuffer());
-      font = await pdf.embedFont(regBuf, { subset: true });
-      fontBold = await pdf.embedFont(boldBuf, { subset: true });
+      font = await pdf.embedFont(regBuf, { subset: false });
+      fontBold = await pdf.embedFont(boldBuf, { subset: false });
     }
   } catch (fontErr) {
     console.warn('PDF: polices Calibri/Carlito non chargees, Helvetica utilisee.', fontErr);
@@ -72,6 +79,42 @@ interface SearchPageProps {
   activeMenu?: string;
   menuTitle?: string;
   invoiceTypeScope?: 'operationnel' | 'frais-generaux';
+}
+
+type SearchPeriodPreset = '1m' | '3m' | '6m' | '1y' | '2y';
+
+const DEFAULT_SEARCH_YEAR = '2026';
+
+function toInputDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatSoaMonthYearEn(d: Date): string {
+  return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+
+function getSoaPeriodCoveredLabel(yearStr: string, dateStart: string, dateEnd: string): string {
+  if (dateStart && dateEnd) {
+    const a = new Date(dateStart);
+    const b = new Date(dateEnd);
+    if (!Number.isNaN(a.getTime()) && !Number.isNaN(b.getTime())) {
+      return `${formatSoaMonthYearEn(a)} – ${formatSoaMonthYearEn(b)}`;
+    }
+  }
+  const y = parseInt(yearStr, 10);
+  if (!Number.isNaN(y)) {
+    return `${formatSoaMonthYearEn(new Date(y, 0, 1))} – ${formatSoaMonthYearEn(new Date(y, 11, 1))}`;
+  }
+  return '-';
+}
+
+function supplierToSoaAccountNumber(supplier: string): string {
+  const compact = (supplier || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  const core = compact.slice(0, 10) || 'CLIENT';
+  return `ACC-${core}-001`;
 }
 
 function normalizeInvoiceType(value?: string | null) {
@@ -121,13 +164,10 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
 
   const [showReleveModal, setShowReleveModal] = useState(false);
   const [releveSupplier, setReleveSupplier] = useState<string>('');
-  const [relevePeriodeType, setRelevePeriodeType] = useState<RelevePeriodeType>('annee');
-  const [releveYear, setReleveYear] = useState<string>('2026');
-  const [releveMonth, setReleveMonth] = useState<string>('1');
-  const [releveTrimester, setReleveTrimester] = useState<string>('1');
-  const [releveSemester, setReleveSemester] = useState<string>('1');
+  const [releveYear, setReleveYear] = useState<string>(DEFAULT_SEARCH_YEAR);
   const [releveDateStart, setReleveDateStart] = useState<string>('');
   const [releveDateEnd, setReleveDateEnd] = useState<string>('');
+  const [relevePeriodPreset, setRelevePeriodPreset] = useState<SearchPeriodPreset | null>(null);
   const [relevePdfExporting, setRelevePdfExporting] = useState(false);
   const [detailPdfExporting, setDetailPdfExporting] = useState(false);
   const [releveSupplierInput, setReleveSupplierInput] = useState('');
@@ -148,17 +188,78 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
   const [showSuggestions, setShowSuggestions] = useState(false);
   // If agent has TOUT, show all regions. Otherwise, show only their region
   const [selectedRegion, setSelectedRegion] = useState<string>(agent?.REGION && agent.REGION !== 'TOUT' ? agent.REGION : '');
-  const [selectedYear, setSelectedYear] = useState<string>('2026');
+  const [selectedYear, setSelectedYear] = useState<string>(DEFAULT_SEARCH_YEAR);
   const canViewOperational = hasPermission('recherche', 'voir_operationnel') || canView('recherche');
   const canViewFfg = hasPermission('recherche', 'voir_frais_generaux');
   const [selectedInvoiceType, setSelectedInvoiceType] = useState<'operationnel' | 'frais-generaux'>(
     invoiceTypeScope === 'frais-generaux' ? 'frais-generaux' : 'operationnel'
   );
 
-  // Advanced filters
-  const [filterDateType, setFilterDateType] = useState<string>('all');
+  // Filtres année + plage (visibles seulement après choix fournisseur ou dossier) — par défaut : année seule
   const [filterDateStart, setFilterDateStart] = useState<string>('');
   const [filterDateEnd, setFilterDateEnd] = useState<string>('');
+  const [searchPeriodPreset, setSearchPeriodPreset] = useState<SearchPeriodPreset | null>(null);
+
+  const detailFiltersUnlocked = !!(selectedSupplier || selectedDossier);
+
+  const resetSearchBarFilters = useCallback(() => {
+    setSelectedYear(DEFAULT_SEARCH_YEAR);
+    setFilterDateStart('');
+    setFilterDateEnd('');
+    setSearchPeriodPreset(null);
+  }, []);
+
+  const applySearchPeriodPreset = useCallback((preset: SearchPeriodPreset) => {
+    const today = new Date();
+    const start = new Date(today);
+    if (preset === '1m') start.setMonth(start.getMonth() - 1);
+    else if (preset === '3m') start.setMonth(start.getMonth() - 3);
+    else if (preset === '6m') start.setMonth(start.getMonth() - 6);
+    else if (preset === '1y') start.setFullYear(start.getFullYear() - 1);
+    else if (preset === '2y') start.setFullYear(start.getFullYear() - 2);
+    setFilterDateStart(toInputDateString(start));
+    setFilterDateEnd(toInputDateString(today));
+    setSearchPeriodPreset(preset);
+  }, []);
+
+  const resetReleveFilters = useCallback(() => {
+    setReleveYear(DEFAULT_SEARCH_YEAR);
+    setReleveDateStart('');
+    setReleveDateEnd('');
+    setRelevePeriodPreset(null);
+  }, []);
+
+  const applyRelevePeriodPreset = useCallback((preset: SearchPeriodPreset) => {
+    const today = new Date();
+    const start = new Date(today);
+    if (preset === '1m') start.setMonth(start.getMonth() - 1);
+    else if (preset === '3m') start.setMonth(start.getMonth() - 3);
+    else if (preset === '6m') start.setMonth(start.getMonth() - 6);
+    else if (preset === '1y') start.setFullYear(start.getFullYear() - 1);
+    else if (preset === '2y') start.setFullYear(start.getFullYear() - 2);
+    setReleveDateStart(toInputDateString(start));
+    setReleveDateEnd(toInputDateString(today));
+    setRelevePeriodPreset(preset);
+  }, []);
+
+  const passesYearAndReceptionRange = useCallback(
+    (inv: Invoice) => {
+      if (!detailFiltersUnlocked) return true;
+      if (selectedYear && new Date(inv.date).getFullYear().toString() !== selectedYear) {
+        return false;
+      }
+      if (filterDateStart && filterDateEnd) {
+        const invDate = new Date(inv.date);
+        const start = new Date(filterDateStart);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(filterDateEnd);
+        end.setHours(23, 59, 59, 999);
+        if (invDate < start || invDate > end) return false;
+      }
+      return true;
+    },
+    [detailFiltersUnlocked, selectedYear, filterDateStart, filterDateEnd]
+  );
 
   if (!canView('recherche')) {
     return <AccessDenied message="Vous n'avez pas accès à la recherche." />;
@@ -270,53 +371,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       filteredInvoices = filteredInvoices.filter(inv => inv.region === selectedRegion);
     }
     
-    // Apply year filter
-    if (selectedYear) {
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const invYear = new Date(inv.date).getFullYear().toString();
-        return invYear === selectedYear;
-      });
-    }
-    
-    // Apply date range filter
-    if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
-      const start = new Date(filterDateStart);
-      const end = new Date(filterDateEnd);
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const invDate = new Date(inv.date);
-        return invDate >= start && invDate <= end;
-      });
-    } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
-      const today = new Date();
-      
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const iDate = new Date(inv.date);
-        
-        if (filterDateType === 'week') {
-          const dayOfWeek = today.getDay();
-          const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-          const weekStart = new Date(today);
-          weekStart.setDate(today.getDate() + daysToMonday);
-          weekStart.setHours(0, 0, 0, 0);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekStart.getDate() + 6);
-          weekEnd.setHours(23, 59, 59, 999);
-          return iDate >= weekStart && iDate <= weekEnd;
-        } else if (filterDateType === 'month') {
-          return iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'trimester') {
-          const currentTrimester = Math.floor(today.getMonth() / 3);
-          const invoiceTrimester = Math.floor(iDate.getMonth() / 3);
-          return invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'semester') {
-          const currentSemester = today.getMonth() < 6 ? 0 : 1;
-          const invoiceSemester = iDate.getMonth() < 6 ? 0 : 1;
-          return invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear();
-        }
-        
-        return true;
-      });
-    }
+    filteredInvoices = filteredInvoices.filter(passesYearAndReceptionRange);
 
     // Apply search filter for supplier list (left 30% panel)
     if (searchTerm.trim()) {
@@ -359,53 +414,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       filteredInvoices = filteredInvoices.filter(inv => inv.region === selectedRegion);
     }
     
-    // Apply year filter
-    if (selectedYear) {
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const invYear = new Date(inv.date).getFullYear().toString();
-        return invYear === selectedYear;
-      });
-    }
-    
-    // Apply date range filter
-    if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
-      const start = new Date(filterDateStart);
-      const end = new Date(filterDateEnd);
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const invDate = new Date(inv.date);
-        return invDate >= start && invDate <= end;
-      });
-    } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
-      const today = new Date();
-      
-      filteredInvoices = filteredInvoices.filter(inv => {
-        const iDate = new Date(inv.date);
-        
-        if (filterDateType === 'week') {
-          const dayOfWeek = today.getDay();
-          const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-          const weekStart = new Date(today);
-          weekStart.setDate(today.getDate() + daysToMonday);
-          weekStart.setHours(0, 0, 0, 0);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekStart.getDate() + 6);
-          weekEnd.setHours(23, 59, 59, 999);
-          return iDate >= weekStart && iDate <= weekEnd;
-        } else if (filterDateType === 'month') {
-          return iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'trimester') {
-          const currentTrimester = Math.floor(today.getMonth() / 3);
-          const invoiceTrimester = Math.floor(iDate.getMonth() / 3);
-          return invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'semester') {
-          const currentSemester = today.getMonth() < 6 ? 0 : 1;
-          const invoiceSemester = iDate.getMonth() < 6 ? 0 : 1;
-          return invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear();
-        }
-        
-        return true;
-      });
-    }
+    filteredInvoices = filteredInvoices.filter(passesYearAndReceptionRange);
 
     // Apply search filter for dossier list (left 30% panel)
     if (searchTerm.trim()) {
@@ -517,54 +526,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       });
     }
 
-    // Year
-    if (selectedYear) {
-      filtered = filtered.filter(inv => {
-        const invYear = new Date(inv.date).getFullYear().toString();
-        return invYear === selectedYear;
-      });
-    }
-
-    // Date range
-    if (filterDateType !== 'all' && filterDateStart && filterDateEnd) {
-      const start = new Date(filterDateStart);
-      const end = new Date(filterDateEnd);
-      filtered = filtered.filter(inv => {
-        const invDate = new Date(inv.date);
-        return invDate >= start && invDate <= end;
-      });
-    } else if (filterDateType !== 'all' && filterDateType !== 'custom') {
-      const today = new Date();
-      
-      filtered = filtered.filter(inv => {
-        const iDate = new Date(inv.date);
-        
-        if (filterDateType === 'week') {
-          // Semaine: lundi à dimanche
-          const dayOfWeek = today.getDay(); // 0 = dimanche, 1 = lundi, ..., 6 = samedi
-          const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-          const weekStart = new Date(today);
-          weekStart.setDate(today.getDate() + daysToMonday);
-          weekStart.setHours(0, 0, 0, 0);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekStart.getDate() + 6);
-          weekEnd.setHours(23, 59, 59, 999);
-          return iDate >= weekStart && iDate <= weekEnd;
-        } else if (filterDateType === 'month') {
-          return iDate.getMonth() === today.getMonth() && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'trimester') {
-          const currentTrimester = Math.floor(today.getMonth() / 3);
-          const invoiceTrimester = Math.floor(iDate.getMonth() / 3);
-          return invoiceTrimester === currentTrimester && iDate.getFullYear() === today.getFullYear();
-        } else if (filterDateType === 'semester') {
-          const currentSemester = today.getMonth() < 6 ? 0 : 1;
-          const invoiceSemester = iDate.getMonth() < 6 ? 0 : 1;
-          return invoiceSemester === currentSemester && iDate.getFullYear() === today.getFullYear();
-        }
-        
-        return true;
-      });
-    }
+    filtered = filtered.filter(passesYearAndReceptionRange);
 
     return filtered;
   };
@@ -645,48 +607,14 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       parts.push(`Région: ${selectedRegion}`);
     }
 
-    if (selectedYear && selectedYear !== '2026') {
-      parts.push(`Année: ${selectedYear}`);
-    }
-
-    if (filterDateType !== 'all') {
-      const today = new Date();
-      
-      if (filterDateType === 'week') {
-        // Semaine: lundi à dimanche
-        const dayOfWeek = today.getDay(); // 0 = dimanche, 1 = lundi, ..., 6 = samedi
-        const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-        const weekStart = new Date(today);
-        weekStart.setDate(today.getDate() + daysToMonday);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        const startStr = weekStart.toLocaleDateString('fr-FR');
-        const endStr = weekEnd.toLocaleDateString('fr-FR');
-        parts.push(`Filtre: Cette semaine (${startStr} au ${endStr})`);
-      } else if (filterDateType === 'month') {
-        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-        const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-        const startStr = monthStart.toLocaleDateString('fr-FR');
-        const endStr = monthEnd.toLocaleDateString('fr-FR');
-        parts.push(`Filtre: Ce mois (${startStr} au ${endStr})`);
-      } else if (filterDateType === 'trimester') {
-        const quarter = Math.floor(today.getMonth() / 3);
-        const trimStart = new Date(today.getFullYear(), quarter * 3, 1);
-        const trimEnd = new Date(today.getFullYear(), (quarter + 1) * 3, 0);
-        const startStr = trimStart.toLocaleDateString('fr-FR');
-        const endStr = trimEnd.toLocaleDateString('fr-FR');
-        parts.push(`Filtre: Ce trimestre (${startStr} au ${endStr})`);
-      } else if (filterDateType === 'semester') {
-        const semester = today.getMonth() < 6 ? 0 : 1;
-        const semStart = new Date(today.getFullYear(), semester * 6, 1);
-        const semEnd = new Date(today.getFullYear(), (semester + 1) * 6, 0);
-        const startStr = semStart.toLocaleDateString('fr-FR');
-        const endStr = semEnd.toLocaleDateString('fr-FR');
-        parts.push(`Filtre: Ce semestre (${startStr} au ${endStr})`);
-      } else if (filterDateType === 'custom' && filterDateStart && filterDateEnd) {
+    if (detailFiltersUnlocked) {
+      if (selectedYear && selectedYear !== DEFAULT_SEARCH_YEAR) {
+        parts.push(`Année: ${selectedYear}`);
+      }
+      if (filterDateStart && filterDateEnd) {
         const startDate = new Date(filterDateStart).toLocaleDateString('fr-FR');
         const endDate = new Date(filterDateEnd).toLocaleDateString('fr-FR');
-        parts.push(`Filtre: Du ${startDate} au ${endDate}`);
+        parts.push(`Période: du ${startDate} au ${endDate}`);
       }
     }
 
@@ -751,7 +679,13 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
 
   const openReleveModal = () => {
     setReleveYear(selectedYear);
-    setReleveSupplierInput(releveSupplier);
+    setReleveDateStart(filterDateStart);
+    setReleveDateEnd(filterDateEnd);
+    setRelevePeriodPreset(searchPeriodPreset);
+    const sup = selectedSupplier ?? '';
+    setReleveSupplier(sup);
+    setReleveSupplierInput(sup);
+    setReleveSupplierSuggestionsOpen(false);
     setShowReleveModal(true);
   };
 
@@ -765,135 +699,23 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       list = list.filter((inv) => inv.supplier.toLowerCase().includes(supplierQuery));
     }
 
-    const y = parseInt(releveYear, 10);
-
-    switch (relevePeriodeType) {
-      case 'personnalise': {
-        if (releveDateStart && releveDateEnd) {
-          const start = new Date(releveDateStart);
-          const end = new Date(releveDateEnd);
-          end.setHours(23, 59, 59, 999);
-          list = list.filter((inv) => {
-            const d = new Date(inv.date);
-            return d >= start && d <= end;
-          });
-        } else if (releveDateStart && !releveDateEnd) {
-          const start = new Date(releveDateStart);
-          start.setHours(0, 0, 0, 0);
-          list = list.filter((inv) => new Date(inv.date) >= start);
-        } else if (!releveDateStart && releveDateEnd) {
-          const end = new Date(releveDateEnd);
-          end.setHours(23, 59, 59, 999);
-          list = list.filter((inv) => new Date(inv.date) <= end);
-        }
-        return list;
-      }
-      case 'annee': {
-        if (!Number.isNaN(y) && releveYear) {
-          list = list.filter((inv) => new Date(inv.date).getFullYear().toString() === releveYear);
-        }
-        return list;
-      }
-      case 'mois': {
-        const m = parseInt(releveMonth, 10);
-        if (!Number.isNaN(y) && releveYear) {
-          list = list.filter((inv) => new Date(inv.date).getFullYear().toString() === releveYear);
-        }
-        if (!Number.isNaN(m) && m >= 1 && m <= 12) {
-          list = list.filter((inv) => new Date(inv.date).getMonth() + 1 === m);
-        }
-        return list;
-      }
-      case 'trimestre': {
-        const q = parseInt(releveTrimester, 10) - 1;
-        if (!Number.isNaN(y) && releveYear) {
-          list = list.filter((inv) => new Date(inv.date).getFullYear().toString() === releveYear);
-        }
-        if (!Number.isNaN(q) && q >= 0 && q <= 3) {
-          list = list.filter((inv) => Math.floor(new Date(inv.date).getMonth() / 3) === q);
-        }
-        return list;
-      }
-      case 'semestre': {
-        const s = parseInt(releveSemester, 10);
-        if (!Number.isNaN(y) && releveYear) {
-          list = list.filter((inv) => new Date(inv.date).getFullYear().toString() === releveYear);
-        }
-        if (s === 1 || s === 2) {
-          list = list.filter((inv) => {
-            const month = new Date(inv.date).getMonth();
-            return s === 1 ? month < 6 : month >= 6;
-          });
-        }
-        return list;
-      }
-      default:
-        return list;
+    if (releveYear) {
+      list = list.filter((inv) => new Date(inv.date).getFullYear().toString() === releveYear);
     }
+
+    if (releveDateStart && releveDateEnd) {
+      const start = new Date(releveDateStart);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(releveDateEnd);
+      end.setHours(23, 59, 59, 999);
+      list = list.filter((inv) => {
+        const d = new Date(inv.date);
+        return d >= start && d <= end;
+      });
+    }
+
+    return list;
   };
-
-  const relevePeriodeLabel = useMemo(() => {
-    const fmt = (d: Date) =>
-      d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
-
-    const y = parseInt(releveYear, 10);
-
-    switch (relevePeriodeType) {
-      case 'personnalise': {
-        if (releveDateStart && releveDateEnd) {
-          return `Du ${fmt(new Date(releveDateStart))} au ${fmt(new Date(releveDateEnd))}`;
-        }
-        if (releveDateStart && !releveDateEnd) {
-          return `À partir du ${fmt(new Date(releveDateStart))}`;
-        }
-        if (!releveDateStart && releveDateEnd) {
-          return `Jusqu'au ${fmt(new Date(releveDateEnd))}`;
-        }
-        return 'Choisissez une plage de dates';
-      }
-      case 'annee':
-        return Number.isNaN(y) ? '—' : `Année complète ${y} — du ${fmt(new Date(y, 0, 1))} au ${fmt(new Date(y, 11, 31))}`;
-      case 'mois': {
-        const m = parseInt(releveMonth, 10);
-        if (Number.isNaN(y) || Number.isNaN(m) || m < 1 || m > 12) return '—';
-        const start = new Date(y, m - 1, 1);
-        const end = new Date(y, m, 0);
-        return `Du ${fmt(start)} au ${fmt(end)}`;
-      }
-      case 'trimestre': {
-        const q = parseInt(releveTrimester, 10) - 1;
-        if (Number.isNaN(y) || Number.isNaN(q) || q < 0 || q > 3) return '—';
-        const start = new Date(y, q * 3, 1);
-        const end = new Date(y, q * 3 + 3, 0);
-        return `Trimestre ${q + 1} ${y} — du ${fmt(start)} au ${fmt(end)}`;
-      }
-      case 'semestre': {
-        const s = parseInt(releveSemester, 10);
-        if (Number.isNaN(y)) return '—';
-        if (s === 1) {
-          const start = new Date(y, 0, 1);
-          const end = new Date(y, 6, 0);
-          return `1er semestre ${y} — du ${fmt(start)} au ${fmt(end)}`;
-        }
-        if (s === 2) {
-          const start = new Date(y, 6, 1);
-          const end = new Date(y, 12, 0);
-          return `2e semestre ${y} — du ${fmt(start)} au ${fmt(end)}`;
-        }
-        return '—';
-      }
-      default:
-        return '—';
-    }
-  }, [
-    relevePeriodeType,
-    releveDateStart,
-    releveDateEnd,
-    releveYear,
-    releveMonth,
-    releveTrimester,
-    releveSemester
-  ]);
 
   const releveRows = getReleveFilteredInvoices();
   const releveTotals = releveRows.reduce(
@@ -980,18 +802,22 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         red700: rgb(0.725, 0.11, 0.11),
         red800: rgb(0.6, 0.094, 0.094),
         slate100: rgb(0.945, 0.961, 0.976),
-        slate300: rgb(0.796, 0.835, 0.882)
+        slate300: rgb(0.796, 0.835, 0.882),
+        rowEchueBg: rgb(1, 0.96, 0.96),
+        emerald600: rgb(0.02, 0.59, 0.41)
       };
 
       const colGap = 4;
       const colAmt = 62;
       const colDue = 56;
+      const colRecv = 54;
       const xSoldeL = pageWidth - margin - colAmt;
       const xPaiementL = xSoldeL - colGap - colAmt;
       const xMontantL = xPaiementL - colGap - colAmt;
       const xEcheanceL = xMontantL - colGap - colDue;
+      const xRecvL = xEcheanceL - colGap - colRecv;
       const xFacture = margin + 30;
-      const maxFactureW = Math.max(72, xEcheanceL - colGap - xFacture - 4);
+      const maxFactureW = Math.max(56, xRecvL - colGap - xFacture - 4);
 
       const titleSize = 18;
       const metaSize = 10;
@@ -999,12 +825,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       const bodySize = 10;
       const rowBodyH = 16;
       const rowHeadH = 20;
-      const rowFootH = 22;
+      const rowFootH = 62;
 
       let page = pdf.addPage([pageWidth, pageHeight]);
       let y = pageHeight - margin;
 
-      const drawLogoTopRight = () => {
+      const drawLogoTopRightSmall = () => {
         if (!logoImage) return;
         const targetW = 56;
         const scale = targetW / logoImage.width;
@@ -1014,7 +840,6 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         const yImg = pageHeight - margin - h;
         page.drawImage(logoImage, { x, y: yImg, width: w, height: h });
       };
-      drawLogoTopRight();
 
       const totals = rows.reduce(
         (acc, inv) => ({
@@ -1053,43 +878,126 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         return s.slice(0, -1) + ell;
       };
 
-      newPageIfNeeded(80);
-      page.drawText(stripDiacriticsForPdf('Releve'), {
-        x: margin,
-        y: y - titleSize * 0.25,
-        size: titleSize,
+      newPageIfNeeded(260);
+
+      const topY = pageHeight - margin;
+      if (logoImage) {
+        const logoTargetW = 112;
+        const logoScale = logoTargetW / logoImage.width;
+        const logoW = logoTargetW;
+        const logoH = logoImage.height * logoScale;
+        const logoX = (pageWidth - logoW) / 2;
+        page.drawImage(logoImage, {
+          x: logoX,
+          y: topY - logoH,
+          width: logoW,
+          height: logoH
+        });
+        y = topY - logoH - 14;
+      }
+
+      const soaTitle = 'STATEMENT OF ACCOUNT (SOA)';
+      const titleSizePdf = 13;
+      const titleSafe = stripDiacriticsForPdf(soaTitle);
+      const titleW = fontBold.widthOfTextAtSize(titleSafe, titleSizePdf);
+      const titleX = (pageWidth - titleW) / 2;
+      const titleBaselineY = y - titleSizePdf * 0.25;
+      page.drawText(titleSafe, {
+        x: titleX,
+        y: titleBaselineY,
+        size: titleSizePdf,
         font: fontBold,
         color: C.gray900
       });
-      y -= 26;
+      const underlineY = titleBaselineY - 4;
+      page.drawLine({
+        start: { x: titleX, y: underlineY },
+        end: { x: titleX + titleW, y: underlineY },
+        thickness: 0.9,
+        color: C.gray900
+      });
+      y = underlineY - 18;
 
-      const metaBoxH = 38;
-      newPageIfNeeded(metaBoxH + 8);
-      page.drawRectangle({
-        x: margin,
-        y: y - metaBoxH + 2,
-        width: contentW,
-        height: metaBoxH,
-        color: C.indigo50,
-        borderColor: C.indigo100,
-        borderWidth: 0.75
+      const gutter = 14;
+      const half = (contentW - gutter) / 2;
+      const leftColX = margin;
+      const rightColMaxW = half - 2;
+      const lineGap = 11;
+      const bodyPdf = 9;
+      const headPdf = 10;
+
+      const periodCoveredEn = getSoaPeriodCoveredLabel(releveYear, releveDateStart, releveDateEnd);
+      const soaDateEn = new Date().toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
       });
-      const metaBase = y - 12;
-      page.drawText(stripDiacriticsForPdf(`Periode : ${relevePeriodeLabel}`), {
-        x: margin + 10,
-        y: metaBase,
-        size: metaSize,
-        font: fontBold,
-        color: C.gray800
+
+      type SoaRow = { text: string; bold?: boolean; size?: number };
+      const leftSoa: SoaRow[] = [
+        { text: 'RELEVÉ DE COMPTE', bold: true, size: headPdf },
+        { text: 'Companie : SHIPPING GL SARL', size: bodyPdf },
+        { text: 'Addresse : 157 Avenu du livre, Kinshasa/Gombe', size: bodyPdf },
+        { text: 'RCCM : CD/KNG/RCCM/24-B-02901', size: bodyPdf },
+        { text: 'NIF : A1519206T', size: bodyPdf },
+        { text: 'Contact : accounting@shippinggreatlakes.com', size: bodyPdf },
+        { text: `Prepared By : ${agent?.Nom || '-'}`, size: bodyPdf },
+        { text: `Date : ${soaDateEn}`, size: bodyPdf },
+        { text: 'Currency : USD', size: bodyPdf }
+      ];
+      const rightSoa: SoaRow[] = [
+        { text: 'ACCOUNT INFORMATION', bold: true, size: headPdf },
+        { text: `Supplier / Client : ${releveSupplier || '-'}`, size: bodyPdf },
+        {
+          text: `Account Number : ${releveSupplier ? supplierToSoaAccountNumber(releveSupplier) : '—'}`,
+          size: bodyPdf
+        },
+        { text: 'Payment Terms : TBA', size: bodyPdf },
+        { text: `Period Covered : ${periodCoveredEn}`, size: bodyPdf }
+      ];
+
+      const drawSoaColumn = (startX: number, startY: number, colW: number, rows: SoaRow[]) => {
+        let curY = startY;
+        for (const row of rows) {
+          const sz = row.size ?? metaSize;
+          const f = row.bold ? fontBold : font;
+          const display = truncateToWidth(stripDiacriticsForPdf(row.text), colW, f, sz);
+          page.drawText(display, { x: startX, y: curY - sz * 0.25, size: sz, font: f, color: C.gray800 });
+          curY -= lineGap;
+        }
+        return curY;
+      };
+
+      const drawSoaColumnRight = (xRightAlign: number, startY: number, colW: number, rows: SoaRow[]) => {
+        let curY = startY;
+        for (const row of rows) {
+          const sz = row.size ?? metaSize;
+          const f = row.bold ? fontBold : font;
+          const display = truncateToWidth(stripDiacriticsForPdf(row.text), colW, f, sz);
+          const tw = f.widthOfTextAtSize(display, sz);
+          page.drawText(display, {
+            x: xRightAlign - tw,
+            y: curY - sz * 0.25,
+            size: sz,
+            font: f,
+            color: C.gray800
+          });
+          curY -= lineGap;
+        }
+        return curY;
+      };
+
+      const blockTop = y;
+      const yLeftEnd = drawSoaColumn(leftColX, blockTop, half - 2, leftSoa);
+      const yRightEnd = drawSoaColumnRight(pageWidth - margin, blockTop, rightColMaxW, rightSoa);
+      y = Math.min(yLeftEnd, yRightEnd) - 16;
+      page.drawLine({
+        start: { x: margin, y: y + 8 },
+        end: { x: pageWidth - margin, y: y + 8 },
+        thickness: 0.5,
+        color: C.gray200
       });
-      page.drawText(stripDiacriticsForPdf(`Fournisseur : ${releveSupplier || 'Tous'}`), {
-        x: margin + 10,
-        y: metaBase - 14,
-        size: metaSize,
-        font: font,
-        color: C.gray700
-      });
-      y -= metaBoxH + 14;
+      y -= 4;
 
       const paintTableHeader = () => {
         page.drawRectangle({
@@ -1110,6 +1018,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           font: fontBold,
           color: C.gray800
         });
+        drawTextRight(stripDiacriticsForPdf('Date reception'), xRecvL + colRecv - 4, b, headSize, fontBold, C.gray800);
         drawTextRight("Date d'echeance", xEcheanceL + colDue - 4, b, headSize, fontBold, C.gray800);
         drawTextRight('Montant', xMontantL + colAmt - 4, b, headSize, fontBold, C.gray800);
         drawTextRight('Paiement', xPaiementL + colAmt - 4, b, headSize, fontBold, C.gray800);
@@ -1120,7 +1029,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       const advancePageWithTableHeader = () => {
         page = pdf.addPage([pageWidth, pageHeight]);
         y = pageHeight - margin;
-        drawLogoTopRight();
+        drawLogoTopRightSmall();
         paintTableHeader();
       };
 
@@ -1128,10 +1037,26 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         if (y < margin + rowBodyH + 4) {
           advancePageWithTableHeader();
         }
-        if (zebra) {
+        const rowTop = y - rowBodyH + 3;
+        if (isReleveInvoiceEchue(inv)) {
           page.drawRectangle({
             x: margin,
-            y: y - rowBodyH + 3,
+            y: rowTop,
+            width: contentW,
+            height: rowBodyH,
+            color: C.rowEchueBg
+          });
+          page.drawRectangle({
+            x: margin,
+            y: rowTop,
+            width: 3,
+            height: rowBodyH,
+            color: C.red700
+          });
+        } else if (zebra) {
+          page.drawRectangle({
+            x: margin,
+            y: rowTop,
             width: contentW,
             height: rowBodyH,
             color: C.gray50
@@ -1154,16 +1079,29 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           color: C.indigo600
         });
         drawTextRight(
-          formatReleveDueDate(inv.dueDate),
-          xEcheanceL + colDue - 4,
+          formatReleveDueDate(inv.date),
+          xRecvL + colRecv - 4,
           b,
           bodySize,
           font,
           C.gray800
         );
+        const echeanceColor = isReleveInvoiceEchue(inv) ? C.red700 : C.gray800;
+        drawTextRight(
+          formatReleveDueDate(inv.dueDate),
+          xEcheanceL + colDue - 4,
+          b,
+          bodySize,
+          font,
+          echeanceColor
+        );
         drawTextRight(formatMoney(inv.amount), xMontantL + colAmt - 4, b, bodySize, fontBold, C.gray800);
-        drawTextRight(formatMoney(inv.totalPaid), xPaiementL + colAmt - 4, b, bodySize, font, C.gray800);
-        drawTextRight(formatMoney(inv.restAPayer), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red700);
+        drawTextRight(formatMoney(inv.totalPaid), xPaiementL + colAmt - 4, b, bodySize, fontBold, C.gray800);
+        if (isReleveInvoiceFullyPaid(inv)) {
+          drawTextRight('-', xSoldeL + colAmt - 4, b, bodySize, fontBold, C.emerald600);
+        } else {
+          drawTextRight(formatMoney(inv.restAPayer), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red700);
+        }
         page.drawLine({
           start: { x: margin, y: y - rowBodyH + 2 },
           end: { x: pageWidth - margin, y: y - rowBodyH + 2 },
@@ -1174,7 +1112,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       };
 
       const drawFooterRow = () => {
-        if (y < margin + rowFootH + 6) {
+        if (y < margin + rowFootH + 8) {
           advancePageWithTableHeader();
         }
         page.drawRectangle({
@@ -1186,14 +1124,45 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           borderColor: C.slate300,
           borderWidth: 1
         });
-        const b = y - 14;
-        const label = stripDiacriticsForPdf(
+        const totLabel = stripDiacriticsForPdf(
           `Totaux (${rows.length} facture${rows.length > 1 ? 's' : ''})`
         );
-        page.drawText(label, { x: margin + 10, y: b, size: bodySize, font: fontBold, color: C.gray900 });
-        drawTextRight(formatMoney(totals.montant), xMontantL + colAmt - 4, b, bodySize, fontBold, C.gray900);
-        drawTextRight(formatMoney(totals.paiement), xPaiementL + colAmt - 4, b, bodySize, fontBold, C.gray900);
-        drawTextRight(formatMoney(totals.solde), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red800);
+        page.drawText(totLabel, {
+          x: margin + 10,
+          y: y - 26,
+          size: bodySize,
+          font: fontBold,
+          color: C.gray900
+        });
+        const xRight = pageWidth - margin - 10;
+        const lineGapF = 15;
+        let ty = y - 18;
+        drawTextRight(
+          stripDiacriticsForPdf(`Montant Total : ${formatMoney(totals.montant)}`),
+          xRight,
+          ty,
+          bodySize,
+          fontBold,
+          C.gray900
+        );
+        ty -= lineGapF;
+        drawTextRight(
+          stripDiacriticsForPdf(`Montant paye : ${formatMoney(totals.paiement)}`),
+          xRight,
+          ty,
+          bodySize,
+          fontBold,
+          C.gray900
+        );
+        ty -= lineGapF;
+        drawTextRight(
+          stripDiacriticsForPdf(`Solde a payer : ${formatMoney(totals.solde)}`),
+          xRight,
+          ty,
+          bodySize,
+          fontBold,
+          C.red800
+        );
         y -= rowFootH;
       };
 
@@ -1230,12 +1199,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     const exportData = rows.map((inv, idx) => ({
       'N°': idx + 1,
       'N° facture': inv.invoiceNumber,
+      'Date réception': formatReleveDueDate(inv.date),
       'Échéance': formatReleveDueDate(inv.dueDate),
       Montant: inv.amount,
       Paiement: inv.totalPaid,
       Solde: inv.restAPayer,
-      Fournisseur: inv.supplier,
-      'Date réception': inv.date
+      Fournisseur: inv.supplier
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
@@ -1250,40 +1219,36 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       label: 'Non payées',
       count: unpaidInvoices.length,
       amount: unpaidTotal,
-      bar: 'border-l-blue-600',
-      hoverClass:
-        'hover:bg-gradient-to-br hover:from-blue-50 hover:via-blue-100 hover:to-blue-200 hover:shadow-md hover:border-blue-200/80',
-      selectedClass: 'ring-2 ring-blue-300 bg-gradient-to-br from-blue-50 via-blue-100 to-blue-200/90'
+      className:
+        'bg-blue-700 text-white border border-blue-800/80 shadow-md hover:bg-blue-800 hover:shadow-lg',
+      selectedClass: 'ring-2 ring-white/95 shadow-xl'
     },
     {
       key: 'overdue' as const,
       label: 'Échues',
       count: overdueInvoices.length,
       amount: overdueTotal,
-      bar: 'border-l-amber-500',
-      hoverClass:
-        'hover:bg-gradient-to-br hover:from-amber-50 hover:via-amber-100 hover:to-amber-200 hover:shadow-md hover:border-amber-200/80',
-      selectedClass: 'ring-2 ring-amber-300 bg-gradient-to-br from-amber-50 via-amber-100 to-amber-200/90'
+      className:
+        'bg-amber-600 text-white border border-amber-700/80 shadow-md hover:bg-amber-700 hover:shadow-lg',
+      selectedClass: 'ring-2 ring-white/95 shadow-xl'
     },
     {
       key: 'rejected' as const,
       label: 'Rejetées',
       count: rejectedInvoices.length,
       amount: rejectedTotal,
-      bar: 'border-l-red-600',
-      hoverClass:
-        'hover:bg-gradient-to-br hover:from-red-50 hover:via-red-100 hover:to-red-200 hover:shadow-md hover:border-red-200/80',
-      selectedClass: 'ring-2 ring-red-300 bg-gradient-to-br from-red-50 via-red-100 to-red-200/90'
+      className:
+        'bg-red-700 text-white border border-red-800/80 shadow-md hover:bg-red-800 hover:shadow-lg',
+      selectedClass: 'ring-2 ring-white/95 shadow-xl'
     },
     {
       key: 'paid' as const,
       label: 'Payées',
       count: paidInvoices.length,
       amount: paidTotal,
-      bar: 'border-l-emerald-600',
-      hoverClass:
-        'hover:bg-gradient-to-br hover:from-emerald-50 hover:via-emerald-100 hover:to-emerald-200 hover:shadow-md hover:border-emerald-200/80',
-      selectedClass: 'ring-2 ring-emerald-300 bg-gradient-to-br from-emerald-50 via-emerald-100 to-emerald-200/90'
+      className:
+        'bg-emerald-700 text-white border border-emerald-800/80 shadow-md hover:bg-emerald-800 hover:shadow-lg',
+      selectedClass: 'ring-2 ring-white/95 shadow-xl'
     }
   ];
 
@@ -1584,30 +1549,6 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       {/* Header */}
       <div className="bg-gray-100 p-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">{menuTitle}</h1>
-        
-
-        {/* Selected Filter Display */}
-        {(selectedSupplier || selectedDossier) && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-blue-900">Filtre actif:</span>
-              <span className="text-sm font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded">
-                {selectedSupplier ? `Fournisseur: ${selectedSupplier}` : `Dossier: ${selectedDossier}`}
-              </span>
-              <button
-                onClick={() => {
-                  setSelectedSupplier(null);
-                  setSelectedDossier(null);
-                  setSearchTerm('');
-                  setDetailStatusKey(null);
-                }}
-                className="text-xs text-blue-600 hover:text-blue-800 underline ml-auto"
-              >
-                Effacer
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Onglets et Contrôles */}
         <div className="flex items-center justify-between mb-[-20px]">
@@ -1702,54 +1643,80 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         </div>
       </div>
 
-        {/* White Background Container for Filters */}
-        <div className="bg-white p-4 rounded-lg  mt-[-20px]">
-          {/* Advanced Filters */}
-          <div className={`grid gap-2 ${filterDateType === 'custom' ? 'grid-cols-1 md:grid-cols-5' : 'grid-cols-1 md:grid-cols-2'}`}>
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(e.target.value)}
-            className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {years.map(year => (
-              <option key={year} value={year}>{year}</option>
+        {/* Filtres année + période (uniquement après choix fournisseur ou dossier) */}
+        {detailFiltersUnlocked && (
+        <div className="bg-white p-4 rounded-lg mt-[-20px] flex w-full justify-center overflow-x-auto [scrollbar-width:thin]">
+          <div className="inline-flex max-w-full flex-nowrap items-center justify-center gap-4 px-1 py-1 min-h-[3rem]">
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value)}
+              title="Année (date de réception)"
+              className="shrink-0 min-w-[5rem] px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {years.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+            {(
+              [
+                { key: '1m' as const, label: '1 mois' },
+                { key: '3m' as const, label: '3 mois' },
+                { key: '6m' as const, label: '6 mois' },
+                { key: '1y' as const, label: '1 année' },
+                { key: '2y' as const, label: '2 ans' }
+              ] as const
+            ).map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => applySearchPeriodPreset(key)}
+                className={`shrink-0 whitespace-nowrap rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  searchPeriodPreset === key
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-gray-300 bg-gray-50 text-gray-800 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
             ))}
-          </select>
-
-          <select
-            value={filterDateType}
-            onChange={(e) => setFilterDateType(e.target.value)}
-            className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="all">Toutes dates</option>
-            <option value="week">Cette semaine</option>
-            <option value="month">Ce mois</option>
-            <option value="trimester">Ce trimestre</option>
-            <option value="semester">Ce semestre</option>
-            <option value="custom">Personnalisé</option>
-          </select>
-
-          {filterDateType === 'custom' && (
-            <>
+            <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm text-gray-600">
+              <span className="font-medium text-gray-700">Du</span>
               <input
                 type="date"
                 value={filterDateStart}
-                onChange={(e) => setFilterDateStart(e.target.value)}
-                className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onChange={(e) => {
+                  setFilterDateStart(e.target.value);
+                  setSearchPeriodPreset(null);
+                }}
+                className="min-w-[10.5rem] shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              
-              <span className="flex items-center text-xs text-gray-600 justify-center">au</span>
-              
+            </label>
+            <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm text-gray-600">
+              <span className="font-medium text-gray-700">Au</span>
               <input
                 type="date"
                 value={filterDateEnd}
-                onChange={(e) => setFilterDateEnd(e.target.value)}
-                className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onChange={(e) => {
+                  setFilterDateEnd(e.target.value);
+                  setSearchPeriodPreset(null);
+                }}
+                className="min-w-[10.5rem] shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-            </>
-          )}
+            </label>
+            <button
+              type="button"
+              onClick={resetSearchBarFilters}
+              title="Réinitialiser année et plage de dates"
+              aria-label="Réinitialiser les filtres de dates"
+              className="shrink-0 rounded-lg border border-gray-400 bg-white p-2.5 text-gray-700 transition hover:bg-gray-50"
+            >
+              <RotateCcw className="h-4 w-4" strokeWidth={2} />
+            </button>
           </div>
         </div>
+        )}
 
       {/* Content - Two Column Layout */}
       {loading ? (
@@ -1930,20 +1897,19 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                               setDetailStatusKey((prev) => (prev === card.key ? null : card.key))
                             }
                             className={[
-                              'text-left rounded-lg border border-gray-200 bg-white shadow-sm border-l-4 pl-3 pr-3 py-3 transition-all duration-200',
-                              card.bar,
-                              card.hoverClass,
+                              'text-left rounded-xl pl-3 pr-3 py-3 transition-all duration-200',
+                              card.className,
                               selected ? card.selectedClass : ''
                             ].join(' ')}
                           >
-                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-white/90">
                               {card.label}
                             </p>
-                            <p className="text-sm text-gray-600 mt-2">
-                              <span className="font-semibold text-gray-900 tabular-nums">{card.count}</span>{' '}
+                            <p className="text-sm text-white/95 mt-2">
+                              <span className="font-semibold text-white tabular-nums">{card.count}</span>{' '}
                               facture{card.count !== 1 ? 's' : ''}
                             </p>
-                            <p className="text-sm font-semibold text-gray-900 mt-1 tabular-nums">
+                            <p className="text-sm font-semibold text-white mt-1 tabular-nums">
                               {card.key === 'paid' ? 'Montant payé : ' : 'Montant : '}
                               {formatMoney(card.amount)}
                             </p>
@@ -2060,7 +2026,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           aria-modal="true"
           aria-labelledby="releve-modal-title"
         >
-          <div className="flex w-full max-w-6xl flex-col rounded-xl border border-gray-200/80 bg-white shadow-xl h-[min(720px,92vh)] max-h-[92vh]">
+          <div className="flex w-full max-w-6xl flex-col rounded-xl border border-gray-200/80 bg-white shadow-xl h-[min(900px,96vh)] max-h-[96vh]">
             <div className="flex items-center justify-between gap-2 border-b border-gray-200 px-4 py-3 shrink-0">
               <h2 id="releve-modal-title" className="text-xl font-semibold text-gray-900 truncate">
                 Relevé
@@ -2111,8 +2077,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-3">
-                <div className="flex min-w-0 flex-nowrap items-start gap-3">
+              <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-3 space-y-3">
+                <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
                   <div className="relative z-[100] min-w-0 max-w-md flex-1">
                     <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                       Fournisseur
@@ -2137,252 +2103,233 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                       autoComplete="off"
                       className="h-9 w-full rounded-md border border-gray-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                     />
-                    {releveSupplierSuggestionsOpen && (
-                      <ul
-                        className="absolute left-0 right-0 top-full z-[200] mt-1 max-h-52 overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-xl"
-                        role="listbox"
-                      >
-                        <li>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-2 text-left text-gray-600 hover:bg-indigo-50"
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              setReleveSupplier('');
-                              setReleveSupplierInput('');
-                              setReleveSupplierSuggestionsOpen(false);
-                            }}
-                          >
-                            Tous les fournisseurs
-                          </button>
-                        </li>
-                        {releveSupplierPickList.length === 0 ? (
-                          <li className="px-3 py-2 text-xs text-gray-500">Aucun fournisseur correspondant.</li>
-                        ) : (
-                          releveSupplierPickList.map((s) => (
-                            <li key={s}>
-                              <button
-                                type="button"
-                                className="w-full px-3 py-2 text-left text-gray-900 hover:bg-indigo-50"
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  setReleveSupplier(s);
-                                  setReleveSupplierInput(s);
-                                  setReleveSupplierSuggestionsOpen(false);
-                                }}
-                              >
-                                {s}
-                              </button>
-                            </li>
-                          ))
-                        )}
-                      </ul>
-                    )}
+                  {releveSupplierSuggestionsOpen && (
+                    <ul
+                      className="absolute left-0 right-0 top-full z-[200] mt-1 max-h-52 overflow-y-auto rounded-md border border-gray-200 bg-white py-1 text-sm shadow-xl"
+                      role="listbox"
+                    >
+                      <li>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-gray-600 hover:bg-indigo-50"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setReleveSupplier('');
+                            setReleveSupplierInput('');
+                            setReleveSupplierSuggestionsOpen(false);
+                          }}
+                        >
+                          Tous les fournisseurs
+                        </button>
+                      </li>
+                      {releveSupplierPickList.length === 0 ? (
+                        <li className="px-3 py-2 text-xs text-gray-500">Aucun fournisseur correspondant.</li>
+                      ) : (
+                        releveSupplierPickList.map((s) => (
+                          <li key={s}>
+                            <button
+                              type="button"
+                              className="w-full px-3 py-2 text-left text-gray-900 hover:bg-indigo-50"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setReleveSupplier(s);
+                                setReleveSupplierInput(s);
+                                setReleveSupplierSuggestionsOpen(false);
+                              }}
+                            >
+                              {s}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
                   </div>
-
-                  <div className="shrink-0 pt-5">
-                    <span className="sr-only">Période de réception</span>
-                    <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
-                  <select
-                    value={relevePeriodeType}
-                    onChange={(e) => setRelevePeriodeType(e.target.value as RelevePeriodeType)}
-                    title="Type de période"
-                    className="shrink-0 min-w-[8.5rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="annee">Année</option>
-                    <option value="mois">Mois</option>
-                    <option value="semestre">Semestre</option>
-                    <option value="trimestre">Trimestre</option>
-                    <option value="personnalise">Personnalisé</option>
-                  </select>
-
-                  {relevePeriodeType === 'annee' && (
+                  {releveRows.length > 0 && (
+                    <div className="shrink-0 pb-0.5 text-right">
+                      <p className="text-sm font-semibold text-gray-800 tabular-nums">
+                        Totaux ({releveRows.length} facture{releveRows.length > 1 ? 's' : ''})
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="flex w-full justify-center overflow-x-auto [scrollbar-width:thin]">
+                  <div className="inline-flex max-w-full flex-nowrap items-center justify-center gap-4 px-1 py-1 min-h-[3rem]">
                     <select
                       value={releveYear}
                       onChange={(e) => setReleveYear(e.target.value)}
-                      title="Année"
-                      className="shrink-0 min-w-[5.25rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      title="Année (date de réception)"
+                      className="shrink-0 min-w-[5rem] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     >
-                      {years.map((y) => (
-                        <option key={y} value={y}>
-                          {y}
+                      {years.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
                         </option>
                       ))}
                     </select>
-                  )}
-
-                  {relevePeriodeType === 'mois' && (
-                    <>
-                      <select
-                        value={releveYear}
-                        onChange={(e) => setReleveYear(e.target.value)}
-                        title="Année"
-                        className="shrink-0 min-w-[5.25rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    {(
+                      [
+                        { key: '1m' as const, label: '1 mois' },
+                        { key: '3m' as const, label: '3 mois' },
+                        { key: '6m' as const, label: '6 mois' },
+                        { key: '1y' as const, label: '1 année' },
+                        { key: '2y' as const, label: '2 ans' }
+                      ] as const
+                    ).map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => applyRelevePeriodPreset(key)}
+                        className={`shrink-0 whitespace-nowrap rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                          relevePeriodPreset === key
+                            ? 'border-indigo-600 bg-indigo-600 text-white'
+                            : 'border-gray-300 bg-gray-50 text-gray-800 hover:bg-gray-100'
+                        }`}
                       >
-                        {years.map((y) => (
-                          <option key={y} value={y}>
-                            {y}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={releveMonth}
-                        onChange={(e) => setReleveMonth(e.target.value)}
-                        title="Mois"
-                        className="shrink-0 min-w-[5rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                          <option key={m} value={String(m)}>
-                            {String(m).padStart(2, '0')}
-                          </option>
-                        ))}
-                      </select>
-                    </>
-                  )}
-
-                  {relevePeriodeType === 'semestre' && (
-                    <>
-                      <select
-                        value={releveYear}
-                        onChange={(e) => setReleveYear(e.target.value)}
-                        title="Année"
-                        className="shrink-0 min-w-[5.25rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>
-                            {y}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={releveSemester}
-                        onChange={(e) => setReleveSemester(e.target.value)}
-                        title="Semestre"
-                        className="shrink-0 min-w-[6.25rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="1">S1</option>
-                        <option value="2">S2</option>
-                      </select>
-                    </>
-                  )}
-
-                  {relevePeriodeType === 'trimestre' && (
-                    <>
-                      <select
-                        value={releveYear}
-                        onChange={(e) => setReleveYear(e.target.value)}
-                        title="Année"
-                        className="shrink-0 min-w-[5.25rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {years.map((y) => (
-                          <option key={y} value={y}>
-                            {y}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={releveTrimester}
-                        onChange={(e) => setReleveTrimester(e.target.value)}
-                        title="Trimestre"
-                        className="shrink-0 min-w-[6rem] h-10 rounded-md border border-gray-300 bg-white pl-2.5 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="1">T1</option>
-                        <option value="2">T2</option>
-                        <option value="3">T3</option>
-                        <option value="4">T4</option>
-                      </select>
-                    </>
-                  )}
-
-                  {relevePeriodeType === 'personnalise' && (
-                    <>
+                        {label}
+                      </button>
+                    ))}
+                    <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm text-gray-600">
+                      <span className="font-medium text-gray-700">Du</span>
                       <input
                         type="date"
                         value={releveDateStart}
-                        onChange={(e) => setReleveDateStart(e.target.value)}
-                        title="Date début"
-                        className="shrink-0 min-w-[9.5rem] h-10 rounded-md border border-gray-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        onChange={(e) => {
+                          setReleveDateStart(e.target.value);
+                          setRelevePeriodPreset(null);
+                        }}
+                        className="min-w-[10.5rem] shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
-                      <span className="shrink-0 text-xs font-medium text-gray-500">au</span>
+                    </label>
+                    <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm text-gray-600">
+                      <span className="font-medium text-gray-700">Au</span>
                       <input
                         type="date"
                         value={releveDateEnd}
-                        onChange={(e) => setReleveDateEnd(e.target.value)}
-                        title="Date fin"
-                        className="shrink-0 min-w-[9.5rem] h-10 rounded-md border border-gray-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        onChange={(e) => {
+                          setReleveDateEnd(e.target.value);
+                          setRelevePeriodPreset(null);
+                        }}
+                        className="min-w-[10.5rem] shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
-                    </>
-                  )}
-                    </div>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={resetReleveFilters}
+                      title="Réinitialiser année et plage de dates"
+                      aria-label="Réinitialiser les filtres de dates"
+                      className="shrink-0 rounded-lg border border-gray-400 bg-white p-2.5 text-gray-700 transition hover:bg-gray-50"
+                    >
+                      <RotateCcw className="h-4 w-4" strokeWidth={2} />
+                    </button>
                   </div>
                 </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4">
-                <div className="h-full overflow-auto rounded-lg border border-gray-200">
-                  <table className="w-full min-w-[760px] text-sm leading-snug">
-                    <thead className="sticky top-0 z-10 border-b border-gray-200 bg-gray-100">
-                      <tr>
-                        <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N°</th>
-                        <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N° facture</th>
-                        <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Échéance</th>
-                        <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Montant</th>
-                        <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Paiement</th>
-                        <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Solde</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {releveRows.length === 0 ? (
+                <div className="flex h-full min-h-0 flex-col rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+                  <div className="min-h-0 flex-1 overflow-auto p-0.5">
+                    <table className="w-full min-w-[860px] text-sm leading-snug border-collapse">
+                      <thead className="sticky top-0 z-20 border-b border-gray-200 bg-gray-100 shadow-sm">
                         <tr>
-                          <td colSpan={6} className="px-3 py-8 text-center text-sm text-gray-500">
-                            Aucune facture pour ces filtres.
-                          </td>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N°</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N° facture</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Date réception</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Échéance</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Montant</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Paiement</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Solde</th>
                         </tr>
-                      ) : (
-                        releveRows.map((inv, idx) => (
-                          <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                            <td className="px-3 py-2 text-gray-600 tabular-nums align-middle">{idx + 1}</td>
-                            <td className="px-3 py-2 align-middle">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowReleveModal(false);
-                                  handleInvoiceClick(inv);
-                                }}
-                                className="text-left text-sm font-medium text-indigo-600 hover:underline"
-                              >
-                                {inv.invoiceNumber}
-                              </button>
-                            </td>
-                            <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
-                              {formatReleveDueDate(inv.dueDate)}
-                            </td>
-                            <td className="px-3 py-2 text-right font-medium tabular-nums align-middle">
-                              {formatMoney(inv.amount)}
-                            </td>
-                            <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
-                              {formatMoney(inv.totalPaid)}
-                            </td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums text-red-700 align-middle">
-                              {formatMoney(inv.restAPayer)}
+                      </thead>
+                      <tbody>
+                        {releveRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-3 py-8 text-center text-sm text-gray-500">
+                              Aucune facture pour ces filtres.
                             </td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                    {releveRows.length > 0 && (
-                      <tfoot>
-                        <tr className="border-t-2 border-slate-300 bg-slate-100 text-sm font-semibold text-gray-900">
-                          <td colSpan={3} className="px-3 py-2.5">
-                            Totaux ({releveRows.length} facture{releveRows.length > 1 ? 's' : ''})
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(releveTotals.montant)}</td>
-                          <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(releveTotals.paiement)}</td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-red-800">{formatMoney(releveTotals.solde)}</td>
-                        </tr>
-                      </tfoot>
-                    )}
-                  </table>
+                        ) : (
+                          releveRows.map((inv, idx) => (
+                            <tr
+                              key={inv.id}
+                              className={`border-b border-gray-100 transform transition duration-200 ease-out hover:z-[1] hover:scale-[1.003] hover:shadow-md motion-reduce:hover:scale-100 ${
+                                isReleveInvoiceEchue(inv)
+                                  ? 'bg-red-50/90 hover:bg-red-50'
+                                  : 'hover:bg-gray-50/80'
+                              }`}
+                            >
+                              <td
+                                className={`relative px-3 py-2 text-gray-600 tabular-nums align-middle ${
+                                  isReleveInvoiceEchue(inv)
+                                    ? "pl-4 before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-600 before:content-['']"
+                                    : ''
+                                }`}
+                              >
+                                {idx + 1}
+                              </td>
+                              <td className="px-3 py-2 align-middle">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowReleveModal(false);
+                                    handleInvoiceClick(inv);
+                                  }}
+                                  className="text-left text-sm font-medium text-indigo-600 hover:underline"
+                                >
+                                  {inv.invoiceNumber}
+                                </button>
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
+                                {formatReleveDueDate(inv.date)}
+                              </td>
+                              <td
+                                className={`px-3 py-2 text-right tabular-nums align-middle ${
+                                  isReleveInvoiceEchue(inv) ? 'font-medium text-red-800' : 'text-gray-800'
+                                }`}
+                              >
+                                {formatReleveDueDate(inv.dueDate)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle font-bold">
+                                {formatMoney(inv.amount)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle font-bold">
+                                {formatMoney(inv.totalPaid)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums align-middle font-bold">
+                                {isReleveInvoiceFullyPaid(inv) ? (
+                                  <span className="inline-flex items-center justify-end text-lg leading-none text-emerald-600" title="Payée">
+                                    −
+                                  </span>
+                                ) : (
+                                  <span className="text-red-700">{formatMoney(inv.restAPayer)}</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  {releveRows.length > 0 && (
+                    <footer className="shrink-0 z-30 border-t-2 border-slate-300 bg-slate-100 px-4 py-2 shadow-[0_-6px_16px_rgba(0,0,0,0.06)]">
+                      <div className="flex w-full min-w-[860px] justify-end text-sm leading-tight text-gray-900">
+                        <div className="space-y-0 leading-none text-right tabular-nums">
+                          <div className="font-bold leading-tight">
+                            <span className="font-semibold text-gray-800">Montant Total :</span>{' '}
+                            {formatMoney(releveTotals.montant)}
+                          </div>
+                          <div className="font-bold leading-tight">
+                            <span className="font-semibold text-gray-800">Montant payé :</span>{' '}
+                            {formatMoney(releveTotals.paiement)}
+                          </div>
+                          <div className="font-bold leading-tight">
+                            <span className="font-semibold text-gray-800">Solde à payer :</span>{' '}
+                            <span className="text-red-800">{formatMoney(releveTotals.solde)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </footer>
+                  )}
                 </div>
               </div>
             </div>

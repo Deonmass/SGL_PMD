@@ -391,6 +391,26 @@ export interface Invoice {
   "Date de réception": string;
 }
 
+/** Ligne détaillée pour la balance âgée par fournisseur (dashboard) */
+export interface AgedBalanceInvoiceRow {
+  ID: number;
+  numeroFacture: string;
+  dateReception: string;
+  dateEcheance: string | null;
+  statut: string | null;
+  rejet?: unknown;
+  montant: number;
+  paye: number;
+  solde: number;
+}
+
+export interface SupplierAgedInvoicesGrouped {
+  zero30: AgedBalanceInvoiceRow[];
+  thirty60: AgedBalanceInvoiceRow[];
+  sixty90: AgedBalanceInvoiceRow[];
+  plus90: AgedBalanceInvoiceRow[];
+}
+
 export interface MonthlyInvoiceStats {
   month: string;
   monthNumber: number;
@@ -1913,6 +1933,109 @@ export const dashboardService = {
       return filtered as any;
     } catch (err) {
       console.error('Erreur dans getInvoicesByAgeRange():', err);
+      throw err;
+    }
+  },
+
+  /** Factures d'un fournisseur groupées par tranche d'âge (même logique jours que getInvoicesByAge / balance âgée). */
+  async getSupplierAgedInvoicesGrouped(
+    supplier: string,
+    year?: string,
+    region?: string | null,
+    invoiceType?: string
+  ): Promise<SupplierAgedInvoicesGrouped> {
+    const empty: SupplierAgedInvoicesGrouped = {
+      zero30: [],
+      thirty60: [],
+      sixty90: [],
+      plus90: []
+    };
+    const sup = String(supplier || '').trim();
+    if (!sup) return empty;
+
+    try {
+      const { data: factures, error: facturesError } = await supabase
+        .from('FACTURES')
+        .select(
+          'ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Région", "Type de facture", "Échéance", Rejet'
+        );
+
+      if (facturesError) throw facturesError;
+
+      const { data: paiements, error: paiementsError } = await supabase
+        .from('PAIEMENTS')
+        .select('NumeroFacture, montantPaye, datePaiement');
+
+      if (paiementsError) throw paiementsError;
+
+      const lastPaymentDate = new Map<string, string>();
+      const totalPaidByInvoice = new Map<string, number>();
+      if (paiements) {
+        paiements.forEach((p: any) => {
+          const invoiceNumber = String(p.NumeroFacture || '').trim();
+          if (!invoiceNumber) return;
+          const paid = (totalPaidByInvoice.get(invoiceNumber) || 0) + (parseFloat(String(p.montantPaye)) || 0);
+          totalPaidByInvoice.set(invoiceNumber, paid);
+          const paymentDate = p.datePaiement;
+          if (!paymentDate) return;
+          const existing = lastPaymentDate.get(invoiceNumber);
+          if (!existing || new Date(paymentDate) > new Date(existing)) {
+            lastPaymentDate.set(invoiceNumber, String(paymentDate));
+          }
+        });
+      }
+
+      const today = new Date();
+      const grouped: SupplierAgedInvoicesGrouped = {
+        zero30: [],
+        thirty60: [],
+        sixty90: [],
+        plus90: []
+      };
+
+      for (const f of factures || []) {
+        if (String(f.Fournisseur || '').trim() !== sup) continue;
+
+        const receptionDate = new Date(f['Date de réception']);
+        if (Number.isNaN(receptionDate.getTime())) continue;
+
+        if (year && receptionDate.getFullYear().toString() !== year) continue;
+        if (region && f['Région'] !== region) continue;
+        if (!matchesInvoiceType(invoiceType, f['Type de facture'])) continue;
+
+        const invoiceNumber = String(f['Numéro de facture'] || '').trim();
+        const referenceDate = lastPaymentDate.has(invoiceNumber)
+          ? new Date(lastPaymentDate.get(invoiceNumber)!)
+          : today;
+
+        const diffTime = referenceDate.getTime() - receptionDate.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        const montant = parseFloat(String(f.Montant)) || 0;
+        const paye = totalPaidByInvoice.get(invoiceNumber) || 0;
+        const solde = Math.max(0, montant - paye);
+
+        const row: AgedBalanceInvoiceRow = {
+          ID: f.ID,
+          numeroFacture: invoiceNumber,
+          dateReception: String(f['Date de réception'] || ''),
+          dateEcheance: f['Échéance'] ? String(f['Échéance']) : null,
+          statut: f['Statut'] != null && f['Statut'] !== '' ? String(f['Statut']) : null,
+          rejet: f.Rejet,
+          montant,
+          paye,
+          solde
+        };
+
+        if (diffDays <= 30) grouped.zero30.push(row);
+        else if (diffDays <= 60) grouped.thirty60.push(row);
+        else if (diffDays <= 90) grouped.sixty90.push(row);
+        else grouped.plus90.push(row);
+      }
+
+      return grouped;
+    } catch (err) {
+      console.error('Erreur dans getSupplierAgedInvoicesGrouped():', err);
       throw err;
     }
   },
