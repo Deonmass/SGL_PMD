@@ -15,4 +15,7 @@ if (!supabaseUrl || !supabaseKey) {
 
 console.log('✓ Configuration Supabase chargée correctement');
 
+/** URL du projet (pour logs / diagnostics côté client). */
+export const SUPABASE_URL = supabaseUrl;
+
 export const supabase = createClient(supabaseUrl, supabaseKey);

@@ -74,6 +74,32 @@ class CloudStorageService {
   }
 
   /**
+   * Extrait le chemin objet dans le bucket `factures` depuis une URL publique Supabase Storage.
+   */
+  pathFromFacturesPublicUrl(url: string): string | null {
+    const cleaned = url.split('#')[0];
+    const marker = '/storage/v1/object/public/factures/';
+    const markerIndex = cleaned.indexOf(marker);
+    if (markerIndex === -1) return null;
+    const pathOnly = cleaned.slice(markerIndex + marker.length).split('?')[0];
+    try {
+      return decodeURIComponent(pathOnly);
+    } catch {
+      return pathOnly;
+    }
+  }
+
+  /**
+   * Supprime la pièce jointe facture dans le bucket `factures` si l'URL pointe vers ce bucket.
+   * @returns true si rien à supprimer ou suppression OK, false si erreur storage
+   */
+  async deleteInvoiceAttachmentByUrl(url: string | null | undefined): Promise<boolean> {
+    const path = url ? this.pathFromFacturesPublicUrl(String(url)) : null;
+    if (!path) return true;
+    return this.deleteFile(path);
+  }
+
+  /**
    * Supprime un fichier du Cloud Storage
    * @param filePath Le chemin du fichier à supprimer
    */

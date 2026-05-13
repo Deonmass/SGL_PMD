@@ -11,6 +11,7 @@ import * as XLSX from 'xlsx';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { formatMoney } from '../utils/formatters';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import { sendInvoiceNotification } from '../services/notificationService';
 
 interface Facture {
   ID: string;
@@ -134,6 +135,49 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
     loadInvoices(selectedStatus, { silent: true });
   });
+
+  useEffect(() => {
+    const shouldProcessDelay =
+      selectedStatus === 'En attente validation DR' || selectedStatus === 'En attente validation DOP';
+    if (!shouldProcessDelay || allInvoices.length === 0) return;
+
+    const now = new Date();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const thresholdDays = 3;
+
+    const run = async () => {
+      for (const inv of allInvoices) {
+        const invoiceNumber = String(inv['Numéro de facture'] || '').trim();
+        if (!invoiceNumber) continue;
+        const receptionDate = new Date(String(inv['Date de réception'] || ''));
+        if (Number.isNaN(receptionDate.getTime())) continue;
+        const ageDays = Math.floor((now.getTime() - receptionDate.getTime()) / DAY_MS);
+        if (ageDays < thresholdDays) continue;
+
+        const throttleKey = `notif-validation-delay-${invoiceNumber}-${now.toISOString().slice(0, 10)}`;
+        if (window.localStorage.getItem(throttleKey)) continue;
+
+        await sendInvoiceNotification({
+          notificationType: 'validation_delay',
+          invoice: {
+            fournisseur: inv.Fournisseur,
+            numeroFacture: inv['Numéro de facture'],
+            montant: inv.Montant,
+            devise: inv.Devise,
+            region: inv.Région,
+            categorie: inv['Catégorie de charge'],
+            ancienneteJours: ageDays,
+          },
+          createdByEmail: inv.created_by || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+        });
+        window.localStorage.setItem(throttleKey, '1');
+      }
+    };
+
+    void run();
+  }, [allInvoices, selectedStatus, agent?.Nom, agent?.email]);
 
   const loadInvoices = async (statusFilter: string, options?: { silent?: boolean }) => {
     const silent = options?.silent === true;

@@ -54,3 +54,8 @@ table {
   animation: fadeIn 0.3s ease-out forwards;
 }
 
+/* SweetAlert2 au-dessus des modales plein écran (souvent z-50) */
+.swal2-container {
+  z-index: 100000 !important;
+}
+

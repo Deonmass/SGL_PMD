@@ -10,6 +10,8 @@ import { PDFDocument, PDFImage } from 'pdf-lib';
 import EditInvoiceForm from './EditInvoiceForm';
 import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import { isEntryMiseAJour, isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import { sendInvoiceNotification } from '../services/notificationService';
+import { cloudStorageService } from '../services/cloudStorage';
 
 interface ViewInvoiceModalProps {
   invoice: Invoice;
@@ -533,6 +535,23 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       throw new Error(error.message);
     }
 
+    await sendInvoiceNotification({
+      notificationType: validationType === 'dr' ? 'validated_dr' : 'validated_dop',
+      invoice: {
+        fournisseur: currentInvoice.supplier,
+        numeroFacture: currentInvoice.invoiceNumber,
+        montant: currentInvoice.amount,
+        devise: currentInvoice.currency,
+        region: currentInvoice.region,
+        categorie: currentInvoice.chargeCategory,
+        dateValidation: currentDateTime,
+        validePar: agent?.Nom || '',
+      },
+      createdByEmail: currentInvoice.created_by || null,
+      actorName: agent?.Nom || null,
+      actorEmail: agent?.email || null,
+    });
+
     try {
       const actor = buildLogActor(agent);
       const validationLabel = validationType === 'dr' ? 'Validation DR' : 'Validation DOP';
@@ -773,6 +792,13 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         console.error('Erreur journalisation facture (suppression):', logError);
       }
 
+      if (currentInvoice.attachedInvoiceUrl) {
+        const storageOk = await cloudStorageService.deleteInvoiceAttachmentByUrl(currentInvoice.attachedInvoiceUrl);
+        if (!storageOk) {
+          console.warn('Suppression du fichier attaché (storage) impossible ou URL non reconnue:', currentInvoice.attachedInvoiceUrl);
+        }
+      }
+
       const { error } = await supabase
         .from('FACTURES')
         .delete()
@@ -936,6 +962,24 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         showError('Erreur lors du rejet: ' + error.message);
         return;
       }
+
+      await sendInvoiceNotification({
+        notificationType: 'rejected',
+        invoice: {
+          fournisseur: currentInvoice.supplier,
+          numeroFacture: currentInvoice.invoiceNumber,
+          montant: currentInvoice.amount,
+          devise: currentInvoice.currency,
+          region: currentInvoice.region,
+          categorie: currentInvoice.chargeCategory,
+          dateValidation: newRejection.datetime,
+          validePar: agent?.Nom || '',
+          motifRejet: rejectionReason,
+        },
+        createdByEmail: currentInvoice.created_by || null,
+        actorName: agent?.Nom || null,
+        actorEmail: agent?.email || null,
+      });
 
       try {
         const actor = buildLogActor(agent);

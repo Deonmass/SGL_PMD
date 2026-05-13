@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
 import { usePermission } from './hooks/usePermission';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
@@ -63,6 +64,19 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { canView, canCreate, canEdit, canDelete, canManageOwnSignature } = usePermission();
   useBackgroundRealtimeSync();
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const num = params.get('pmdOpenFacture')?.trim();
+    if (!num) return;
+    sessionStorage.setItem('pmd_open_invoice_number', num);
+    params.delete('pmdOpenFacture');
+    const q = params.toString();
+    const path = window.location.pathname;
+    window.history.replaceState({}, '', `${path}${q ? `?${q}` : ''}${window.location.hash || ''}`);
+    setActiveMenu('search');
+  }, []);
 
   const getMenuTitle = (menu: string): string => {
     return menuLabels[menu] || menu;
@@ -301,8 +315,10 @@ function App() {
 
 export default function AppWithAuth() {
   return (
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </ToastProvider>
   );
 }

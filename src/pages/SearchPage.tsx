@@ -769,6 +769,65 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     }
   };
 
+  const mapDbStatutToModalStatus = (raw: string): GlobalInvoice['status'] => {
+    const u = String(raw || '').toUpperCase();
+    if (u.includes('PAY') && !u.includes('PARTIEL')) return 'paid';
+    if (u.includes('REJET')) return 'rejected';
+    if (u.includes('ÉCHU') || u.includes('ECHU')) return 'overdue';
+    if (u.includes('BON') && u.includes('PAYER')) return 'bon-a-payer';
+    if (u.includes('VALID')) return 'validated';
+    return 'pending';
+  };
+
+  useEffect(() => {
+    const pending = sessionStorage.getItem('pmd_open_invoice_number');
+    if (!pending) return;
+    sessionStorage.removeItem('pmd_open_invoice_number');
+    void (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('FACTURES')
+          .select(
+            'ID, "Numéro de facture", Fournisseur, Montant, "Statut", "Date de réception", "Région", Devise, "Catégorie de charge", "Niveau urgence"',
+          )
+          .eq('Numéro de facture', pending)
+          .maybeSingle();
+        if (error || !data) return;
+        const row = data as Record<string, unknown>;
+        const idRaw = row.ID;
+        const idNum = typeof idRaw === 'number' ? idRaw : parseInt(String(idRaw || '0'), 10);
+        const devise = String(row.Devise || 'USD');
+        const currency: GlobalInvoice['currency'] =
+          devise === 'USD' || devise === 'CDF' || devise === 'EUR' ? devise : 'USD';
+        const reg = String(row['Région'] || 'OUEST').toUpperCase();
+        const region: GlobalInvoice['region'] =
+          reg === 'SUD' || reg === 'EST' || reg === 'NORD' ? (reg as GlobalInvoice['region']) : 'OUEST';
+        const urg = String(row['Niveau urgence'] || 'Basse');
+        const urgencyLevel: GlobalInvoice['urgencyLevel'] =
+          urg === 'Moyenne' || urg === 'Haute' ? (urg as GlobalInvoice['urgencyLevel']) : 'Basse';
+        const globalInvoice: GlobalInvoice = {
+          id: idNum,
+          invoiceNumber: String(row['Numéro de facture'] ?? pending),
+          supplier: String(row.Fournisseur || ''),
+          receptionDate: String(row['Date de réception'] || ''),
+          amount: parseFloat(String(row.Montant ?? 0)) || 0,
+          currency,
+          chargeCategory: String(row['Catégorie de charge'] || ''),
+          urgencyLevel,
+          status: mapDbStatutToModalStatus(String(row.Statut || '')),
+          region,
+          validations: 0,
+          emissionDate: String(row['Date de réception'] || ''),
+        };
+        setSelectedInvoiceForModal(globalInvoice);
+        setShowPaiementModal(false);
+        setShowViewInvoiceModal(true);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
+
   const formatMoney = (n: number) =>
     `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 

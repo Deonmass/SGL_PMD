@@ -10,6 +10,7 @@ import { appendFactureLogByInvoiceNumber, buildLogActor } from '../services/acti
 import CompteModal from './modals/CompteModal';
 import Swal from 'sweetalert2';
 import { cloudStorageService } from '../services/cloudStorage';
+import { sendInvoiceNotification } from '../services/notificationService';
 
 interface PaymentData {
   datePaiement: string;
@@ -652,9 +653,31 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         return;
       }
 
+      const montantPaye = Math.round((currentPayment.montantPaye || 0) * 100) / 100;
+      const notificationType = resteAPayer > 0 ? 'partial_payment' : 'paid';
+      await sendInvoiceNotification({
+        notificationType,
+        invoice: {
+          fournisseur: invoice.supplier,
+          numeroFacture: invoice.invoiceNumber,
+          montant: invoice.amount,
+          montantTotal: invoice.amount,
+          montantPaye,
+          soldeRestant: resteAPayer,
+          devise: currentPayment.devise || invoice.currency,
+          region: invoice.region,
+          categorie: invoice.chargeCategory,
+          datePaiement: currentPayment.datePaiement,
+          modePaiement: currentPayment.modePaiement,
+          referencePaiement: currentPayment.referencePaiement,
+        },
+        createdByEmail: invoice.created_by || null,
+        actorName: agent?.Nom || null,
+        actorEmail: agent?.email || null,
+      });
+
       try {
         const actor = buildLogActor({ Nom: agent?.Nom, email: agent?.email });
-        const montantPaye = Math.round((currentPayment.montantPaye || 0) * 100) / 100;
         const mode = currentPayment.modePaiement || 'non précisé';
         await appendFactureLogByInvoiceNumber(
           invoice.invoiceNumber,

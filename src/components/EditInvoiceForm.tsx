@@ -12,6 +12,7 @@ import {
   buildFactureUpdateExplanation,
   buildLogActor,
 } from '../services/activityLogService';
+import { sendInvoiceNotification } from '../services/notificationService';
 
 interface EditInvoiceFormProps {
   invoice: Invoice;
@@ -675,6 +676,49 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
       }
 
       console.log('Facture mise à jour avec succès:', data);
+
+      const oldUrgency = String(invoice.urgencyLevel || '').toLowerCase();
+      const newUrgency = String(formData.urgencyLevel || '').toLowerCase();
+      if (newUrgency === 'urgent' && oldUrgency !== 'urgent') {
+        await sendInvoiceNotification({
+          notificationType: 'urgent',
+          invoice: {
+            fournisseur: formData.supplier,
+            numeroFacture: cleanedInvoiceNumber,
+            montant: convertedAmount,
+            devise: formData.currency,
+            region: formData.region,
+            categorie: formData.chargeCategory,
+            echeance: formData.dueDate,
+          },
+          createdByEmail: invoice.created_by || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+        });
+      }
+
+      const normalizedStatus = String(newStatus || '').toLowerCase();
+      const normalizedOldStatus = String(currentStatus || '').toLowerCase();
+      const isOnHoldStatus =
+        normalizedStatus === 'en attente' ||
+        normalizedStatus.includes('mise en attente');
+      if (isOnHoldStatus && normalizedStatus !== normalizedOldStatus) {
+        await sendInvoiceNotification({
+          notificationType: 'on_hold',
+          invoice: {
+            fournisseur: formData.supplier,
+            numeroFacture: cleanedInvoiceNumber,
+            montant: convertedAmount,
+            devise: formData.currency,
+            region: formData.region,
+            categorie: formData.chargeCategory,
+            raisonAttente: formData.comments || formData.motif || 'Informations complementaires requises',
+          },
+          createdByEmail: invoice.created_by || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+        });
+      }
 
       try {
         const actor = buildLogActor(agent);

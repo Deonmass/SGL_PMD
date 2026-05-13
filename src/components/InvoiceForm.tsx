@@ -8,6 +8,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import { buildLogActor } from '../services/activityLogService';
+import { sendInvoiceNotification } from '../services/notificationService';
+import defaultUserAvatar from '../images/user.jpeg';
 
 interface InvoiceFormProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,6 +74,32 @@ function canonicalizeInvoiceNumber(value?: string | null) {
 function getEntityId(entity: Record<string, unknown>) {
   const id = entity.id ?? entity.ID;
   return id !== undefined && id !== null ? String(id) : '';
+}
+
+function escapeSwalAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/** Pastilles + avatar (style capture 2) */
+function buildNotificationRecipientsHtml(recipients: string[], avatarSrc: string): string {
+  if (!recipients.length) {
+    return '<p style="color:#6b7280;text-align:center;margin:12px 0;">—</p>';
+  }
+  const truncateLocal = (email: string, max = 16) => {
+    const at = email.indexOf('@');
+    const local = at > 0 ? email.slice(0, at) : email;
+    if (local.length <= max) return escapeSwalAttr(local);
+    return `${escapeSwalAttr(local.slice(0, max - 1))}…`;
+  };
+  return `<div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:20px;margin-top:18px;">${recipients
+    .map(
+      (email) =>
+        `<div style="display:flex;flex-direction:column;align-items:center;width:96px;text-align:center;">
+      <img src="${avatarSrc}" alt="" width="56" height="56" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,.06);" />
+      <span style="margin-top:10px;max-width:100%;font-size:11px;font-weight:600;color:#111827;background:#f3f4f6;padding:6px 12px;border-radius:9999px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeSwalAttr(email)}">${truncateLocal(email)}</span>
+    </div>`,
+    )
+    .join('')}</div>`;
 }
 
 function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: InvoiceFormProps & { invoiceTypeScope?: 'operationnel' | 'frais-generaux' }) {
@@ -770,8 +798,80 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       }
 
       console.log('Facture enregistrée avec succès:', data);
-      success('Facture enregistrée avec succès !');
-      Swal.fire('Succès', 'Facture enregistrée avec succès.', 'success');
+      const creationNotifResult = await sendInvoiceNotification({
+        notificationType: 'invoice_registered',
+        invoice: {
+          fournisseur: formData.supplier,
+          numeroFacture: cleanedInvoiceNumber,
+          montant: convertedAmount,
+          devise: formData.currency,
+          numeroDossier: formData.invoiceType === 'frais-generaux' ? '' : formData.fileNumber,
+          region: formData.region,
+          categorie: formData.chargeCategory,
+          echeance: formData.dueDate,
+        },
+        createdByEmail: agent?.email || null,
+        createdByName: agent?.Nom || null,
+        actorName: agent?.Nom || null,
+        actorEmail: agent?.email || null,
+      });
+
+      let urgentNotifResult = creationNotifResult;
+      if (String(formData.urgencyLevel || '').toLowerCase() === 'urgent') {
+        urgentNotifResult = await sendInvoiceNotification({
+          notificationType: 'urgent',
+          invoice: {
+            fournisseur: formData.supplier,
+            numeroFacture: cleanedInvoiceNumber,
+            montant: convertedAmount,
+            devise: formData.currency,
+            region: formData.region,
+            categorie: formData.chargeCategory,
+            echeance: formData.dueDate,
+          },
+          createdByEmail: agent?.email || null,
+          createdByName: agent?.Nom || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+        });
+      }
+
+      const notifOk = creationNotifResult.ok && urgentNotifResult.ok;
+      const notifDetail =
+        !creationNotifResult.ok
+          ? creationNotifResult.reason || creationNotifResult.error || 'échec notification création'
+          : !urgentNotifResult.ok
+            ? urgentNotifResult.reason || urgentNotifResult.error || 'échec notification urgence'
+            : '';
+      const recipientsForUi = Array.from(
+        new Set([
+          ...(creationNotifResult.recipients ?? []),
+          ...(urgentNotifResult.recipients ?? []),
+        ]),
+      ).filter((e) => typeof e === 'string' && e.includes('@'));
+      const recipientsTargetsHtml = buildNotificationRecipientsHtml(recipientsForUi, defaultUserAvatar);
+
+      if (!notifOk) {
+        showError(`Facture créée. Email : ${notifDetail}`);
+        await Swal.fire({
+          icon: creationNotifResult.dryRun || urgentNotifResult.dryRun ? 'warning' : 'error',
+          title: 'Facture enregistrée',
+          html: `<p>La facture <b>${cleanedInvoiceNumber}</b> est bien enregistrée.</p>
+            <p><b>Notification email :</b> ${notifDetail}</p>
+            <p style="margin-bottom:6px;"><b>Destinataires prévus :</b></p>
+            ${recipientsTargetsHtml}
+            <p class="text-sm text-gray-600 mt-3">Configurez les secrets SMTP dans Supabase (Edge Functions → Secrets). Si le message cite encore « RESEND », la fonction sur le serveur n’est pas à jour : redéployez <code>send-invoice-notification</code> (<code>supabase functions deploy send-invoice-notification</code>).</p>`,
+        });
+      } else {
+        success('Facture enregistrée avec succès !');
+        await Swal.fire({
+          icon: 'success',
+          title: 'Facture enregistrée',
+          html: `<p>La facture <b>${cleanedInvoiceNumber}</b> a été enregistrée.</p>
+            <p style="margin-bottom:6px;"><b>Notification envoyée à :</b></p>
+            ${recipientsTargetsHtml}`,
+        });
+      }
       refreshAllData();
       
       // Appeler la fonction onSubmit avec les données complètes
