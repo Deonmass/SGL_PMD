@@ -814,6 +814,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         createdByName: agent?.Nom || null,
         actorName: agent?.Nom || null,
         actorEmail: agent?.email || null,
+        actorRole: agent?.Role?.trim() || null,
       });
 
       let urgentNotifResult = creationNotifResult;
@@ -833,6 +834,7 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
           createdByName: agent?.Nom || null,
           actorName: agent?.Nom || null,
           actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
         });
       }
 

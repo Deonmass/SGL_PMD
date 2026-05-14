@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, RefreshCw, Download, ClipboardList, X, FileDown, FileSpreadsheet, RotateCcw } from 'lucide-react';
+import { Search, RefreshCw, Download, ClipboardList, X, FileText, FileDown, FileSpreadsheet, RotateCcw } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
-import fontkit from '@pdf-lib/fontkit';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import logo2Url from '../images/logo2.png';
+import html2canvas from 'html2canvas';
+import { PDFDocument } from 'pdf-lib';
 import { usePermission } from '../hooks/usePermission';
 import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
@@ -14,11 +13,32 @@ import { Invoice as GlobalInvoice } from '../types';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 
-function stripDiacriticsForPdf(text: string): string {
-  return String(text || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\x00-\xFF]/g, '?');
+function escapeHtml(s: string): string {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function dataUrlToUint8Array(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(',');
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+/** Horodatage type 11/05/2026 11:00 (export relevé) */
+function formatReleveExportTimestamp(): string {
+  return new Date().toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function formatReleveDueDate(d: string | null): string {
@@ -28,51 +48,64 @@ function formatReleveDueDate(d: string | null): string {
   return t.toLocaleDateString('fr-FR');
 }
 
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Écart en mois calendaires + jours (from ≤ to). */
+function diffCalendarMonthsDays(from: Date, to: Date): { months: number; days: number } {
+  let months = to.getMonth() - from.getMonth() + 12 * (to.getFullYear() - from.getFullYear());
+  let days = to.getDate() - from.getDate();
+  if (days < 0) {
+    months -= 1;
+    days += new Date(to.getFullYear(), to.getMonth(), 0).getDate();
+  }
+  return { months, days };
+}
+
+/** Libellé court pour l’écart entre aujourd’hui et la date d’échéance (export / tableaux). */
+function formatTempsRestantEcheance(dueDateStr: string | null, ref: Date = new Date()): string {
+  if (!dueDateStr) return '—';
+  const due = new Date(dueDateStr);
+  if (Number.isNaN(due.getTime())) return '—';
+  const today = startOfLocalDay(ref);
+  const dueDay = startOfLocalDay(due);
+  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / 86400000);
+  if (diffDays === 0) return "Aujourd'hui";
+  if (diffDays > 0) {
+    const { months, days } = diffCalendarMonthsDays(today, dueDay);
+    if (months === 0) return `${diffDays} jrs`;
+    if (days === 0) return `${months} mois`;
+    return `${months} mois et ${days} jrs`;
+  }
+  const late = -diffDays;
+  const { months, days } = diffCalendarMonthsDays(dueDay, today);
+  if (months === 0) return `${late} jrs de retard`;
+  if (days === 0) return `${months} mois de retard`;
+  return `${months} mois et ${days} jrs de retard`;
+}
+
+function buildTotalsFooterHtml(rows: Array<{ label: string; valueHtml: string }>): string {
+  const cells = rows
+    .map(
+      (r) =>
+        `<tr>
+          <td style="padding:2px 10px 2px 0;text-align:right;font-weight:700;color:#374151;white-space:nowrap;">${escapeHtml(r.label)}</td>
+          <td style="padding:2px 0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:9.5rem;">${r.valueHtml}</td>
+        </tr>`,
+    )
+    .join('');
+  return `<div style="margin-top:10px;padding-top:8px;border-top:2px solid #111827;text-align:right;font-size:14px;line-height:1.35;">
+    <table style="margin-left:auto;border-collapse:collapse;"><tbody>${cells}</tbody></table>
+  </div>`;
+}
+
 function isReleveInvoiceEchue(inv: Invoice): boolean {
   return inv.status === 'ÉCHUE';
 }
 
 function isReleveInvoiceFullyPaid(inv: Invoice): boolean {
   return inv.status === 'PAYÉE';
-}
-
-async function embedSearchPagePdfFontsAndLogo(pdf: PDFDocument) {
-  pdf.registerFontkit(fontkit);
-  let font = await pdf.embedFont(StandardFonts.Helvetica);
-  let fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  try {
-    const base = `${(import.meta.env.BASE_URL || '/').replace(/\/?$/, '')}/`;
-    const calibri = await fetch(`${base}fonts/Calibri.ttf`);
-    if (calibri.ok) {
-      const regBuf = await calibri.arrayBuffer();
-      const calBold = await fetch(`${base}fonts/Calibri-Bold.ttf`);
-      const boldBuf = calBold.ok ? await calBold.arrayBuffer() : regBuf;
-      // subset:false évite un bug fréquent (caractères espacés / illisibles) avec TTF + fontkit
-      font = await pdf.embedFont(regBuf, { subset: false });
-      fontBold = await pdf.embedFont(boldBuf, { subset: false });
-    } else {
-      const regBuf = await fetch(`${base}fonts/Carlito-Regular.ttf`).then((r) => r.arrayBuffer());
-      const boldBuf = await fetch(`${base}fonts/Carlito-Bold.ttf`).then((r) => r.arrayBuffer());
-      font = await pdf.embedFont(regBuf, { subset: false });
-      fontBold = await pdf.embedFont(boldBuf, { subset: false });
-    }
-  } catch (fontErr) {
-    console.warn('PDF: polices Calibri/Carlito non chargees, Helvetica utilisee.', fontErr);
-  }
-
-  let logoImage: Awaited<ReturnType<typeof pdf.embedPng>> | null = null;
-  try {
-    const logoBuf = await fetch(logo2Url).then((r) => r.arrayBuffer());
-    try {
-      logoImage = await pdf.embedPng(logoBuf);
-    } catch {
-      logoImage = await pdf.embedJpg(logoBuf);
-    }
-  } catch (logoErr) {
-    console.warn('PDF: logo non charge.', logoErr);
-  }
-
-  return { font, fontBold, logoImage };
 }
 
 interface SearchPageProps {
@@ -146,6 +179,239 @@ interface Invoice {
   isRejected: boolean;
 }
 
+function buildReleveExportInnerHtml(opts: {
+  rows: Invoice[];
+  totals: { montant: number; paiement: number; solde: number };
+  agentNom: string | null;
+  releveSupplier: string;
+  releveYear: string;
+  releveDateStart: string;
+  releveDateEnd: string;
+  formatMoney: (n: number) => string;
+}): string {
+  const {
+    rows,
+    totals,
+    agentNom,
+    releveSupplier,
+    releveYear,
+    releveDateStart,
+    releveDateEnd,
+    formatMoney: fmt,
+  } = opts;
+  const periodCovered = getSoaPeriodCoveredLabel(releveYear, releveDateStart, releveDateEnd);
+  const soaDateEn = new Date().toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  const accountNo = releveSupplier ? supplierToSoaAccountNumber(releveSupplier) : '—';
+
+  const soaLeftHtml = [
+    `<p style="margin:0 0 4px;font-weight:700;color:#111;">RELEVÉ DE COMPTE</p>`,
+    `<p style="margin:0 0 3px;">Companie : SHIPPING GL SARL</p>`,
+    `<p style="margin:0 0 3px;">Addresse : 157 Avenu du livre, Kinshasa/Gombe</p>`,
+    `<p style="margin:0 0 3px;">RCCM : CD/KNG/RCCM/24-B-02901</p>`,
+    `<p style="margin:0 0 3px;">NIF : A1519206T</p>`,
+    `<p style="margin:0 0 3px;">Contact : accounting@shippinggreatlakes.com</p>`,
+    `<p style="margin:0 0 3px;">Prepared By : ${escapeHtml(agentNom || '—')}</p>`,
+    `<p style="margin:0 0 3px;">Date : ${escapeHtml(soaDateEn)}</p>`,
+    `<p style="margin:0;">Currency : USD</p>`,
+  ].join('');
+
+  const soaRightHtml = [
+    `<p style="margin:0 0 4px;font-weight:700;color:#111;">ACCOUNT INFORMATION</p>`,
+    `<p style="margin:0 0 3px;">Supplier / Client : ${escapeHtml(releveSupplier || '—')}</p>`,
+    `<p style="margin:0 0 3px;">Account Number : ${escapeHtml(accountNo)}</p>`,
+    `<p style="margin:0 0 3px;">Payment Terms : TBA</p>`,
+    `<p style="margin:0;">Period Covered : ${escapeHtml(periodCovered)}</p>`,
+  ].join('');
+
+  const th = (label: string, align: 'left' | 'right' = 'left') =>
+    `<th style="padding:10px 8px;text-align:${align};font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.02em;border:1px solid #7f1d1d;">${escapeHtml(label)}</th>`;
+
+  const tableBody = rows
+    .map((inv, idx) => {
+      const echue = isReleveInvoiceEchue(inv);
+      const zebra = idx % 2 === 1;
+      let bg = zebra ? '#f3f4f6' : '#ffffff';
+      if (echue) bg = '#fef2f2';
+      const rowStyle = `background:${bg};${echue ? 'border-left:4px solid #b91c1c;' : ''}`;
+      const soldeCell = isReleveInvoiceFullyPaid(inv)
+        ? '<span style="color:#059669;font-weight:700;">−</span>'
+        : `<span style="color:#991b1b;font-weight:700;">${escapeHtml(fmt(inv.restAPayer))}</span>`;
+      return `<tr style="${rowStyle}">
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;">${idx + 1}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-weight:600;">${escapeHtml(inv.invoiceNumber)}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${escapeHtml(formatReleveDueDate(inv.date))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;${echue ? 'color:#991b1b;font-weight:600;' : ''}">${escapeHtml(formatReleveDueDate(inv.dueDate))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.amount))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.totalPaid))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${soldeCell}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const ts = formatReleveExportTimestamp();
+
+  return `<div id="releve-export-root" style="max-width:100%;box-sizing:border-box;color:#111827;margin:0;padding:0;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px;padding:0;font-size:14px;color:#374151;">
+      <span>${escapeHtml(ts)}</span>
+      <span style="font-weight:700;">PMD — Shipping GL</span>
+    </div>
+    <div style="text-align:center;font-size:22px;font-weight:700;margin:0 0 4px;padding:0;text-transform:uppercase;letter-spacing:0.03em;">RELEVÉ — STATEMENT OF ACCOUNT (SOA)</div>
+    <div style="height:4px;background:#b91c1c;margin-bottom:12px;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;font-size:13px;line-height:1.45;margin-bottom:14px;border:1px solid #e5e7eb;padding:12px 14px;background:#fafafa;border-radius:4px;">
+      <div>${soaLeftHtml}</div>
+      <div style="text-align:right;">${soaRightHtml}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #111827;">
+      <thead>
+        <tr style="background:#991b1b;color:#ffffff;">
+          ${th('N°', 'left')}
+          ${th('N° facture', 'left')}
+          ${th('Date réception', 'right')}
+          ${th('Échéance', 'right')}
+          ${th('Montant', 'right')}
+          ${th('Paiement', 'right')}
+          ${th('Solde', 'right')}
+        </tr>
+      </thead>
+      <tbody>${tableBody}</tbody>
+    </table>
+    ${buildTotalsFooterHtml([
+      { label: 'Montant Total :', valueHtml: escapeHtml(fmt(totals.montant)) },
+      { label: 'Montant payé :', valueHtml: escapeHtml(fmt(totals.paiement)) },
+      {
+        label: 'Solde à payer :',
+        valueHtml: `<span style="color:#991b1b;">${escapeHtml(fmt(totals.solde))}</span>`,
+      },
+    ])}
+  </div>`;
+}
+
+function buildDetailSearchExportInnerHtml(opts: {
+  rows: Invoice[];
+  totals: { montant: number; paiement: number; solde: number };
+  statusLabel: string;
+  filterLabel: string;
+  metaLine: string;
+  formatMoney: (n: number) => string;
+}): string {
+  const { rows, totals, statusLabel, filterLabel, metaLine, formatMoney: fmt } = opts;
+  const th = (label: string, align: 'left' | 'right' = 'left') =>
+    `<th style="padding:10px 8px;text-align:${align};font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.02em;border:1px solid #7f1d1d;">${escapeHtml(label)}</th>`;
+
+  const tableBody = rows
+    .map((inv, idx) => {
+      const echue = isReleveInvoiceEchue(inv);
+      const zebra = idx % 2 === 1;
+      let bg = zebra ? '#f3f4f6' : '#ffffff';
+      if (echue) bg = '#fef2f2';
+      const rowStyle = `background:${bg};${echue ? 'border-left:4px solid #b91c1c;' : ''}`;
+      const soldeCell = isReleveInvoiceFullyPaid(inv)
+        ? '<span style="color:#059669;font-weight:700;">−</span>'
+        : `<span style="color:#991b1b;font-weight:700;">${escapeHtml(fmt(inv.restAPayer))}</span>`;
+      const restant = formatTempsRestantEcheance(inv.dueDate);
+      const retard = restant.includes('retard');
+      const restantStyle =
+        retard || echue ? 'color:#991b1b;font-weight:600;' : restant === "Aujourd'hui" ? 'color:#b45309;font-weight:600;' : '';
+      return `<tr style="${rowStyle}">
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;">${idx + 1}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-weight:600;">${escapeHtml(inv.invoiceNumber)}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${escapeHtml(formatReleveDueDate(inv.date))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;${echue ? 'color:#991b1b;font-weight:600;' : ''}">${escapeHtml(formatReleveDueDate(inv.dueDate))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:12px;${restantStyle}">${escapeHtml(restant)}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.amount))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.totalPaid))}</td>
+        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${soldeCell}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const ts = formatReleveExportTimestamp();
+  const title = `DÉTAIL — ${statusLabel.toUpperCase()}`;
+
+  return `<div id="detail-search-export-root" style="max-width:100%;box-sizing:border-box;color:#111827;margin:0;padding:0;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px;padding:0;font-size:14px;color:#374151;">
+      <span>${escapeHtml(ts)}</span>
+      <span style="font-weight:700;">PMD — Shipping GL</span>
+    </div>
+    <div style="text-align:center;font-size:22px;font-weight:700;margin:0 0 4px;padding:0;text-transform:uppercase;letter-spacing:0.03em;">${escapeHtml(title)}</div>
+    <div style="height:4px;background:#b91c1c;margin-bottom:12px;"></div>
+    <div style="font-size:13px;line-height:1.5;margin-bottom:14px;border:1px solid #e5e7eb;padding:12px 14px;background:#fafafa;border-radius:4px;">
+      <p style="margin:0 0 6px;font-weight:700;color:#111;">${escapeHtml(filterLabel)}</p>
+      <p style="margin:0;">${escapeHtml(metaLine)}</p>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #111827;">
+      <thead>
+        <tr style="background:#991b1b;color:#ffffff;">
+          ${th('N°', 'left')}
+          ${th('N° facture', 'left')}
+          ${th('Date réception', 'right')}
+          ${th("Date d'échéance", 'right')}
+          ${th('Temps restant', 'left')}
+          ${th('Montant facture', 'right')}
+          ${th('Montant payé', 'right')}
+          ${th('Solde à payer', 'right')}
+        </tr>
+      </thead>
+      <tbody>${tableBody}</tbody>
+    </table>
+    ${buildTotalsFooterHtml([
+      { label: 'Montant Total :', valueHtml: escapeHtml(fmt(totals.montant)) },
+      { label: 'Montant payé :', valueHtml: escapeHtml(fmt(totals.paiement)) },
+      {
+        label: 'Solde à payer :',
+        valueHtml: `<span style="color:#991b1b;">${escapeHtml(fmt(totals.solde))}</span>`,
+      },
+    ])}
+  </div>`;
+}
+
+async function exportInnerHtmlToPdf(innerHtml: string, downloadFileName: string): Promise<void> {
+  const wrap = document.createElement('div');
+  wrap.setAttribute('data-pmd-pdf-capture', '1');
+  wrap.style.cssText =
+    'position:fixed;left:-9999px;top:0;width:1280px;background:#ffffff;padding:6px 8px 10px;z-index:2147483646;overflow:visible;';
+  wrap.innerHTML = innerHtml;
+  document.body.appendChild(wrap);
+  try {
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    const canvas = await html2canvas(wrap, {
+      scale: 1.35,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+    });
+    const pdf = await PDFDocument.create();
+    const pngBytes = dataUrlToUint8Array(canvas.toDataURL('image/png', 1.0));
+    const png = await pdf.embedPng(pngBytes);
+    const pageW = 841.89;
+    const pageH = 595.28;
+    const page = pdf.addPage([pageW, pageH]);
+    const scale = Math.min(pageW / png.width, pageH / png.height) * 0.98;
+    const dw = png.width * scale;
+    const dh = png.height * scale;
+    const x = (pageW - dw) / 2;
+    const y = (pageH - dh) / 2;
+    page.drawImage(png, { x, y, width: dw, height: dh });
+    const bytes = await pdf.save();
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = downloadFileName.endsWith('.pdf') ? downloadFileName : `${downloadFileName}.pdf`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } finally {
+    wrap.remove();
+  }
+}
+
 function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'operationnel' }: SearchPageProps) {
   const { canView, hasPermission } = usePermission();
   const { agent } = useAuth();
@@ -168,19 +434,19 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
   const [releveDateStart, setReleveDateStart] = useState<string>('');
   const [releveDateEnd, setReleveDateEnd] = useState<string>('');
   const [relevePeriodPreset, setRelevePeriodPreset] = useState<SearchPeriodPreset | null>(null);
-  const [relevePdfExporting, setRelevePdfExporting] = useState(false);
-  const [detailPdfExporting, setDetailPdfExporting] = useState(false);
+  const [relevePdfBusy, setRelevePdfBusy] = useState(false);
+  const [detailPdfBusy, setDetailPdfBusy] = useState(false);
   const [releveSupplierInput, setReleveSupplierInput] = useState('');
   const [releveSupplierSuggestionsOpen, setReleveSupplierSuggestionsOpen] = useState(false);
 
-  // Selected supplier state
   const [selectedSupplier, setSelectedSupplier] = useState<string | null>(null);
   
   // Tab state for left column
-  const [activeLeftTab, setActiveLeftTab] = useState<'supplier' | 'dossier'>('supplier');
+  const [activeLeftTab, setActiveLeftTab] = useState<'supplier' | 'dossier' | 'gestionnaire'>('supplier');
   
   // Selected dossier state
   const [selectedDossier, setSelectedDossier] = useState<string | null>(null);
+  const [selectedGestionnaire, setSelectedGestionnaire] = useState<string | null>(null);
 
   // Search & Filter states
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -200,7 +466,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
   const [filterDateEnd, setFilterDateEnd] = useState<string>('');
   const [searchPeriodPreset, setSearchPeriodPreset] = useState<SearchPeriodPreset | null>(null);
 
-  const detailFiltersUnlocked = !!(selectedSupplier || selectedDossier);
+  const detailFiltersUnlocked = !!(selectedSupplier || selectedDossier || selectedGestionnaire);
 
   const resetSearchBarFilters = useCallback(() => {
     setSelectedYear(DEFAULT_SEARCH_YEAR);
@@ -355,7 +621,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
 
   useEffect(() => {
     setDetailStatusKey(null);
-  }, [selectedSupplier, selectedDossier]);
+  }, [selectedSupplier, selectedDossier, selectedGestionnaire]);
 
   useDataRefresh(REFRESH_EVENTS.ALL, () => {
     loadSearchData();
@@ -473,6 +739,54 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     return Array.from(dossierMap.values()).sort((a, b) => b.restAPayer - a.restAPayer);
   };
 
+  const getUnpaidManagers = () => {
+    let filteredInvoices = invoices.filter((inv) => inv.restAPayer > 0);
+
+    if (selectedRegion) {
+      filteredInvoices = filteredInvoices.filter((inv) => inv.region === selectedRegion);
+    }
+
+    filteredInvoices = filteredInvoices.filter(passesYearAndReceptionRange);
+
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      filteredInvoices = filteredInvoices.filter((inv) => {
+        const mgr = (inv.manager || '').trim() || 'Non renseigné';
+        return (
+          mgr.toLowerCase().includes(term) ||
+          inv.invoiceNumber.toLowerCase().includes(term) ||
+          inv.supplier.toLowerCase().includes(term)
+        );
+      });
+    }
+
+    const managerMap = new Map<
+      string,
+      { gestionnaire: string; count: number; totalAmount: number; totalPaid: number; restAPayer: number }
+    >();
+
+    filteredInvoices.forEach((inv) => {
+      const key = inv.manager.trim() || 'Non renseigné';
+      const existing = managerMap.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.totalAmount += inv.amount;
+        existing.totalPaid += inv.totalPaid;
+        existing.restAPayer += inv.restAPayer;
+      } else {
+        managerMap.set(key, {
+          gestionnaire: key,
+          count: 1,
+          totalAmount: inv.amount,
+          totalPaid: inv.totalPaid,
+          restAPayer: inv.restAPayer,
+        });
+      }
+    });
+
+    return Array.from(managerMap.values()).sort((a, b) => b.restAPayer - a.restAPayer);
+  };
+
   // Filter invoices based on all criteria
   const getFilteredInvoices = () => {
     let filtered = [...invoices];
@@ -490,6 +804,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           // Rechercher dans les champs de dossier
           return inv.numeroDossier.toLowerCase().includes(term) ||
                  inv.invoiceNumber.toLowerCase().includes(term);
+        } else if (activeLeftTab === 'gestionnaire') {
+          return (
+            inv.manager.toLowerCase().includes(term) ||
+            inv.invoiceNumber.toLowerCase().includes(term) ||
+            inv.supplier.toLowerCase().includes(term)
+          );
         }
         return false;
       });
@@ -523,6 +843,13 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         }
         
         return dossierNumber === selectedDossier;
+      });
+    }
+
+    if (selectedGestionnaire) {
+      filtered = filtered.filter((inv) => {
+        const m = inv.manager.trim() || 'Non renseigné';
+        return m === selectedGestionnaire;
       });
     }
 
@@ -837,415 +1164,24 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       alert('Aucune facture à exporter pour ces filtres.');
       return;
     }
-    setRelevePdfExporting(true);
+    setRelevePdfBusy(true);
     try {
-      const pdf = await PDFDocument.create();
-      const { font, fontBold, logoImage } = await embedSearchPagePdfFontsAndLogo(pdf);
-
-      const pageWidth = 595;
-      const pageHeight = 842;
-      const margin = 40;
-      const contentW = pageWidth - margin * 2;
-
-      const C = {
-        gray900: rgb(0.067, 0.094, 0.153),
-        gray800: rgb(0.122, 0.161, 0.216),
-        gray700: rgb(0.22, 0.255, 0.318),
-        gray600: rgb(0.294, 0.333, 0.388),
-        gray100: rgb(0.953, 0.957, 0.965),
-        gray50: rgb(0.976, 0.98, 0.984),
-        gray200: rgb(0.898, 0.906, 0.922),
-        indigo600: rgb(0.31, 0.275, 0.898),
-        indigo50: rgb(0.933, 0.949, 1),
-        indigo100: rgb(0.78, 0.82, 1),
-        red700: rgb(0.725, 0.11, 0.11),
-        red800: rgb(0.6, 0.094, 0.094),
-        slate100: rgb(0.945, 0.961, 0.976),
-        slate300: rgb(0.796, 0.835, 0.882),
-        rowEchueBg: rgb(1, 0.96, 0.96),
-        emerald600: rgb(0.02, 0.59, 0.41)
-      };
-
-      const colGap = 4;
-      const colAmt = 62;
-      const colDue = 56;
-      const colRecv = 54;
-      const xSoldeL = pageWidth - margin - colAmt;
-      const xPaiementL = xSoldeL - colGap - colAmt;
-      const xMontantL = xPaiementL - colGap - colAmt;
-      const xEcheanceL = xMontantL - colGap - colDue;
-      const xRecvL = xEcheanceL - colGap - colRecv;
-      const xFacture = margin + 30;
-      const maxFactureW = Math.max(56, xRecvL - colGap - xFacture - 4);
-
-      const titleSize = 18;
-      const metaSize = 10;
-      const headSize = 10;
-      const bodySize = 10;
-      const rowBodyH = 16;
-      const rowHeadH = 20;
-      const rowFootH = 62;
-
-      let page = pdf.addPage([pageWidth, pageHeight]);
-      let y = pageHeight - margin;
-
-      const drawLogoTopRightSmall = () => {
-        if (!logoImage) return;
-        const targetW = 56;
-        const scale = targetW / logoImage.width;
-        const w = targetW;
-        const h = logoImage.height * scale;
-        const x = pageWidth - margin - w;
-        const yImg = pageHeight - margin - h;
-        page.drawImage(logoImage, { x, y: yImg, width: w, height: h });
-      };
-
-      const totals = rows.reduce(
-        (acc, inv) => ({
-          montant: acc.montant + inv.amount,
-          paiement: acc.paiement + inv.totalPaid,
-          solde: acc.solde + inv.restAPayer
-        }),
-        { montant: 0, paiement: 0, solde: 0 }
-      );
-
-      const newPageIfNeeded = (needed: number) => {
-        if (y < margin + needed) {
-          page = pdf.addPage([pageWidth, pageHeight]);
-          y = pageHeight - margin;
-        }
-      };
-
-      const drawTextRight = (
-        text: string,
-        xRight: number,
-        baselineY: number,
-        size: number,
-        f: typeof font,
-        color = C.gray800
-      ) => {
-        const safe = stripDiacriticsForPdf(text);
-        const w = f.widthOfTextAtSize(safe, size);
-        page.drawText(safe, { x: xRight - w, y: baselineY, size, font: f, color });
-      };
-
-      const truncateToWidth = (raw: string, maxW: number, f: typeof font, size: number) => {
-        let s = stripDiacriticsForPdf(raw);
-        if (f.widthOfTextAtSize(s, size) <= maxW) return s;
-        const ell = '...';
-        while (s.length > 1 && f.widthOfTextAtSize(s.slice(0, -1) + ell, size) > maxW) s = s.slice(0, -1);
-        return s.slice(0, -1) + ell;
-      };
-
-      newPageIfNeeded(260);
-
-      const topY = pageHeight - margin;
-      if (logoImage) {
-        const logoTargetW = 112;
-        const logoScale = logoTargetW / logoImage.width;
-        const logoW = logoTargetW;
-        const logoH = logoImage.height * logoScale;
-        const logoX = (pageWidth - logoW) / 2;
-        page.drawImage(logoImage, {
-          x: logoX,
-          y: topY - logoH,
-          width: logoW,
-          height: logoH
-        });
-        y = topY - logoH - 14;
-      }
-
-      const soaTitle = 'STATEMENT OF ACCOUNT (SOA)';
-      const titleSizePdf = 13;
-      const titleSafe = stripDiacriticsForPdf(soaTitle);
-      const titleW = fontBold.widthOfTextAtSize(titleSafe, titleSizePdf);
-      const titleX = (pageWidth - titleW) / 2;
-      const titleBaselineY = y - titleSizePdf * 0.25;
-      page.drawText(titleSafe, {
-        x: titleX,
-        y: titleBaselineY,
-        size: titleSizePdf,
-        font: fontBold,
-        color: C.gray900
+      const inner = buildReleveExportInnerHtml({
+        rows,
+        totals: releveTotals,
+        agentNom: agent?.Nom ?? null,
+        releveSupplier,
+        releveYear,
+        releveDateStart,
+        releveDateEnd,
+        formatMoney,
       });
-      const underlineY = titleBaselineY - 4;
-      page.drawLine({
-        start: { x: titleX, y: underlineY },
-        end: { x: titleX + titleW, y: underlineY },
-        thickness: 0.9,
-        color: C.gray900
-      });
-      y = underlineY - 18;
-
-      const gutter = 14;
-      const half = (contentW - gutter) / 2;
-      const leftColX = margin;
-      const rightColMaxW = half - 2;
-      const lineGap = 11;
-      const bodyPdf = 9;
-      const headPdf = 10;
-
-      const periodCoveredEn = getSoaPeriodCoveredLabel(releveYear, releveDateStart, releveDateEnd);
-      const soaDateEn = new Date().toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
-      });
-
-      type SoaRow = { text: string; bold?: boolean; size?: number };
-      const leftSoa: SoaRow[] = [
-        { text: 'RELEVÉ DE COMPTE', bold: true, size: headPdf },
-        { text: 'Companie : SHIPPING GL SARL', size: bodyPdf },
-        { text: 'Addresse : 157 Avenu du livre, Kinshasa/Gombe', size: bodyPdf },
-        { text: 'RCCM : CD/KNG/RCCM/24-B-02901', size: bodyPdf },
-        { text: 'NIF : A1519206T', size: bodyPdf },
-        { text: 'Contact : accounting@shippinggreatlakes.com', size: bodyPdf },
-        { text: `Prepared By : ${agent?.Nom || '-'}`, size: bodyPdf },
-        { text: `Date : ${soaDateEn}`, size: bodyPdf },
-        { text: 'Currency : USD', size: bodyPdf }
-      ];
-      const rightSoa: SoaRow[] = [
-        { text: 'ACCOUNT INFORMATION', bold: true, size: headPdf },
-        { text: `Supplier / Client : ${releveSupplier || '-'}`, size: bodyPdf },
-        {
-          text: `Account Number : ${releveSupplier ? supplierToSoaAccountNumber(releveSupplier) : '—'}`,
-          size: bodyPdf
-        },
-        { text: 'Payment Terms : TBA', size: bodyPdf },
-        { text: `Period Covered : ${periodCoveredEn}`, size: bodyPdf }
-      ];
-
-      const drawSoaColumn = (startX: number, startY: number, colW: number, rows: SoaRow[]) => {
-        let curY = startY;
-        for (const row of rows) {
-          const sz = row.size ?? metaSize;
-          const f = row.bold ? fontBold : font;
-          const display = truncateToWidth(stripDiacriticsForPdf(row.text), colW, f, sz);
-          page.drawText(display, { x: startX, y: curY - sz * 0.25, size: sz, font: f, color: C.gray800 });
-          curY -= lineGap;
-        }
-        return curY;
-      };
-
-      const drawSoaColumnRight = (xRightAlign: number, startY: number, colW: number, rows: SoaRow[]) => {
-        let curY = startY;
-        for (const row of rows) {
-          const sz = row.size ?? metaSize;
-          const f = row.bold ? fontBold : font;
-          const display = truncateToWidth(stripDiacriticsForPdf(row.text), colW, f, sz);
-          const tw = f.widthOfTextAtSize(display, sz);
-          page.drawText(display, {
-            x: xRightAlign - tw,
-            y: curY - sz * 0.25,
-            size: sz,
-            font: f,
-            color: C.gray800
-          });
-          curY -= lineGap;
-        }
-        return curY;
-      };
-
-      const blockTop = y;
-      const yLeftEnd = drawSoaColumn(leftColX, blockTop, half - 2, leftSoa);
-      const yRightEnd = drawSoaColumnRight(pageWidth - margin, blockTop, rightColMaxW, rightSoa);
-      y = Math.min(yLeftEnd, yRightEnd) - 16;
-      page.drawLine({
-        start: { x: margin, y: y + 8 },
-        end: { x: pageWidth - margin, y: y + 8 },
-        thickness: 0.5,
-        color: C.gray200
-      });
-      y -= 4;
-
-      const paintTableHeader = () => {
-        page.drawRectangle({
-          x: margin,
-          y: y - rowHeadH + 4,
-          width: contentW,
-          height: rowHeadH,
-          color: C.gray100,
-          borderColor: C.gray200,
-          borderWidth: 0.5
-        });
-        const b = y - 14;
-        page.drawText('N°', { x: margin + 10, y: b, size: headSize, font: fontBold, color: C.gray800 });
-        page.drawText(stripDiacriticsForPdf('N° facture'), {
-          x: xFacture,
-          y: b,
-          size: headSize,
-          font: fontBold,
-          color: C.gray800
-        });
-        drawTextRight(stripDiacriticsForPdf('Date reception'), xRecvL + colRecv - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight("Date d'echeance", xEcheanceL + colDue - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight('Montant', xMontantL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight('Paiement', xPaiementL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight('Solde', xSoldeL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        y -= rowHeadH + 2;
-      };
-
-      const advancePageWithTableHeader = () => {
-        page = pdf.addPage([pageWidth, pageHeight]);
-        y = pageHeight - margin;
-        drawLogoTopRightSmall();
-        paintTableHeader();
-      };
-
-      const drawBodyRow = (idx: number, inv: (typeof rows)[0], zebra: boolean) => {
-        if (y < margin + rowBodyH + 4) {
-          advancePageWithTableHeader();
-        }
-        const rowTop = y - rowBodyH + 3;
-        if (isReleveInvoiceEchue(inv)) {
-          page.drawRectangle({
-            x: margin,
-            y: rowTop,
-            width: contentW,
-            height: rowBodyH,
-            color: C.rowEchueBg
-          });
-          page.drawRectangle({
-            x: margin,
-            y: rowTop,
-            width: 3,
-            height: rowBodyH,
-            color: C.red700
-          });
-        } else if (zebra) {
-          page.drawRectangle({
-            x: margin,
-            y: rowTop,
-            width: contentW,
-            height: rowBodyH,
-            color: C.gray50
-          });
-        }
-        const b = y - 12;
-        page.drawText(String(idx + 1), {
-          x: margin + 10,
-          y: b,
-          size: bodySize,
-          font: font,
-          color: C.gray600
-        });
-        const invNo = truncateToWidth(inv.invoiceNumber, maxFactureW, font, bodySize);
-        page.drawText(invNo, {
-          x: xFacture,
-          y: b,
-          size: bodySize,
-          font: fontBold,
-          color: C.indigo600
-        });
-        drawTextRight(
-          formatReleveDueDate(inv.date),
-          xRecvL + colRecv - 4,
-          b,
-          bodySize,
-          font,
-          C.gray800
-        );
-        const echeanceColor = isReleveInvoiceEchue(inv) ? C.red700 : C.gray800;
-        drawTextRight(
-          formatReleveDueDate(inv.dueDate),
-          xEcheanceL + colDue - 4,
-          b,
-          bodySize,
-          font,
-          echeanceColor
-        );
-        drawTextRight(formatMoney(inv.amount), xMontantL + colAmt - 4, b, bodySize, fontBold, C.gray800);
-        drawTextRight(formatMoney(inv.totalPaid), xPaiementL + colAmt - 4, b, bodySize, fontBold, C.gray800);
-        if (isReleveInvoiceFullyPaid(inv)) {
-          drawTextRight('-', xSoldeL + colAmt - 4, b, bodySize, fontBold, C.emerald600);
-        } else {
-          drawTextRight(formatMoney(inv.restAPayer), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red700);
-        }
-        page.drawLine({
-          start: { x: margin, y: y - rowBodyH + 2 },
-          end: { x: pageWidth - margin, y: y - rowBodyH + 2 },
-          thickness: 0.35,
-          color: C.gray200
-        });
-        y -= rowBodyH;
-      };
-
-      const drawFooterRow = () => {
-        if (y < margin + rowFootH + 8) {
-          advancePageWithTableHeader();
-        }
-        page.drawRectangle({
-          x: margin,
-          y: y - rowFootH + 4,
-          width: contentW,
-          height: rowFootH,
-          color: C.slate100,
-          borderColor: C.slate300,
-          borderWidth: 1
-        });
-        const totLabel = stripDiacriticsForPdf(
-          `Totaux (${rows.length} facture${rows.length > 1 ? 's' : ''})`
-        );
-        page.drawText(totLabel, {
-          x: margin + 10,
-          y: y - 26,
-          size: bodySize,
-          font: fontBold,
-          color: C.gray900
-        });
-        const xRight = pageWidth - margin - 10;
-        const lineGapF = 15;
-        let ty = y - 18;
-        drawTextRight(
-          stripDiacriticsForPdf(`Montant Total : ${formatMoney(totals.montant)}`),
-          xRight,
-          ty,
-          bodySize,
-          fontBold,
-          C.gray900
-        );
-        ty -= lineGapF;
-        drawTextRight(
-          stripDiacriticsForPdf(`Montant paye : ${formatMoney(totals.paiement)}`),
-          xRight,
-          ty,
-          bodySize,
-          fontBold,
-          C.gray900
-        );
-        ty -= lineGapF;
-        drawTextRight(
-          stripDiacriticsForPdf(`Solde a payer : ${formatMoney(totals.solde)}`),
-          xRight,
-          ty,
-          bodySize,
-          fontBold,
-          C.red800
-        );
-        y -= rowFootH;
-      };
-
-      newPageIfNeeded(rowHeadH + 12);
-      paintTableHeader();
-      rows.forEach((inv, idx) => drawBodyRow(idx, inv, idx % 2 === 1));
-      drawFooterRow();
-
-      const bytes = await pdf.save();
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Releve_${new Date().toISOString().slice(0, 10)}.pdf`;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await exportInnerHtmlToPdf(inner, `Releve_${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
       console.error(e);
       alert(`Erreur export PDF : ${e instanceof Error ? e.message : 'inconnue'}`);
     } finally {
-      setRelevePdfExporting(false);
+      setRelevePdfBusy(false);
     }
   };
 
@@ -1260,6 +1196,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       'N° facture': inv.invoiceNumber,
       'Date réception': formatReleveDueDate(inv.date),
       'Échéance': formatReleveDueDate(inv.dueDate),
+      'Temps restant': formatTempsRestantEcheance(inv.dueDate),
       Montant: inv.amount,
       Paiement: inv.totalPaid,
       Solde: inv.restAPayer,
@@ -1333,273 +1270,42 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       alert('Aucune facture à exporter.');
       return;
     }
-    const statusLabel = statusCardConfigs.find((c) => c.key === detailStatusKey)?.label ?? detailStatusKey;
-    const filterLabel = selectedSupplier
-      ? `Fournisseur : ${selectedSupplier}`
-      : `Dossier : ${selectedDossier ?? ''}`;
-
-    setDetailPdfExporting(true);
+    setDetailPdfBusy(true);
     try {
-      const pdf = await PDFDocument.create();
-      const { font, fontBold, logoImage } = await embedSearchPagePdfFontsAndLogo(pdf);
-      const pageWidth = 595;
-      const pageHeight = 842;
-      const margin = 40;
-      const contentW = pageWidth - margin * 2;
-
-      const C = {
-        gray900: rgb(0.067, 0.094, 0.153),
-        gray800: rgb(0.122, 0.161, 0.216),
-        gray700: rgb(0.22, 0.255, 0.318),
-        gray600: rgb(0.294, 0.333, 0.388),
-        gray100: rgb(0.953, 0.957, 0.965),
-        gray50: rgb(0.976, 0.98, 0.984),
-        gray200: rgb(0.898, 0.906, 0.922),
-        indigo600: rgb(0.31, 0.275, 0.898),
-        indigo50: rgb(0.933, 0.949, 1),
-        indigo100: rgb(0.78, 0.82, 1),
-        red700: rgb(0.725, 0.11, 0.11),
-        red800: rgb(0.6, 0.094, 0.094),
-        slate100: rgb(0.945, 0.961, 0.976),
-        slate300: rgb(0.796, 0.835, 0.882)
-      };
-
-      const colGap = 4;
-      const colAmt = 66;
-      const xSoldeL = pageWidth - margin - colAmt;
-      const xPaiementL = xSoldeL - colGap - colAmt;
-      const xMontantL = xPaiementL - colGap - colAmt;
-      const colDate = 70;
-      const xDateL = xMontantL - colGap - colDate;
-      const xFacture = margin + 10;
-      const maxFactureW = Math.max(88, xDateL - colGap - xFacture - 4);
-
-      const titleSize = 16;
-      const metaSize = 10;
-      const headSize = 9;
-      const bodySize = 9;
-      const rowBodyH = 15;
-      const rowHeadH = 18;
-      const rowFootH = 20;
-
-      let page = pdf.addPage([pageWidth, pageHeight]);
-      let y = pageHeight - margin;
-
-      const drawLogoTopRight = () => {
-        if (!logoImage) return;
-        const targetW = 52;
-        const w = targetW;
-        const h = logoImage.height * (targetW / logoImage.width);
-        page.drawImage(logoImage, {
-          x: pageWidth - margin - w,
-          y: pageHeight - margin - h,
-          width: w,
-          height: h
-        });
-      };
-      drawLogoTopRight();
-
+      const statusLabel = statusCardConfigs.find((c) => c.key === detailStatusKey)?.label ?? detailStatusKey;
+      const filterLabel = selectedSupplier
+        ? `Fournisseur : ${selectedSupplier}`
+        : selectedDossier
+          ? `Dossier : ${selectedDossier}`
+          : `Gestionnaire : ${selectedGestionnaire ?? ''}`;
+      const yearPart = detailFiltersUnlocked ? `Année : ${selectedYear}` : '';
+      const regionPart = selectedRegion ? `Région : ${selectedRegion}` : 'Région : Toutes';
+      const typePart =
+        selectedInvoiceType === 'frais-generaux' ? 'Frais généraux' : 'Opérationnel';
+      const metaLine = `Statut affiché : ${statusLabel} | ${yearPart} | ${regionPart} | Type : ${typePart}`;
       const totals = rows.reduce(
         (acc, inv) => ({
           montant: acc.montant + inv.amount,
           paiement: acc.paiement + inv.totalPaid,
-          solde: acc.solde + inv.restAPayer
+          solde: acc.solde + inv.restAPayer,
         }),
-        { montant: 0, paiement: 0, solde: 0 }
+        { montant: 0, paiement: 0, solde: 0 },
       );
-
-      const newPageIfNeeded = (needed: number) => {
-        if (y < margin + needed) {
-          page = pdf.addPage([pageWidth, pageHeight]);
-          y = pageHeight - margin;
-        }
-      };
-
-      const drawTextRight = (
-        text: string,
-        xRight: number,
-        baselineY: number,
-        size: number,
-        f: typeof font,
-        color = C.gray800
-      ) => {
-        const safe = stripDiacriticsForPdf(text);
-        const w = f.widthOfTextAtSize(safe, size);
-        page.drawText(safe, { x: xRight - w, y: baselineY, size, font: f, color });
-      };
-
-      const truncateToWidth = (raw: string, maxW: number, f: typeof font, size: number) => {
-        let s = stripDiacriticsForPdf(raw);
-        if (f.widthOfTextAtSize(s, size) <= maxW) return s;
-        const ell = '...';
-        while (s.length > 1 && f.widthOfTextAtSize(s.slice(0, -1) + ell, size) > maxW) s = s.slice(0, -1);
-        return s.slice(0, -1) + ell;
-      };
-
-      const formatRowDate = (d: string) => {
-        const t = new Date(d);
-        return Number.isNaN(t.getTime()) ? '-' : t.toLocaleDateString('fr-FR');
-      };
-
-      newPageIfNeeded(72);
-      page.drawText(stripDiacriticsForPdf(`Detail — ${statusLabel}`), {
-        x: margin,
-        y: y - titleSize * 0.2,
-        size: titleSize,
-        font: fontBold,
-        color: C.gray900
+      const inner = buildDetailSearchExportInnerHtml({
+        rows,
+        totals,
+        statusLabel,
+        filterLabel,
+        metaLine,
+        formatMoney,
       });
-      y -= 24;
-
-      const metaBoxH = 36;
-      newPageIfNeeded(metaBoxH + 6);
-      page.drawRectangle({
-        x: margin,
-        y: y - metaBoxH + 2,
-        width: contentW,
-        height: metaBoxH,
-        color: C.indigo50,
-        borderColor: C.indigo100,
-        borderWidth: 0.75
-      });
-      const metaBase = y - 11;
-      page.drawText(stripDiacriticsForPdf(filterLabel), {
-        x: margin + 10,
-        y: metaBase,
-        size: metaSize,
-        font: fontBold,
-        color: C.gray800
-      });
-      page.drawText(stripDiacriticsForPdf(`Statut : ${statusLabel}`), {
-        x: margin + 10,
-        y: metaBase - 13,
-        size: metaSize,
-        font: font,
-        color: C.gray700
-      });
-      y -= metaBoxH + 12;
-
-      const paintTableHeader = () => {
-        page.drawRectangle({
-          x: margin,
-          y: y - rowHeadH + 3,
-          width: contentW,
-          height: rowHeadH,
-          color: C.gray100,
-          borderColor: C.gray200,
-          borderWidth: 0.5
-        });
-        const b = y - 12;
-        page.drawText(stripDiacriticsForPdf('N° facture'), {
-          x: xFacture,
-          y: b,
-          size: headSize,
-          font: fontBold,
-          color: C.gray800
-        });
-        page.drawText(stripDiacriticsForPdf('Date reception'), {
-          x: xDateL,
-          y: b,
-          size: headSize,
-          font: fontBold,
-          color: C.gray800
-        });
-        drawTextRight(stripDiacriticsForPdf('Montant fact.'), xMontantL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight(stripDiacriticsForPdf('Montant paye'), xPaiementL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        drawTextRight(stripDiacriticsForPdf('Solde'), xSoldeL + colAmt - 4, b, headSize, fontBold, C.gray800);
-        y -= rowHeadH + 2;
-      };
-
-      const advancePageWithTableHeader = () => {
-        page = pdf.addPage([pageWidth, pageHeight]);
-        y = pageHeight - margin;
-        drawLogoTopRight();
-        paintTableHeader();
-      };
-
-      const drawBodyRow = (inv: Invoice, zebra: boolean) => {
-        if (y < margin + rowBodyH + 4) advancePageWithTableHeader();
-        if (zebra) {
-          page.drawRectangle({
-            x: margin,
-            y: y - rowBodyH + 2,
-            width: contentW,
-            height: rowBodyH,
-            color: C.gray50
-          });
-        }
-        const b = y - 11;
-        const invNo = truncateToWidth(inv.invoiceNumber, maxFactureW, font, bodySize);
-        page.drawText(invNo, {
-          x: xFacture,
-          y: b,
-          size: bodySize,
-          font: fontBold,
-          color: C.indigo600
-        });
-        page.drawText(stripDiacriticsForPdf(formatRowDate(inv.date)), {
-          x: xDateL,
-          y: b,
-          size: bodySize,
-          font: font,
-          color: C.gray800
-        });
-        drawTextRight(formatMoney(inv.amount), xMontantL + colAmt - 4, b, bodySize, fontBold, C.gray800);
-        drawTextRight(formatMoney(inv.totalPaid), xPaiementL + colAmt - 4, b, bodySize, font, C.gray800);
-        drawTextRight(formatMoney(inv.restAPayer), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red700);
-        page.drawLine({
-          start: { x: margin, y: y - rowBodyH + 1 },
-          end: { x: pageWidth - margin, y: y - rowBodyH + 1 },
-          thickness: 0.35,
-          color: C.gray200
-        });
-        y -= rowBodyH;
-      };
-
-      const drawFooterRow = () => {
-        if (y < margin + rowFootH + 6) advancePageWithTableHeader();
-        page.drawRectangle({
-          x: margin,
-          y: y - rowFootH + 3,
-          width: contentW,
-          height: rowFootH,
-          color: C.slate100,
-          borderColor: C.slate300,
-          borderWidth: 1
-        });
-        const b = y - 12;
-        const label = stripDiacriticsForPdf(
-          `Totaux (${rows.length} facture${rows.length > 1 ? 's' : ''})`
-        );
-        page.drawText(label, { x: margin + 10, y: b, size: bodySize, font: fontBold, color: C.gray900 });
-        drawTextRight(formatMoney(totals.montant), xMontantL + colAmt - 4, b, bodySize, fontBold, C.gray900);
-        drawTextRight(formatMoney(totals.paiement), xPaiementL + colAmt - 4, b, bodySize, fontBold, C.gray900);
-        drawTextRight(formatMoney(totals.solde), xSoldeL + colAmt - 4, b, bodySize, fontBold, C.red800);
-        y -= rowFootH;
-      };
-
-      newPageIfNeeded(rowHeadH + 10);
-      paintTableHeader();
-      rows.forEach((inv, idx) => drawBodyRow(inv, idx % 2 === 1));
-      drawFooterRow();
-
-      const bytes = await pdf.save();
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const safeKey = stripDiacriticsForPdf(detailStatusKey).replace(/[^a-zA-Z0-9_-]/g, '_');
-      a.href = url;
-      a.download = `Detail_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const safeKey = String(detailStatusKey).replace(/[^a-zA-Z0-9_-]/g, '_');
+      await exportInnerHtmlToPdf(inner, `Detail_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
       console.error(e);
       alert(`Erreur export PDF : ${e instanceof Error ? e.message : 'inconnue'}`);
     } finally {
-      setDetailPdfExporting(false);
+      setDetailPdfBusy(false);
     }
   };
 
@@ -1784,11 +1490,13 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         </div>
       ) : (
         <div className="px-4 pb-4 overflow-hidden flex-1 min-h-0">
-          <div className={`flex h-[calc(100%-0.5rem)] min-h-0 gap-0 transition-all duration-300 ease-out ${selectedSupplier ? 'lg:gap-4' : ''}`}>
-            {/* Left Column - 30% - List with Tabs */}
+          <div className={`flex h-[calc(100%-0.5rem)] min-h-0 gap-0 transition-all duration-300 ease-out ${
+            selectedSupplier || selectedDossier || selectedGestionnaire ? 'lg:gap-4' : ''
+          }`}>
+            {/* Colonne gauche ~20 % — listes */}
             <div className={`flex-shrink-0 transition-all duration-300 ease-out ${
-              (selectedSupplier || selectedDossier) 
-                ? 'w-full lg:w-1/3 lg:border-r-4 lg:border-blue-200 lg:pr-4' 
+              selectedSupplier || selectedDossier || selectedGestionnaire
+                ? 'w-full lg:basis-[20%] lg:max-w-[20%] lg:shrink-0 lg:grow-0 lg:border-r-4 lg:border-blue-200 lg:pr-4'
                 : 'w-full lg:w-80'
             } border border-gray-200 rounded-lg bg-white overflow-hidden h-full min-h-0 flex flex-col pb-2`}>
               
@@ -1798,6 +1506,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                   onClick={() => {
                     setActiveLeftTab('supplier');
                     setSelectedDossier(null);
+                    setSelectedGestionnaire(null);
                   }}
                   className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
                     activeLeftTab === 'supplier'
@@ -1812,6 +1521,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                     onClick={() => {
                       setActiveLeftTab('dossier');
                       setSelectedSupplier(null);
+                      setSelectedGestionnaire(null);
                     }}
                     className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
                       activeLeftTab === 'dossier'
@@ -1822,6 +1532,21 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                     Numéro de dossier
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveLeftTab('gestionnaire');
+                    setSelectedSupplier(null);
+                    setSelectedDossier(null);
+                  }}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-all duration-150 ease-out ${
+                    activeLeftTab === 'gestionnaire'
+                      ? 'bg-white text-gray-900 border-b-2 border-blue-500'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Gestionnaire
+                </button>
               </div>
 
               {/* Content */}
@@ -1854,6 +1579,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             onClick={() => {
                               setSelectedSupplier(selectedSupplier === item.supplier ? null : item.supplier);
                               setSelectedDossier(null);
+                              setSelectedGestionnaire(null);
                             }}
                             className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
                               selectedSupplier === item.supplier
@@ -1867,17 +1593,23 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             }`}>
                               <span>Solde à payer: <span className="font-bold">${item.restAPayer.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
                             </div>
-                            <div className={`text-xs mt-1 ${
-                              selectedSupplier === item.supplier ? 'text-blue-100' : 'text-gray-600'
-                            }`}>
-                              <span>{item.count} facture{item.count > 1 ? 's' : ''}</span>
+                            <div className="mt-2">
+                              <span
+                                className={`inline-flex max-w-full items-center rounded-full px-3 py-1 text-[11px] font-semibold leading-tight ${
+                                  selectedSupplier === item.supplier
+                                    ? 'bg-white/20 text-white ring-1 ring-white/50'
+                                    : 'bg-blue-100 text-blue-900 ring-1 ring-blue-200/80'
+                                }`}
+                              >
+                                {item.count} facture{item.count > 1 ? 's' : ''}
+                              </span>
                             </div>
                           </div>
                         ))
                       )}
                     </div>
                   </div>
-                ) : (
+                ) : activeLeftTab === 'dossier' ? (
                   <div className="flex h-full min-h-0 flex-col">
                     <h2 className="text-lg font-bold text-gray-900 mb-4">Numéros de dossier</h2>
                     
@@ -1905,6 +1637,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             onClick={() => {
                               setSelectedDossier(selectedDossier === item.dossier ? null : item.dossier);
                               setSelectedSupplier(null);
+                              setSelectedGestionnaire(null);
                             }}
                             className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
                               selectedDossier === item.dossier
@@ -1918,10 +1651,86 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             }`}>
                               <span>Solde à payer: <span className="font-bold">${item.restAPayer.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
                             </div>
-                            <div className={`text-xs mt-1 ${
-                              selectedDossier === item.dossier ? 'text-blue-100' : 'text-gray-600'
-                            }`}>
-                              <span>{item.count} facture{item.count > 1 ? 's' : ''}</span>
+                            <div className="mt-2">
+                              <span
+                                className={`inline-flex max-w-full items-center rounded-full px-3 py-1 text-[11px] font-semibold leading-tight ${
+                                  selectedDossier === item.dossier
+                                    ? 'bg-white/20 text-white ring-1 ring-white/50'
+                                    : 'bg-blue-100 text-blue-900 ring-1 ring-blue-200/80'
+                                }`}
+                              >
+                                {item.count} facture{item.count > 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-0 flex-col">
+                    <h2 className="text-lg font-bold text-gray-900 mb-4">Gestionnaires</h2>
+
+                    <div className="mb-4 relative">
+                      <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                      <input
+                        type="text"
+                        placeholder="Rechercher un gestionnaire..."
+                        value={searchTerm}
+                        onChange={(e) => handleSearchChange(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto">
+                      {getUnpaidManagers().length === 0 ? (
+                        <div className="text-center py-8 text-gray-500 text-sm">
+                          Aucun gestionnaire avec factures non payées
+                        </div>
+                      ) : (
+                        getUnpaidManagers().map((item) => (
+                          <div
+                            key={item.gestionnaire}
+                            onClick={() => {
+                              setSelectedGestionnaire(
+                                selectedGestionnaire === item.gestionnaire ? null : item.gestionnaire
+                              );
+                              setSelectedSupplier(null);
+                              setSelectedDossier(null);
+                            }}
+                            className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
+                              selectedGestionnaire === item.gestionnaire
+                                ? 'bg-blue-600 text-white shadow-md'
+                                : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
+                            }`}
+                          >
+                            <div className="font-semibold text-sm break-words">{item.gestionnaire}</div>
+                            <div
+                              className={`text-xs mt-1 ${
+                                selectedGestionnaire === item.gestionnaire ? 'text-blue-100' : 'text-gray-600'
+                              }`}
+                            >
+                              <span>
+                                Solde à payer:{' '}
+                                <span className="font-bold">
+                                  $
+                                  {item.restAPayer.toLocaleString('en-US', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })}
+                                </span>
+                              </span>
+                            </div>
+                            <div className="mt-2">
+                              <span
+                                className={`inline-flex max-w-full items-center rounded-full px-3 py-1 text-[11px] font-semibold leading-tight ${
+                                  selectedGestionnaire === item.gestionnaire
+                                    ? 'bg-white/20 text-white ring-1 ring-white/50'
+                                    : 'bg-blue-100 text-blue-900 ring-1 ring-blue-200/80'
+                                }`}
+                              >
+                                {item.count} facture{item.count > 1 ? 's' : ''}
+                              </span>
                             </div>
                           </div>
                         ))
@@ -1932,15 +1741,22 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
               </div>
             </div>
 
-            {/* Right Column - 70% - Invoice Status Sections (Hidden by default, shown only when supplier or dossier selected) */}
-            {(selectedSupplier || selectedDossier) && (
-              <div className="w-full lg:w-2/3 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn h-full min-h-0 flex flex-col pb-2">
+            {/* Right column ~80 % — détail factures */}
+            {(selectedSupplier || selectedDossier || selectedGestionnaire) && (
+              <div className="w-full lg:flex-1 lg:min-w-0 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn h-full min-h-0 flex flex-col pb-2">
+                <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <div className="p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
                   <p className="text-sm font-semibold text-blue-900">
-                    Factures pour: <span className="text-blue-700">
-                      {selectedSupplier ? selectedSupplier : selectedDossier}
+                    Factures pour:{' '}
+                    <span className="text-blue-700">
+                      {selectedSupplier ?? selectedDossier ?? selectedGestionnaire}
                     </span>
-                    {selectedDossier && <span className="text-xs text-blue-600 ml-2">(Numéro de dossier)</span>}
+                    {selectedDossier && (
+                      <span className="text-xs text-blue-600 ml-2">(Numéro de dossier)</span>
+                    )}
+                    {selectedGestionnaire && (
+                      <span className="text-xs text-blue-600 ml-2">(Gestionnaire)</span>
+                    )}
                   </p>
                 </div>
                 <div className="overflow-hidden flex-1 min-h-0 flex flex-col">
@@ -1987,8 +1803,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                           <button
                             type="button"
                             onClick={() => void handleDetailStatusExportPdf()}
-                            disabled={detailPdfExporting || detailInvoicesForCard().length === 0}
-                            className="inline-flex shrink-0 items-center justify-center rounded-lg p-1.5 text-gray-500 transition hover:bg-white hover:text-rose-600 hover:shadow-sm active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+                            disabled={detailPdfBusy || detailInvoicesForCard().length === 0}
+                            className="inline-flex shrink-0 items-center justify-center rounded-lg p-1.5 text-gray-500 transition hover:bg-white hover:text-slate-800 hover:shadow-sm active:scale-95 disabled:pointer-events-none disabled:opacity-35"
                             title={
                               detailInvoicesForCard().length === 0
                                 ? 'Aucune ligne à exporter'
@@ -1996,19 +1812,21 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             }
                             aria-label="Exporter le détail en PDF"
                           >
-                            {detailPdfExporting ? (
-                              <RefreshCw size={18} className="animate-spin text-rose-600" />
+                            {detailPdfBusy ? (
+                              <RefreshCw size={18} className="animate-spin text-slate-700" />
                             ) : (
                               <FileDown size={18} strokeWidth={2} />
                             )}
                           </button>
                         </div>
                         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white flex-1 min-h-0">
-                          <table className="w-full text-xs min-w-[640px]">
+                          <table className="w-full text-xs min-w-[960px]">
                             <thead className="bg-gray-100 sticky top-0 z-10">
                               <tr>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">N° Facture</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Date réception</th>
+                                <th className="px-3 py-2 text-right font-semibold text-gray-900">Date d&apos;échéance</th>
+                                <th className="px-3 py-2 text-left font-semibold text-gray-900">Temps restant</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant facture</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant payé</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Solde à payer</th>
@@ -2017,12 +1835,20 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             <tbody>
                               {detailInvoicesForCard().length === 0 ? (
                                 <tr>
-                                  <td colSpan={5} className="px-4 py-6 text-center text-gray-500">
+                                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
                                     Aucune facture
                                   </td>
                                 </tr>
                               ) : (
-                                detailInvoicesForCard().map((inv) => (
+                                detailInvoicesForCard().map((inv) => {
+                                  const temps = formatTempsRestantEcheance(inv.dueDate);
+                                  const tempsClass =
+                                    temps.includes('retard') || isReleveInvoiceEchue(inv)
+                                      ? 'text-red-700 font-semibold'
+                                      : temps === "Aujourd'hui"
+                                        ? 'text-amber-700 font-semibold'
+                                        : 'text-gray-700';
+                                  return (
                                   <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50">
                                     <td className="px-3 py-2">
                                       <button
@@ -2036,6 +1862,14 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                     <td className="px-3 py-2 text-gray-700">
                                       {new Date(inv.date).toLocaleDateString('fr-FR')}
                                     </td>
+                                    <td
+                                      className={`px-3 py-2 text-right tabular-nums ${
+                                        isReleveInvoiceEchue(inv) ? 'font-semibold text-red-800' : 'text-gray-700'
+                                      }`}
+                                    >
+                                      {formatReleveDueDate(inv.dueDate)}
+                                    </td>
+                                    <td className={`px-3 py-2 text-left ${tempsClass}`}>{temps}</td>
                                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-gray-900">
                                       {formatMoney(inv.amount)}
                                     </td>
@@ -2048,7 +1882,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                       </span>
                                     </td>
                                   </tr>
-                                ))
+                                  );
+                                })
                               )}
                             </tbody>
                           </table>
@@ -2056,6 +1891,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                       </div>
                     )}
                   </div>
+                </div>
                 </div>
               </div>
             )}
@@ -2086,27 +1922,30 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           aria-labelledby="releve-modal-title"
         >
           <div className="flex w-full max-w-6xl flex-col rounded-xl border border-gray-200/80 bg-white shadow-xl h-[min(900px,96vh)] max-h-[96vh]">
-            <div className="flex items-center justify-between gap-2 border-b border-gray-200 px-4 py-3 shrink-0">
+            <div className="flex items-center justify-between gap-2 border-b border-gray-200 px-4 py-3 shrink-0" data-print-exclude>
               <h2 id="releve-modal-title" className="text-xl font-semibold text-gray-900 truncate">
                 Relevé
               </h2>
-              <div className="flex items-center gap-0.5 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => void handleReleveExportPdf()}
-                  disabled={relevePdfExporting || releveRows.length === 0}
-                  className="inline-flex items-center justify-center rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-rose-600 active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+                  disabled={relevePdfBusy || releveRows.length === 0}
+                  className="inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-gray-600 transition hover:bg-gray-100 hover:text-red-900 active:scale-95 disabled:pointer-events-none disabled:opacity-35"
                   title={
                     releveRows.length === 0
                       ? 'Aucune ligne à exporter'
-                      : 'Exporter le relevé au format PDF (filtres courants)'
+                      : 'Exporter le relevé en PDF'
                   }
                   aria-label="Exporter le relevé en PDF"
                 >
-                  {relevePdfExporting ? (
-                    <RefreshCw size={20} className="animate-spin text-rose-600" />
+                  {relevePdfBusy ? (
+                    <RefreshCw size={20} className="animate-spin text-slate-700" />
                   ) : (
-                    <FileDown size={20} strokeWidth={2} />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-red-700/35 bg-red-50 px-2 py-0.5 text-[11px] font-extrabold uppercase tracking-wide text-red-800 shadow-sm">
+                      <FileText size={17} strokeWidth={2.25} className="shrink-0 text-red-700" aria-hidden />
+                      <span>PDF</span>
+                    </span>
                   )}
                 </button>
                 <button
@@ -2136,8 +1975,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-3 space-y-3">
-                <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
+              <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-3 space-y-3" data-print-exclude>
+                <div className="flex w-full flex-wrap items-end justify-between gap-x-4 gap-y-2">
                   <div className="relative z-[100] min-w-0 max-w-md flex-1">
                     <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                       Fournisseur
@@ -2205,11 +2044,9 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                   )}
                   </div>
                   {releveRows.length > 0 && (
-                    <div className="shrink-0 pb-0.5 text-right">
-                      <p className="text-sm font-semibold text-gray-800 tabular-nums">
-                        Totaux ({releveRows.length} facture{releveRows.length > 1 ? 's' : ''})
-                      </p>
-                    </div>
+                    <span className="inline-flex shrink-0 items-center self-end rounded-full border border-slate-300/90 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-800 tabular-nums shadow-sm">
+                      {releveRows.length} facture{releveRows.length > 1 ? 's' : ''}
+                    </span>
                   )}
                 </div>
                 <div className="flex w-full justify-center overflow-x-auto [scrollbar-width:thin]">
@@ -2285,8 +2122,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4">
-                <div className="flex h-full min-h-0 flex-col rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4 flex flex-col">
+                <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
                   <div className="min-h-0 flex-1 overflow-auto p-0.5">
                     <table className="w-full min-w-[860px] text-sm leading-snug border-collapse">
                       <thead className="sticky top-0 z-20 border-b border-gray-200 bg-gray-100 shadow-sm">
@@ -2371,22 +2208,32 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                   </div>
                   {releveRows.length > 0 && (
                     <footer className="shrink-0 z-30 border-t-2 border-slate-300 bg-slate-100 px-4 py-2 shadow-[0_-6px_16px_rgba(0,0,0,0.06)]">
-                      <div className="flex w-full min-w-[860px] justify-end text-sm leading-tight text-gray-900">
-                        <div className="space-y-0 leading-none text-right tabular-nums">
-                          <div className="font-bold leading-tight">
-                            <span className="font-semibold text-gray-800">Montant Total :</span>{' '}
-                            {formatMoney(releveTotals.montant)}
-                          </div>
-                          <div className="font-bold leading-tight">
-                            <span className="font-semibold text-gray-800">Montant payé :</span>{' '}
-                            {formatMoney(releveTotals.paiement)}
-                          </div>
-                          <div className="font-bold leading-tight">
-                            <span className="font-semibold text-gray-800">Solde à payer :</span>{' '}
-                            <span className="text-red-800">{formatMoney(releveTotals.solde)}</span>
-                          </div>
-                        </div>
-                      </div>
+                      <table className="ml-auto w-auto border-collapse text-sm text-gray-900 tabular-nums">
+                        <tbody>
+                          <tr>
+                            <td className="py-0.5 pr-3 text-right font-semibold text-gray-800 whitespace-nowrap align-baseline">
+                              Montant Total :
+                            </td>
+                            <td className="w-[9.25rem] py-0.5 text-right font-bold align-baseline">
+                              {formatMoney(releveTotals.montant)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="py-0.5 pr-3 text-right font-semibold text-gray-800 whitespace-nowrap align-baseline">
+                              Montant payé :
+                            </td>
+                            <td className="py-0.5 text-right font-bold align-baseline">{formatMoney(releveTotals.paiement)}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-0.5 pr-3 text-right font-semibold text-gray-800 whitespace-nowrap align-baseline">
+                              Solde à payer :
+                            </td>
+                            <td className="py-0.5 text-right font-bold text-red-800 align-baseline">
+                              {formatMoney(releveTotals.solde)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </footer>
                   )}
                 </div>

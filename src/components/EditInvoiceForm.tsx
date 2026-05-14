@@ -694,6 +694,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
           createdByEmail: invoice.created_by || null,
           actorName: agent?.Nom || null,
           actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
         });
       }
 
@@ -717,6 +718,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
           createdByEmail: invoice.created_by || null,
           actorName: agent?.Nom || null,
           actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
         });
       }
 

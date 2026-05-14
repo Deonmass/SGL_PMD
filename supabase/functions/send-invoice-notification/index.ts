@@ -39,6 +39,8 @@ type InvoiceData = {
   categorie?: string;
   dateValidation?: string;
   validePar?: string;
+  /** Rôle affiché après le nom du validateur / rejeteur (souvent issu de actorRole côté client) */
+  valideParRole?: string;
   datePaiement?: string;
   modePaiement?: string;
   referencePaiement?: string;
@@ -58,6 +60,7 @@ type Payload = {
   createdByName?: string | null;
   actorName?: string | null;
   actorEmail?: string | null;
+  actorRole?: string | null;
   dryRun?: boolean;
 };
 
@@ -70,7 +73,10 @@ const smtpPort = Number(Deno.env.get("SMTP_PORT") ?? "587");
 const smtpUser = Deno.env.get("SMTP_USER");
 const smtpPass = Deno.env.get("SMTP_PASS");
 const smtpFrom = Deno.env.get("SMTP_FROM");
-const smtpFromName = Deno.env.get("SMTP_FROM_NAME") ?? "";
+/** Nom affiché dans le client mail (From). Défaut si SMTP_FROM_NAME absent ou vide. */
+const DEFAULT_SMTP_FROM_NAME = "SGL Notification Service";
+const smtpFromName =
+  (Deno.env.get("SMTP_FROM_NAME") ?? "").trim() || DEFAULT_SMTP_FROM_NAME;
 const smtpSecure =
   Deno.env.get("SMTP_SECURE") === "true" ||
   Deno.env.get("SMTP_SECURE") === "1" ||
@@ -190,6 +196,22 @@ const isDG = (agent: AgentRow): boolean => {
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Nom suivi du rôle entre parenthèses (rôle = champ facture ou profil émetteur). */
+const formatNameWithRole = (name: unknown, role: unknown, fallbackRole?: string): string => {
+  const n = asText(name).trim();
+  const r = asText(role).trim() || (fallbackRole ? String(fallbackRole).trim() : "");
+  if (!n) return "-";
+  return r ? `${n} (${r})` : n;
+};
+
+function mergeInvoiceWithActorRole(inv: InvoiceData, actorRole?: string | null): InvoiceData {
+  const explicit = asText(inv.valideParRole).trim();
+  const actor = asText(actorRole).trim();
+  const role = explicit || actor;
+  if (!role) return { ...inv };
+  return { ...inv, valideParRole: role };
+}
 
 function uint8ToBase64(bytes: Uint8Array): string {
   const chunk = 0x8000;
@@ -357,14 +379,17 @@ const buildEmailContent = async (
     case "validated_dr": {
       const subject = "Facture validee par le Directeur Regional";
       const vp = asText(i.validePar);
+      const vpRole = asText(i.valideParRole).trim();
+      const vpDisplay = formatNameWithRole(i.validePar, i.valideParRole, "Directeur regional");
+      const introRoleLabel = escapeHtml(vpRole || "Directeur régional");
       const text = [
         "Bonjour,",
         "",
-        `La facture ci-dessous a ete validee par ${vp} (Directeur Regional).`,
+        `La facture ci-dessous a ete validee par ${vpDisplay}.`,
         "",
         "Details :",
         ...detailsRows.map(([k, v]) => `* ${k} : ${v}`),
-        `* Valide par : ${vp}`,
+        `* Valide par : ${vpDisplay}`,
         `* Date de validation : ${formatDate(i.dateValidation)}`,
         "",
         "Statut :",
@@ -372,13 +397,13 @@ const buildEmailContent = async (
       ].join("\n");
       const rows: [string, string][] = [
         ...detailsRows,
-        ["Validé par", vp],
+        ["Validé par", vpDisplay],
         ["Date de validation", formatDate(i.dateValidation)],
       ];
       const html = w({
         headerTitle: "Validation DR",
         headerRef: asText(i.numeroFacture),
-        introHtml: `<p style="margin:0 0 12px;">La facture ci-dessous a été validée par <strong>${escapeHtml(vp)}</strong> <span style="color:#6b7280;">(Directeur régional)</span>.</p>`,
+        introHtml: `<p style="margin:0 0 12px;">La facture ci-dessous a été validée par <strong>${escapeHtml(vp)}</strong> <span style="color:#6b7280;">(${introRoleLabel})</span>.</p>`,
         rows,
         statusLabel: "Statut",
         statusValue: "Validée DR — en attente du niveau suivant",
@@ -389,14 +414,17 @@ const buildEmailContent = async (
     case "validated_dop": {
       const subject = "Facture validee par le Directeur des Operations";
       const vp = asText(i.validePar);
+      const vpRole = asText(i.valideParRole).trim();
+      const vpDisplay = formatNameWithRole(i.validePar, i.valideParRole, "Directeur des operations");
+      const introRoleLabel = escapeHtml(vpRole || "Directeur des opérations");
       const text = [
         "Bonjour,",
         "",
-        `La facture suivante a ete validee par ${vp} (Directeur des Operations).`,
+        `La facture suivante a ete validee par ${vpDisplay}.`,
         "",
         "Details :",
         ...detailsRows.map(([k, v]) => `* ${k} : ${v}`),
-        `* Valide par : ${vp}`,
+        `* Valide par : ${vpDisplay}`,
         `* Date : ${formatDate(i.dateValidation)}`,
         "",
         "Statut :",
@@ -404,13 +432,13 @@ const buildEmailContent = async (
       ].join("\n");
       const rows: [string, string][] = [
         ...detailsRows,
-        ["Validé par", vp],
+        ["Validé par", vpDisplay],
         ["Date", formatDate(i.dateValidation)],
       ];
       const html = w({
         headerTitle: "Validation DOP",
         headerRef: asText(i.numeroFacture),
-        introHtml: `<p style="margin:0 0 12px;">La facture suivante a été validée par <strong>${escapeHtml(vp)}</strong> <span style="color:#6b7280;">(Directeur des opérations)</span>.</p>`,
+        introHtml: `<p style="margin:0 0 12px;">La facture suivante a été validée par <strong>${escapeHtml(vp)}</strong> <span style="color:#6b7280;">(${introRoleLabel})</span>.</p>`,
         rows,
         statusLabel: "Statut",
         statusValue: "Validée DOP — transmission Finance",
@@ -421,14 +449,17 @@ const buildEmailContent = async (
     case "validated_dg": {
       const subject = "Facture validee par la Direction Generale";
       const vp = asText(i.validePar);
+      const vpRole = asText(i.valideParRole).trim();
+      const vpDisplay = formatNameWithRole(i.validePar, i.valideParRole, "Direction generale");
+      const introRoleLabel = escapeHtml(vpRole || "Direction générale");
       const text = [
         "Bonjour,",
         "",
-        `La Direction Generale a valide la facture suivante pour paiement (par ${vp}).`,
+        `La Direction Generale a valide la facture suivante pour paiement (${vpDisplay}).`,
         "",
         "Details :",
         ...detailsRows.map(([k, v]) => `* ${k} : ${v}`),
-        `* Valide par : ${vp}`,
+        `* Valide par : ${vpDisplay}`,
         `* Date : ${formatDate(i.dateValidation)}`,
         "",
         "Statut :",
@@ -436,13 +467,13 @@ const buildEmailContent = async (
       ].join("\n");
       const rows: [string, string][] = [
         ...detailsRows,
-        ["Validé par", vp],
+        ["Validé par", vpDisplay],
         ["Date", formatDate(i.dateValidation)],
       ];
       const html = w({
         headerTitle: "Validation DG",
         headerRef: asText(i.numeroFacture),
-        introHtml: `<p style="margin:0 0 12px;">La <strong>Direction générale</strong> a validé la facture suivante pour paiement, par <strong>${escapeHtml(vp)}</strong>.</p>`,
+        introHtml: `<p style="margin:0 0 12px;">La <strong>Direction générale</strong> a validé la facture suivante pour paiement, par <strong>${escapeHtml(vp)}</strong> <span style="color:#6b7280;">(${introRoleLabel})</span>.</p>`,
         rows,
         statusLabel: "Statut",
         statusValue: "Validation finale approuvée",
@@ -452,6 +483,7 @@ const buildEmailContent = async (
     }
     case "rejected": {
       const subject = "Facture rejetee - Action corrective requise";
+      const rejectDisplay = formatNameWithRole(i.validePar, i.valideParRole);
       const text = [
         "Bonjour,",
         "",
@@ -459,7 +491,7 @@ const buildEmailContent = async (
         "",
         "Details :",
         ...detailsRows.map(([k, v]) => `* ${k} : ${v}`),
-        `* Rejetee par : ${asText(i.validePar)}`,
+        `* Rejetee par : ${rejectDisplay}`,
         `* Date : ${formatDate(i.dateValidation)}`,
         "",
         "Motif du rejet :",
@@ -472,7 +504,7 @@ const buildEmailContent = async (
       ].join("\n");
       const rows: [string, string][] = [
         ...detailsRows,
-        ["Rejetée par", asText(i.validePar)],
+        ["Rejetée par", rejectDisplay],
         ["Date", formatDate(i.dateValidation)],
         ["Motif du rejet", asText(i.motifRejet)],
       ];
@@ -788,7 +820,7 @@ Deno.serve(async (req) => {
 
     const { subject, text, html, appUrl } = await buildEmailContent(
       payload.notificationType,
-      payload.invoice ?? {},
+      mergeInvoiceWithActorRole(payload.invoice ?? {}, payload.actorRole),
     );
     const textBody = appUrl ? `${text}\n\n---\nOuvrir dans PMD : ${appUrl}` : text;
 
@@ -803,7 +835,7 @@ Deno.serve(async (req) => {
           transport: "smtp",
           reason: payload.dryRun
             ? "dryRun requested"
-            : "SMTP not configured (set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM; optional SMTP_FROM_NAME, SMTP_SECURE)",
+            : "SMTP not configured (set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM; optional SMTP_FROM_NAME override, SMTP_SECURE)",
           notificationType: payload.notificationType,
           recipients: recipientList,
           mailTo: primaryTo,

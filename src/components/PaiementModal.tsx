@@ -674,6 +674,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         createdByEmail: invoice.created_by || null,
         actorName: agent?.Nom || null,
         actorEmail: agent?.email || null,
+        actorRole: agent?.Role?.trim() || null,
       });
 
       try {

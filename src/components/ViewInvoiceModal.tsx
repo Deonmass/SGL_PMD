@@ -550,6 +550,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
       createdByEmail: currentInvoice.created_by || null,
       actorName: agent?.Nom || null,
       actorEmail: agent?.email || null,
+      actorRole: agent?.Role?.trim() || null,
     });
 
     try {
@@ -979,6 +980,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         createdByEmail: currentInvoice.created_by || null,
         actorName: agent?.Nom || null,
         actorEmail: agent?.email || null,
+        actorRole: agent?.Role?.trim() || null,
       });
 
       try {

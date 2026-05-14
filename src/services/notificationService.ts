@@ -24,6 +24,8 @@ export interface InvoiceNotificationPayload {
     categorie?: string;
     dateValidation?: string;
     validePar?: string;
+    /** Rôle de la personne citée (ex. validePar), affiché après le nom dans l’e-mail */
+    valideParRole?: string;
     datePaiement?: string;
     modePaiement?: string;
     referencePaiement?: string;
@@ -39,6 +41,8 @@ export interface InvoiceNotificationPayload {
   createdByName?: string | null;
   actorName?: string | null;
   actorEmail?: string | null;
+  /** Rôle métier de l’utilisateur qui déclenche la notification (affiché après son nom) */
+  actorRole?: string | null;
   dryRun?: boolean;
 }
 

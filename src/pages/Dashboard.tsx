@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { RefreshCw, Search, X, ChevronDown } from 'lucide-react';
+import { RefreshCw, Search, X, FileSpreadsheet, FileText } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import InvoiceDetailModal from '../components/InvoiceDetailModal';
 import PaiementModal from '../components/PaiementModal';
@@ -24,6 +24,8 @@ import { formatCurrency } from '../utils/formatters';
 import { useAuth } from '../contexts/AuthContext';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import { downloadSupplierAgedBalanceExcel } from '../utils/agedBalanceSupplierExcel';
+import { downloadSupplierAgedBalancePdf } from '../utils/agedBalanceSupplierPdf';
 
 interface DashboardProps {
   activeMenu?: string;
@@ -220,6 +222,28 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
     if (!q) return names.slice(0, 40);
     return names.filter((n) => n.toLowerCase().includes(q)).slice(0, 40);
   }, [supplierAgeData, balanceAgeSupplierInput]);
+
+  /** Pourcentages des cartes principales (rapports aux montants total / non payé). */
+  const globalStatPercents = useMemo(() => {
+    if (!stats) {
+      return {
+        nonPayeeVsTotal: undefined as number | undefined,
+        payeeVsTotal: undefined as number | undefined,
+        bonAPayerVsNonPayee: undefined as number | undefined,
+        attenteVsNonPayee: undefined as number | undefined,
+      };
+    }
+    const t = stats.totalMontant;
+    const np = stats.nonPayeeMontant;
+    const pct = (num: number, den: number) =>
+      den > 0 && Number.isFinite(num) && Number.isFinite(den) ? (100 * num) / den : 0;
+    return {
+      nonPayeeVsTotal: pct(np, t),
+      payeeVsTotal: pct(stats.payeeMontant, t),
+      bonAPayerVsNonPayee: pct(stats.bonAPayerMontant, np),
+      attenteVsNonPayee: pct(stats.enAttenteValidationMontant, np),
+    };
+  }, [stats]);
 
   useEffect(() => {
     if (invoiceTypeScope === 'frais-generaux' && (activeTab === 2 || activeTab === 3)) {
@@ -1241,6 +1265,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     compactAmountSize="reduced"
                     icon="calculator"
                     onHover={true}
+                    cornerPercent={100}
+                    cornerPercentCaption="Du montant total des factures"
                   />
                   <StatCard
                     label="Factures Non Payées"
@@ -1256,6 +1282,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     compactAmountSize="reduced"
                     icon="x-circle"
                     onHover={true}
+                    cornerPercent={globalStatPercents.nonPayeeVsTotal}
+                    cornerPercentCaption="Du montant total des factures"
                   />
                   <StatCard
                     label="Facture Bon à Payer"
@@ -1271,6 +1299,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     compactAmountSize="reduced"
                     icon="alert"
                     onHover={true}
+                    cornerPercent={globalStatPercents.bonAPayerVsNonPayee}
+                    cornerPercentCaption="Du montant des factures non payées"
                   />
                   <StatCard
                     label="Facture Payée"
@@ -1286,6 +1316,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     compactAmountSize="reduced"
                     icon="trending"
                     onHover={true}
+                    cornerPercent={globalStatPercents.payeeVsTotal}
+                    cornerPercentCaption="Du montant total des factures"
                   />
                 </div>
 
@@ -1380,6 +1412,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     bgColor="bg-orange-500"
                     textColor="text-white"
                     onDetailClick={() => openModal('enAttenteValidation')}
+                    cornerPercent={globalStatPercents.attenteVsNonPayee}
+                    cornerPercentCaption="Du montant des factures non payées"
                   />
                   <StatCard
                     label="Normales"
@@ -1827,26 +1861,65 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
 
                       return (
                         <div className="overflow-hidden border border-gray-200 bg-white shadow-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-3 py-2">
+                            <span className="text-xs font-medium text-gray-600">
+                              Détail par tranche d&apos;âge (toutes les catégories affichées)
+                            </span>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-800 shadow-sm hover:bg-emerald-50"
+                                onClick={() =>
+                                  balanceAgeSupplierSelected &&
+                                  balanceAgeSupplierGrouped &&
+                                  downloadSupplierAgedBalanceExcel({
+                                    supplier: balanceAgeSupplierSelected,
+                                    year: selectedYear,
+                                    regionLabel:
+                                      selectedRegionBulletin ?? 'Toutes les régions',
+                                    grouped: balanceAgeSupplierGrouped,
+                                  })
+                                }
+                              >
+                                <FileSpreadsheet className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+                                Excel
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-800 shadow-sm hover:bg-red-50"
+                                onClick={() => {
+                                  if (!balanceAgeSupplierSelected || !balanceAgeSupplierGrouped) return;
+                                  void downloadSupplierAgedBalancePdf({
+                                    supplier: balanceAgeSupplierSelected,
+                                    year: selectedYear,
+                                    regionLabel:
+                                      selectedRegionBulletin ?? 'Toutes les régions',
+                                    grouped: balanceAgeSupplierGrouped,
+                                  }).catch((err) => {
+                                    console.error(err);
+                                  });
+                                }}
+                              >
+                                <FileText className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+                                PDF
+                              </button>
+                            </div>
+                          </div>
                           {AGED_BALANCE_CATEGORY_BLOCKS.map(({ key, title, accent }) => {
                             const rows = g[key];
                             if (!rows.length) return null;
                             const catTotals = sumAgedBalanceMoney(rows);
                             return (
-                              <details
+                              <div
                                 key={key}
-                                className={`group border-l-4 ${accent} border-gray-200 bg-white`}
+                                className={`border-l-4 ${accent} border-gray-200 bg-white`}
                               >
-                                <summary className="flex cursor-pointer list-none items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800 [&::-webkit-details-marker]:hidden">
-                                  <ChevronDown
-                                    className="h-4 w-4 shrink-0 text-gray-500 transition-transform duration-200 group-open:rotate-180"
-                                    aria-hidden
-                                    strokeWidth={2}
-                                  />
+                                <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800">
                                   <span>{title}</span>
                                   <span className="ml-auto text-xs font-normal text-gray-500">
                                     {rows.length} facture{rows.length > 1 ? 's' : ''}
                                   </span>
-                                </summary>
+                                </div>
                                 <div className="overflow-x-auto">
                                   <table className="w-full min-w-[760px] text-left text-xs">
                                     <thead className="border-b border-gray-200 bg-white text-[11px] font-semibold uppercase tracking-wide text-gray-600">
@@ -1918,7 +1991,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                                     </tfoot>
                                   </table>
                                 </div>
-                              </details>
+                              </div>
                             );
                           })}
                           <div className="border-t-2 border-slate-300 bg-slate-100 px-3 py-1 text-xs leading-tight text-gray-900">
@@ -2416,6 +2489,11 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
         invoices={modal.invoices}
         invoiceTypeScope={invoiceTypeScope}
         summary={modal.summary}
+        exportMeta={{
+          year: selectedYear,
+          regionDataLabel:
+            selectedRegionBulletin ?? 'Toutes_les_regions',
+        }}
       />
 
       {/* Modal Top 10 Fournisseurs */}

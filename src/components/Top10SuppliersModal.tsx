@@ -1,6 +1,7 @@
-import { X, Printer, Maximize2, Mail } from 'lucide-react';
+import { X, Maximize2, FileText, RefreshCw } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import html2canvas from 'html2canvas';
+import { PDFDocument } from 'pdf-lib';
 import {
   ComposedChart,
   Bar,
@@ -29,6 +30,56 @@ interface Top10SuppliersModalProps {
   }>;
   loading?: boolean;
   year?: string;
+}
+
+function dataUrlToUint8Array(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(',');
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+/** Capture du modal → PDF une page (A4 paysage), retourne le Blob. */
+async function buildModalPdfBlob(el: HTMLElement): Promise<Blob> {
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  const canvas = await html2canvas(el, {
+    scale: 1.35,
+    useCORS: true,
+    logging: false,
+    backgroundColor: '#ffffff',
+    ignoreElements: (node) =>
+      node instanceof Element && node.closest('[data-modal-chrome]') !== null,
+  });
+  const pdf = await PDFDocument.create();
+  const pngBytes = dataUrlToUint8Array(canvas.toDataURL('image/png', 1.0));
+  const png = await pdf.embedPng(pngBytes);
+  const pageW = 841.89;
+  const pageH = 595.28;
+  const page = pdf.addPage([pageW, pageH]);
+  const scale = Math.min(pageW / png.width, pageH / png.height) * 0.98;
+  const dw = png.width * scale;
+  const dh = png.height * scale;
+  const x = (pageW - dw) / 2;
+  const y = (pageH - dh) / 2;
+  page.drawImage(png, { x, y, width: dw, height: dh });
+  const bytes = await pdf.save();
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+
+/** Capture du conteneur → une seule page PDF téléchargée. */
+async function exportElementToSinglePagePdf(el: HTMLElement, downloadFileName: string): Promise<void> {
+  const blob = await buildModalPdfBlob(el);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = downloadFileName.endsWith('.pdf') ? downloadFileName : `${downloadFileName}.pdf`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 const EMPTY_ANIMATION_SVG =
@@ -75,6 +126,7 @@ function Top10SuppliersModal({
   const [paymentInvoice, setPaymentInvoice] = useState<AppInvoice | null>(null);
   const [selectedYear, setSelectedYear] = useState('2026');
   const [selectedMonth, setSelectedMonth] = useState('all');
+  const [exportPdfBusy, setExportPdfBusy] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
 
   const months = [
@@ -101,6 +153,12 @@ function Top10SuppliersModal({
     SUD: 'Sud'
   };
 
+  useEffect(() => {
+    if (isOpen && year) {
+      setSelectedYear(year);
+    }
+  }, [isOpen, year]);
+
   // Force region to agent's region if they don't have TOUT access
   useEffect(() => {
     if (agent?.REGION && agent.REGION !== 'TOUT') {
@@ -122,8 +180,6 @@ function Top10SuppliersModal({
       
       // Trier par montant décroissant
       const sorted = [...(data || [])].sort((a, b) => b.montantNonPaye - a.montantNonPaye);
-      
-      console.log('Données chargées (toutes régions):', sorted);
       setSuppliersData(sorted);
     } catch (err) {
       console.error('Erreur lors du chargement des fournisseurs:', err);
@@ -230,112 +286,20 @@ function Top10SuppliersModal({
     }
   };
 
-  const handlePrint = () => {
+  const handleExportPdf = async () => {
     if (!modalRef.current) return;
-
-    // Créer une copie du modal pour l'impression
-    const printContent = modalRef.current.cloneNode(true) as HTMLElement;
-    
-    // Masquer les boutons de contrôle dans la copie
-    const buttons = printContent.querySelectorAll('button');
-    buttons.forEach(btn => btn.style.display = 'none');
-
-    // Créer une nouvelle fenêtre pour l'impression
-    const printWindow = window.open('', '', 'height=800,width=1200');
-    if (!printWindow) return;
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          @page { size: landscape; margin: 0.5cm; }
-          body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
-            padding: 1rem;
-            width: 100%;
-            height: 100%;
-          }
-          .bg-white { background: white; }
-          .bg-gray-200 { background: #e5e7eb; }
-          .bg-gray-100 { background: #f3f4f6; }
-          .text-sm { font-size: 0.875rem; }
-          .text-xs { font-size: 0.75rem; }
-          .font-bold { font-weight: 700; }
-          .font-medium { font-weight: 500; }
-          .border-b { border-bottom: 1px solid #e5e7eb; }
-          .shadow-2xl { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); }
-          .rounded-lg { border-radius: 0.5rem; }
-          .overflow-hidden { overflow: hidden; }
-          .flex { display: flex; }
-          .flex-col { flex-direction: column; }
-          .items-center { align-items: center; }
-          .justify-between { justify-content: space-between; }
-          .gap-2 { gap: 0.5rem; }
-          .gap-4 { gap: 1rem; }
-          .p-3 { padding: 0.75rem; }
-          .p-4 { padding: 1rem; }
-          .px-4 { padding-left: 1rem; padding-right: 1rem; }
-          .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
-          .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
-          .mt-4 { margin-top: 1rem; }
-          .ml-auto { margin-left: auto; }
-          .w-full { width: 100%; }
-          .max-w-6xl { max-width: 80rem; }
-          .text-gray-900 { color: #111827; }
-          .text-gray-700 { color: #374151; }
-          .text-gray-600 { color: #4b5563; }
-          .text-red-600 { color: #dc2626; }
-          .bg-red-100 { background: #fee2e2; }
-        </style>
-      </head>
-      <body>
-        ${printContent.innerHTML}
-      </body>
-      </html>
-    `);
-    printWindow.document.close();
-
-    setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 250);
-  };
-
-  const handleShareByEmail = async () => {
-    if (!modalRef.current) return;
-
+    setExportPdfBusy(true);
     try {
-      const canvas = await html2canvas(modalRef.current, {
-        backgroundColor: '#ffffff',
-        scale: 2,
-      });
-
-      // Convert to blob for email
-      const blob = await new Promise((resolve) => {
-        canvas.toBlob(resolve, 'image/png');
-      });
-
-      const subject = encodeURIComponent(`Top 10 Fournisseurs - Région: ${regionLabels[activeRegion]} (${selectedYear})`);
-      const body = encodeURIComponent(
-        `Bonjour,\n\nVeuillez trouver ci-joint l'analyse des Top 10 Fournisseurs pour la région ${regionLabels[activeRegion]} en ${selectedYear}.\n\nRésumé:\nLes 3 premiers fournisseurs représentent ${calculateTopSuppliersPercentage()}% du montant total.\n\nCordialement`
-      );
-      
-      const mailtoLink = `https://mail.google.com/mail/u/0/?ui=2&fs=1&su=${subject}&body=${body}`;
-      window.open(mailtoLink, '_blank');
-
-      // Copy image to clipboard
-      navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob })
-      ]).catch(() => {
-        console.log('Image prête à coller dans le mail');
-      });
+      const regionPart = String(regionLabels[activeRegion] || 'region')
+        .replace(/[^\w.-]+/g, '_')
+        .slice(0, 24);
+      const fname = `Top10_Fournisseurs_${selectedYear}_${regionPart}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      await exportElementToSinglePagePdf(modalRef.current, fname);
     } catch (err) {
-      console.error('Erreur lors de la préparation de l\'image:', err);
-      alert('Erreur lors de la préparation de l\'image');
+      console.error('Export PDF Top 10:', err);
+      alert(`Export PDF impossible : ${err instanceof Error ? err.message : 'erreur inconnue'}`);
+    } finally {
+      setExportPdfBusy(false);
     }
   };
 
@@ -346,25 +310,37 @@ function Top10SuppliersModal({
   const currentSuppliers = getFilteredSuppliers(suppliersData);
   const currentLoading = dataLoading;
 
-  const topSuppliersChartData = currentSuppliers.map((s) => ({
-    name: s.fournisseur.substring(0, 12),
+  const topSuppliersChartData = currentSuppliers.map((s, idx) => ({
+    /** Clé unique pour Recharts (évite collisions si noms tronqués identiques). */
+    name: `sup-${idx}`,
+    tickLabel:
+      s.fournisseur.length > 16 ? `${s.fournisseur.slice(0, 15)}…` : s.fournisseur,
     fullName: s.fournisseur,
     nombreFactures: s.nombreFactures,
     montant: Math.round(s.montantNonPaye * 100) / 100,
   }));
 
-  const supplierInvoicesChartData = selectedInvoices.map((invoice: any) => {
-    const invoiceNumber = String(invoice['Numéro de facture'] || invoice.invoiceNumber || '').trim();
-    const receptionDate = String(invoice['Date de réception'] || invoice.receptionDate || '');
-    const amount = Number(invoice.Montant ?? invoice.amount ?? 0) || 0;
-    return {
-      name: invoiceNumber ? invoiceNumber.substring(0, 12) : 'Facture',
-      fullName: invoiceNumber || 'Facture',
-      nombreFactures: 1,
-      montant: Math.round(amount * 100) / 100,
-      receptionDate,
-    };
-  });
+  const receptionTimeMs = (invoice: Record<string, unknown>): number => {
+    const raw = String(invoice['Date de réception'] ?? invoice.receptionDate ?? '');
+    const t = new Date(raw);
+    return Number.isNaN(t.getTime()) ? Number.POSITIVE_INFINITY : t.getTime();
+  };
+
+  const supplierInvoicesChartData = [...selectedInvoices]
+    .sort((a, b) => receptionTimeMs(a as Record<string, unknown>) - receptionTimeMs(b as Record<string, unknown>))
+    .map((invoice: Record<string, unknown>, idx: number) => {
+      const invoiceNumber = String(invoice['Numéro de facture'] || invoice.invoiceNumber || '').trim();
+      const receptionDate = String(invoice['Date de réception'] || invoice.receptionDate || '');
+      const amount = Number(invoice.Montant ?? invoice.amount ?? 0) || 0;
+      return {
+        name: `inv-${idx}-${invoiceNumber || 'x'}`,
+        tickLabel: invoiceNumber || '—',
+        fullName: invoiceNumber || 'Facture',
+        nombreFactures: 1,
+        montant: Math.round(amount * 100) / 100,
+        receptionDate,
+      };
+    });
 
   const displayedChartData = showSupplierInvoicesInChart && selectedSupplier
     ? supplierInvoicesChartData
@@ -394,22 +370,26 @@ function Top10SuppliersModal({
               <h2 className="text-sm font-bold text-gray-900">
                 Top 10 Fournisseurs
               </h2>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5" data-modal-chrome>
                 <button
-                  onClick={handlePrint}
-                  className="p-2 text-gray-600 hover:text-white hover:bg-red-500 rounded-full transition-all duration-200"
-                  title="Imprimer"
+                  type="button"
+                  onClick={() => void handleExportPdf()}
+                  disabled={exportPdfBusy}
+                  className="inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-gray-600 transition hover:bg-red-50 hover:text-red-800 disabled:pointer-events-none disabled:opacity-40"
+                  title="Exporter le contenu du modal en PDF (une page)"
+                  aria-label="Exporter en PDF"
                 >
-                  <Printer size={18} />
+                  {exportPdfBusy ? (
+                    <RefreshCw size={18} className="animate-spin text-red-600" />
+                  ) : (
+                    <span className="inline-flex items-center gap-0.5 rounded-md border border-red-700/30 bg-red-50 px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-red-800">
+                      <FileText size={14} strokeWidth={2.25} className="shrink-0 text-red-700" aria-hidden />
+                      PDF
+                    </span>
+                  )}
                 </button>
                 <button
-                  onClick={handleShareByEmail}
-                  className="p-2 text-gray-600 hover:text-white hover:bg-red-500 rounded-full transition-all duration-200"
-                  title="Partager par mail"
-                >
-                  <Mail size={18} />
-                </button>
-                <button
+                  type="button"
                   onClick={() => setIsFullScreen(!isFullScreen)}
                   className="p-2 text-gray-600 hover:text-white hover:bg-red-500 rounded-full transition-all duration-200"
                   title="Plein écran"
@@ -417,6 +397,7 @@ function Top10SuppliersModal({
                   <Maximize2 size={18} />
                 </button>
                 <button
+                  type="button"
                   onClick={onClose}
                   className="p-2 text-gray-600 hover:text-white hover:bg-red-500 rounded-full transition-all duration-200"
                   title="Fermer"
@@ -580,32 +561,36 @@ function Top10SuppliersModal({
                           <ResponsiveContainer width="100%" height="100%">
                             <ComposedChart
                               data={displayedChartData}
-                              margin={{ top: 20, right: 30, left: 30, bottom: 80 }}
-                              onClick={(state) => {
+                              margin={{
+                                top: 20,
+                                right: 30,
+                                left: 30,
+                                bottom: showSupplierInvoicesInChart ? 112 : 80,
+                              }}
+                              onClick={(state: { activeTooltipIndex?: number }) => {
+                                const idx = state?.activeTooltipIndex;
+                                if (typeof idx !== 'number' || idx < 0 || idx >= displayedChartData.length) return;
+                                const row = displayedChartData[idx];
+                                if (!row?.fullName) return;
                                 if (showSupplierInvoicesInChart) {
-                                  if (state.activeLabel) {
-                                    const invoicePoint = displayedChartData.find((d) => d.name === state.activeLabel);
-                                    if (invoicePoint?.fullName) {
-                                      handleInvoiceClick(invoicePoint.fullName);
-                                    }
-                                  }
-                                  return;
-                                }
-                                if (state.activeLabel) {
-                                  const supplier = displayedChartData.find(d => d.name === state.activeLabel);
-                                  if (supplier) {
-                                    handleSupplierClick(supplier.fullName);
-                                  }
+                                  handleInvoiceClick(row.fullName);
+                                } else {
+                                  handleSupplierClick(row.fullName);
                                 }
                               }}
                             >
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="name"
-                                angle={0}
-                                textAnchor="middle"
-                                height={80}
-                                tick={{ fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
+                                angle={showSupplierInvoicesInChart ? -42 : 0}
+                                textAnchor={showSupplierInvoicesInChart ? 'end' : 'middle'}
+                                height={showSupplierInvoicesInChart ? 100 : 88}
+                                interval={0}
+                                tick={{ fontSize: showSupplierInvoicesInChart ? 8 : 9, fontWeight: 'bold', fill: '#000000' }}
+                                tickFormatter={(_v, i) => {
+                                  const row = displayedChartData[i];
+                                  return row && 'tickLabel' in row && row.tickLabel ? row.tickLabel : String(row?.fullName ?? '');
+                                }}
                               />
                               <YAxis
                                 label={{ value: 'Montant (USD)', angle: -90, position: 'insideLeft', fontSize: 10, fontWeight: 'bold', fill: '#000000' }}
@@ -613,22 +598,36 @@ function Top10SuppliersModal({
                                 domain={[0, 'dataMax']}
                               />
                               <Tooltip
+                                shared={false}
                                 cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
                                 content={({ active, payload }) => {
-                                  if (active && payload && payload.length) {
-                                    const data = payload[0].payload;
-                                    return (
-                                      <div className="bg-white p-2 border border-gray-300 rounded shadow-lg">
-                                        <p className="font-semibold text-xs">
-                                          {data.fullName}
-                                        </p>
-                                        <p className="text-xs font-semibold text-blue-600">
-                                          Montant: ${formatCurrency(data.montant)}
-                                        </p>
-                                      </div>
-                                    );
-                                  }
-                                  return null;
+                                  if (!active || !payload?.length) return null;
+                                  const barEntry = payload.find((p) => p.dataKey === 'montant' && p.payload) ?? payload[0];
+                                  const data = barEntry?.payload as {
+                                    fullName?: string;
+                                    montant?: number;
+                                    receptionDate?: string;
+                                    tickLabel?: string;
+                                  };
+                                  if (!data) return null;
+                                  const rec = data.receptionDate
+                                    ? new Date(data.receptionDate)
+                                    : null;
+                                  const recStr =
+                                    rec && !Number.isNaN(rec.getTime())
+                                      ? rec.toLocaleDateString('fr-FR')
+                                      : null;
+                                  return (
+                                    <div className="bg-white p-2 border border-gray-300 rounded shadow-lg max-w-[280px]">
+                                      <p className="font-semibold text-xs break-words">{data.fullName}</p>
+                                      {recStr && (
+                                        <p className="text-[11px] text-gray-600 mt-0.5">Réception : {recStr}</p>
+                                      )}
+                                      <p className="text-xs font-semibold text-blue-600 mt-1">
+                                        Montant : ${formatCurrency(Number(data.montant ?? 0))}
+                                      </p>
+                                    </div>
+                                  );
                                 }}
                               />
                               <Bar

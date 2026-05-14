@@ -171,13 +171,14 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
           createdByEmail: inv.created_by || null,
           actorName: agent?.Nom || null,
           actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
         });
         window.localStorage.setItem(throttleKey, '1');
       }
     };
 
     void run();
-  }, [allInvoices, selectedStatus, agent?.Nom, agent?.email]);
+  }, [allInvoices, selectedStatus, agent?.Nom, agent?.email, agent?.Role]);
 
   const loadInvoices = async (statusFilter: string, options?: { silent?: boolean }) => {
     const silent = options?.silent === true;

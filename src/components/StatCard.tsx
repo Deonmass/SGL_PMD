@@ -2,6 +2,12 @@ import { ChevronRight, Calculator, XCircle, AlertTriangle, TrendingUp, Loader } 
 import { useState } from 'react';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 
+function formatCornerPercent(percent: number): string {
+  if (!Number.isFinite(percent)) return '—';
+  const rounded = Math.round(percent * 10) / 10;
+  return `${rounded.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 1 })} %`;
+}
+
 interface StatCardProps {
   label: string;
   value: number;
@@ -24,6 +30,10 @@ interface StatCardProps {
   /** Montant principal plus petit (ex. cartes compact de l’onglet Global factures) */
   compactAmountSize?: 'default' | 'reduced';
   onHover?: boolean;
+  /** Pourcentage (carte compacte : au-dessus de la légende, à droite, même ligne de base que le nombre de factures). */
+  cornerPercent?: number;
+  /** Légende sous le %, alignée à droite avec le nombre de factures sur la même ligne de base. */
+  cornerPercentCaption?: string;
 }
 
 function StatCard({ 
@@ -46,7 +56,9 @@ function StatCard({
   icon = 'none',
   variant = 'default',
   compactAmountSize = 'default',
-  onHover = true
+  onHover = true,
+  cornerPercent,
+  cornerPercentCaption,
 }: StatCardProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -128,6 +140,31 @@ function StatCard({
 
   // Variant compact - like in the image
   if (variant === 'compact') {
+    const formattedAmountForScale = formatCurrency(value);
+    const amountStrLen = formattedAmountForScale.length;
+    const compactAmountClass = compactIsReduced
+      ? amountStrLen > 22
+        ? 'text-base sm:text-lg'
+        : amountStrLen > 18
+          ? 'text-lg sm:text-xl'
+          : amountStrLen > 14
+            ? 'text-xl sm:text-2xl'
+            : 'text-2xl sm:text-3xl'
+      : amountStrLen > 24
+        ? 'text-xl sm:text-2xl'
+        : amountStrLen > 19
+          ? 'text-2xl sm:text-3xl'
+          : 'text-4xl';
+    const compactUsdClass = compactIsReduced
+      ? amountStrLen > 22
+        ? 'text-[10px]'
+        : amountStrLen > 18
+          ? 'text-xs'
+          : 'text-xs sm:text-sm'
+      : amountStrLen > 24
+        ? 'text-xs'
+        : 'text-sm';
+
     return (
       <div
         onMouseEnter={() => setIsHovered(true)}
@@ -142,39 +179,55 @@ function StatCard({
           justifyContent: 'space-between'
         }}
       >
-        {/* Top section: label + icon */}
-        <div className="flex justify-between items-start">
-          <p className={`${textColor} text-sm font-semibold opacity-90`}>
+        {/* Top section: label + icône */}
+        <div className="flex justify-between items-start gap-2">
+          <p className={`${textColor} text-sm font-semibold opacity-90 flex-1 min-w-0 pr-1`}>
             {label}
           </p>
-          <div className={`${textColor} opacity-50`}>
-            {getIconComponent()}
+          <div className={`${textColor} shrink-0 opacity-50`}>{getIconComponent()}</div>
+        </div>
+
+        {/* Montant + USD sur une même ligne (un peu plus bas sous le titre) */}
+        <div className={`${textColor} mt-5 min-w-0`}>
+          <div className="flex items-baseline justify-between gap-2">
+            <p
+              className={`min-w-0 flex-1 font-bold tabular-nums leading-tight tracking-tight ${compactAmountClass}`}
+            >
+              {formattedAmountForScale}
+            </p>
+            <p className={`shrink-0 font-medium opacity-90 ${compactUsdClass}`}>{currency}</p>
           </div>
         </div>
 
-        {/* Center section: main value */}
-        <div>
-          <p
-            className={`${textColor} font-bold leading-tight tracking-tight ${
-              compactIsReduced ? 'text-2xl sm:text-3xl' : 'text-4xl'
-            }`}
-          >
-            {formatCurrency(value)}
-          </p>
-          <p
-            className={`${textColor} font-medium opacity-80 mt-1 ${
-              compactIsReduced ? 'text-xs sm:text-sm' : 'text-sm'
-            }`}
-          >
-            {currency}
-          </p>
-        </div>
-
-        {/* Bottom section: count */}
-        <div>
-          <p className="text-sm opacity-80 underline" style={{ color: isHovered ? 'white' : textColor }}>
-            {formatNumber(nombreFactures || 0)} facture{(nombreFactures || 0) > 1 ? 's' : ''}
-          </p>
+        {/* Bas : nombre de factures à gauche ; % au-dessus de la légende à droite (même ligne de base) */}
+        <div className={`flex items-end justify-between gap-2 ${textColor}`}>
+          <div className="min-w-0 flex-1 pr-1">
+            {nombreFactures !== undefined && (
+              <p className="text-sm opacity-80 underline" style={{ color: isHovered ? 'white' : textColor }}>
+                {formatNumber(nombreFactures)} facture{nombreFactures > 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+          {(cornerPercent !== undefined && Number.isFinite(cornerPercent)) ||
+          cornerPercentCaption?.trim() ? (
+            <div className="flex max-w-[58%] shrink-0 flex-col items-end gap-0.5 text-right">
+              {cornerPercent !== undefined && Number.isFinite(cornerPercent) && (
+                <span
+                  className={`font-extrabold tabular-nums leading-none drop-shadow-sm ${
+                    compactIsReduced ? 'text-sm sm:text-base' : 'text-base'
+                  }`}
+                  title="Pourcentage"
+                >
+                  {formatCornerPercent(cornerPercent)}
+                </span>
+              )}
+              {cornerPercentCaption?.trim() && (
+                <p className="text-[10px] font-medium leading-snug opacity-80">
+                  {cornerPercentCaption.trim()}
+                </p>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -184,7 +237,7 @@ function StatCard({
     <div
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      className="relative overflow-hidden rounded-lg transition-all duration-300 ease-out cursor-pointer shadow-md hover:shadow-lg hover:scale-105"
+      className="group relative overflow-hidden rounded-lg transition-all duration-300 ease-out cursor-pointer shadow-md hover:shadow-lg hover:scale-105"
       style={{
         borderLeft: `4px solid ${barColor}`,
         padding: '1.25rem',
@@ -214,10 +267,54 @@ function StatCard({
           </p>
         )}
         
-        {/* Montant principal */}
-        <p className="text-lg font-bold mb-1" style={{ color: isHovered ? 'white' : (bgColor.includes('red') ? '#dc2626' : bgColor.includes('green') ? '#16a34a' : bgColor.includes('yellow') ? '#ca8a04' : bgColor.includes('blue') ? '#2563eb' : bgColor.includes('indigo') ? '#4f46e5' : bgColor.includes('purple') ? '#9333ea' : '#1f2937') }}>
-          {formatCurrency(value)} {currency}
-        </p>
+        {/* Montant pleine largeur ; % + légende en dessous */}
+        <div className="mb-1 pr-10">
+          <p
+            className="text-lg font-bold leading-tight"
+            style={{
+              color: isHovered
+                ? 'white'
+                : bgColor.includes('red')
+                  ? '#dc2626'
+                  : bgColor.includes('green')
+                    ? '#16a34a'
+                    : bgColor.includes('yellow')
+                      ? '#ca8a04'
+                      : bgColor.includes('blue')
+                        ? '#2563eb'
+                        : bgColor.includes('indigo')
+                          ? '#4f46e5'
+                          : bgColor.includes('purple')
+                            ? '#9333ea'
+                            : '#1f2937',
+            }}
+          >
+            {formatCurrency(value)}{' '}
+            <span className="text-sm font-semibold opacity-90">{currency}</span>
+          </p>
+          {(cornerPercent !== undefined && Number.isFinite(cornerPercent)) ||
+          cornerPercentCaption?.trim() ? (
+            <div className="mt-1.5 flex flex-col items-end gap-0.5 text-right">
+              {cornerPercent !== undefined && Number.isFinite(cornerPercent) && (
+                <span
+                  className="text-sm font-extrabold tabular-nums"
+                  style={{ color: isHovered ? 'rgba(255,255,255,0.95)' : '#111827' }}
+                  title="Pourcentage"
+                >
+                  {formatCornerPercent(cornerPercent)}
+                </span>
+              )}
+              {cornerPercentCaption?.trim() && (
+                <p
+                  className="max-w-full text-[10px] font-medium leading-snug"
+                  style={{ color: isHovered ? 'rgba(255,255,255,0.85)' : '#6b7280' }}
+                >
+                  {cornerPercentCaption.trim()}
+                </p>
+              )}
+            </div>
+          ) : null}
+        </div>
 
         {/* Subtitle (montant total pour top fournisseur) */}
         {subtitle && (

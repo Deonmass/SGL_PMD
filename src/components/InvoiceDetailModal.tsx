@@ -1,4 +1,15 @@
-import { X, Printer, Maximize2, CreditCard, Trash2, MoreVertical, Filter, Search, RefreshCw } from 'lucide-react';
+import {
+  X,
+  Maximize2,
+  CreditCard,
+  Trash2,
+  MoreVertical,
+  Filter,
+  Search,
+  RefreshCw,
+  FileSpreadsheet,
+  FileText,
+} from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { Invoice as DbInvoice } from '../services/tableService';
 import { Invoice as ContextInvoice, InvoiceStatus } from '../types';
@@ -13,6 +24,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import { refreshAllData, useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import * as XLSX from 'xlsx';
+import { downloadInvoiceDetailModalPdf, convertMoneyToUsd } from '../services/invoiceDetailPdfExport';
 
 interface InvoiceDetailModalProps {
   isOpen: boolean;
@@ -26,6 +38,11 @@ interface InvoiceDetailModalProps {
     totalAmount?: number;
     totalPaid?: number;
     totalRemaining?: number;
+  };
+  /** Contexte pour nommer les exports (année + région des données : toutes ou une région). */
+  exportMeta?: {
+    year: string;
+    regionDataLabel: string;
   };
 }
 
@@ -79,7 +96,8 @@ function InvoiceDetailModal({
   invoices,
   invoiceTypeScope,
   ordoPaiementId,
-  summary 
+  summary,
+  exportMeta,
 }: InvoiceDetailModalProps) {
   const formatSingleWord = (value?: string | null) => {
     const text = String(value || '').trim();
@@ -122,6 +140,7 @@ function InvoiceDetailModal({
   const [filterDateTo, setFilterDateTo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pdfExporting, setPdfExporting] = useState(false);
 
   const normalizedTitle = (title || '')
     .toLowerCase()
@@ -131,6 +150,33 @@ function InvoiceDetailModal({
     normalizedTitle.includes('factures paye') &&
     !normalizedTitle.includes('partiellement');
   const displayTitle = isPaidReportMode ? 'Relevé des factures payées' : title;
+
+  const sanitizeForFile = (raw: string, max: number): string => {
+    const s = String(raw || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, max);
+    return s || 'export';
+  };
+
+  const buildExportFileBaseName = (): string => {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const segs: string[] = [sanitizeForFile(displayTitle, 56)];
+    if (exportMeta?.year) segs.push(sanitizeForFile(exportMeta.year, 8));
+    if (exportMeta?.regionDataLabel) {
+      segs.push(sanitizeForFile(String(exportMeta.regionDataLabel).replace(/\s+/g, '_'), 32));
+    }
+    if (isPaidReportMode) {
+      if (filterRegion !== 'all') segs.push(sanitizeForFile(filterRegion, 20));
+      if (filterSupplier !== 'all') segs.push(sanitizeForFile(filterSupplier, 40));
+    }
+    if (ordoPaiementId != null) segs.push(`OP${ordoPaiementId}`);
+    segs.push(dateStr);
+    return segs.join('_');
+  };
 
   const [localInvoices, setLocalInvoices] = useState<DbInvoice[]>(invoices);
   useEffect(() => {
@@ -298,107 +344,89 @@ function InvoiceDetailModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handlePrint = () => {
-    const printWindow = window.open('', '', 'width=1400,height=900');
-    if (printWindow) {
-      const table = document.querySelector('table')?.outerHTML;
-      const printStyle = `
-        <style>
-          @media print {
-            @page {
-              size: landscape;
-              margin: 5mm;
-            }
-            body {
-              margin: 0;
-              padding: 10mm;
-              font-family: Arial, sans-serif;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-              font-size: 11px;
-            }
-            th, td {
-              border: 1px solid #ddd;
-              padding: 6px;
-              text-align: left;
-            }
-            th {
-              background-color: #e5e7eb;
-              font-weight: bold;
-            }
-            tr:nth-child(even) {
-              background-color: #f9fafb;
-            }
-          }
-        </style>
-      `;
-      const content = `
-        ${printStyle}
-        <h2>${displayTitle}</h2>
-        ${table}
-        <div style="margin-top: 20px; font-size: 12px; font-weight: bold;">
-          <p>Total Facture: $${formatCurrency(displayTotals.totalAmount)} | Montant Payé: $${formatCurrency(displayTotals.totalPaid)} | Solde à Payer: $${formatCurrency(displayTotals.totalRemaining)}</p>
-        </div>
-      `;
-      printWindow.document.write(content);
-      printWindow.document.close();
-      setTimeout(() => {
-        printWindow.print();
-      }, 250);
-    }
-  };
-
   const exportToExcel = () => {
-    // Préparer les données du tableau
-    const tableData: any[] = sortedInvoices.map(invoice => ({
-      'Numéro Facture': invoice['Numéro de facture'],
-      'Fournisseur': invoice.Fournisseur,
-      'Date Réception': new Date(invoice['Date de réception']).toLocaleDateString('fr-FR'),
-      'Montant': parseFloat(invoice.Montant as any) || 0,
-      'Montant Payé': invoice.totalPaid,
-      'Solde à Payer': invoice.solde
-    }));
+    if (filteredInvoices.length === 0) {
+      showError('Aucune facture à exporter');
+      return;
+    }
 
-    // Ajouter une ligne vide puis les totaux
-    tableData.push({
-      'Numéro Facture': '',
-      'Fournisseur': '',
-      'Date Réception': '',
-      'Montant': 0,
-      'Montant Payé': 0,
-      'Solde à Payer': 0
-    });
+    let tableData: Record<string, string | number>[];
 
-    tableData.push({
-      'Numéro Facture': 'TOTAUX',
-      'Fournisseur': '',
-      'Date Réception': '',
-      'Montant': displayTotals.totalAmount,
-      'Montant Payé': displayTotals.totalPaid,
-      'Solde à Payer': displayTotals.totalRemaining
-    });
+    if (isPaidReportMode) {
+      // Export « relevé des factures payées » : modèle inchangé (hors périmètre du tableau standard)
+      tableData = filteredInvoices.map((invoice) => ({
+        'Numéro Facture': String(invoice['Numéro de facture'] ?? ''),
+        'Fournisseur': String(invoice.Fournisseur ?? ''),
+        'Date Réception': new Date(invoice['Date de réception']).toLocaleDateString('fr-FR'),
+        Montant: parseFloat(invoice.Montant as any) || 0,
+        'Montant Payé': invoice.totalPaid,
+        'Solde à Payer': invoice.solde,
+      }));
+      tableData.push({
+        'Numéro Facture': '',
+        'Fournisseur': '',
+        'Date Réception': '',
+        Montant: 0,
+        'Montant Payé': 0,
+        'Solde à Payer': 0,
+      });
+      tableData.push({
+        'Numéro Facture': 'TOTAUX',
+        'Fournisseur': '',
+        'Date Réception': '',
+        Montant: displayTotals.totalAmount,
+        'Montant Payé': displayTotals.totalPaid,
+        'Solde à Payer': displayTotals.totalRemaining,
+      });
+    } else {
+      const includeRegion = agent?.REGION === 'TOUT';
+      tableData = filteredInvoices.map((invoice) => {
+        const due = calculateDueDate(invoice);
+        const row: Record<string, string | number> = {
+          'Numéro Facture': String(invoice['Numéro de facture'] ?? ''),
+          'Fournisseur': String(invoice.Fournisseur ?? ''),
+          'Date Réception': new Date(invoice['Date de réception']).toLocaleDateString('fr-FR'),
+        };
+        if (includeRegion) {
+          row['Région'] = String(invoice['Région'] || 'N/A');
+        }
+        row['Catégorie de charge'] = String(invoice['Catégorie de charge'] || 'N/A');
+        row['Priorité de paiement'] = formatSingleWord(invoice['Niveau urgence']);
+        row['Échéance'] = due ? due.toLocaleDateString('fr-FR') : 'N/A';
+        row['Validation (%)'] = getValidationPercentage(invoice);
+        row.Montant = parseFloat(invoice.Montant as any) || 0;
+        row['Montant Payé'] = invoice.totalPaid;
+        row['Solde à Payer'] = invoice.solde;
+        row['Lien facture (URL)'] = String(invoice['Facture attachée'] || '');
+        return row;
+      });
 
-    // Créer un workbook et ajouter la feuille
+      const keys = Object.keys(tableData[0]!);
+      const blank: Record<string, string | number> = {};
+      for (const k of keys) {
+        blank[k] = typeof tableData[0]![k] === 'number' ? 0 : '';
+      }
+      tableData.push(blank);
+      const totals: Record<string, string | number> = {};
+      for (const k of keys) {
+        if (k === 'Numéro Facture') totals[k] = 'TOTAUX';
+        else if (k === 'Montant') totals[k] = displayTotals.totalAmount;
+        else if (k === 'Montant Payé') totals[k] = displayTotals.totalPaid;
+        else if (k === 'Solde à Payer') totals[k] = displayTotals.totalRemaining;
+        else if (k === 'Validation (%)') totals[k] = '';
+        else totals[k] = '';
+      }
+      tableData.push(totals);
+    }
+
     const worksheet = XLSX.utils.json_to_sheet(tableData);
-    
-    // Définir la largeur des colonnes
-    const colWidths = [
-      { wch: 15 }, // Numéro Facture
-      { wch: 20 }, // Fournisseur
-      { wch: 15 }, // Date Réception
-      { wch: 15 }, // Montant
-      { wch: 15 }, // Montant Payé
-      { wch: 15 }  // Solde à Payer
-    ];
-    worksheet['!cols'] = colWidths;
+    worksheet['!cols'] = Object.keys(tableData[0]!).map(() => ({ wch: 18 }));
 
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, displayTitle);
+    const sheetName = displayTitle.replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Export';
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
-    // Télécharger le fichier
-    XLSX.writeFile(workbook, `${displayTitle.replace(/\s+/g, '_')}.xlsx`);
+    XLSX.writeFile(workbook, `${buildExportFileBaseName()}.xlsx`);
   };
 
   const calculateTotals = (rows: InvoiceWithPayments[]) => {
@@ -433,6 +461,16 @@ function InvoiceDetailModal({
     }
     
     return null;
+  };
+
+  const getValidationPercentage = (invoice: InvoiceWithPayments): number => {
+    const drValidated =
+      invoice['validation DR'] != null && String(invoice['validation DR']).trim() !== '';
+    const dopValidated =
+      invoice['validation DOP'] != null && String(invoice['validation DOP']).trim() !== '';
+    if (dopValidated) return 100;
+    if (drValidated) return 50;
+    return 0;
   };
 
   const isInvoiceOverdue = (invoice: InvoiceWithPayments): boolean => {
@@ -779,6 +817,95 @@ function InvoiceDetailModal({
     }
   };
 
+  const handleExportPdf = async () => {
+    if (filteredInvoices.length === 0) {
+      showError('Aucune facture à exporter');
+      return;
+    }
+    setPdfExporting(true);
+    try {
+      const includeRegion = agent?.REGION === 'TOUT';
+      const summaryFooterUsd = filteredInvoices.reduce(
+        (acc, inv) => {
+          const cur = String(inv.Devise || 'USD');
+          const taux = (inv as Record<string, unknown>)['Taux facture'];
+          const amt = parseFloat(String(inv.Montant)) || 0;
+          return {
+            total: acc.total + convertMoneyToUsd(amt, cur, taux),
+            paid: acc.paid + convertMoneyToUsd(inv.totalPaid, cur, taux),
+            balance: acc.balance + convertMoneyToUsd(inv.solde, cur, taux),
+          };
+        },
+        { total: 0, paid: 0, balance: 0 }
+      );
+
+      const fileBaseName = buildExportFileBaseName();
+
+      if (isPaidReportMode) {
+        await downloadInvoiceDetailModalPdf({
+          title: displayTitle,
+          summaryFooterUsd,
+          isPaidReportMode: true,
+          includeRegion,
+          fileBaseName,
+          paidRows: filteredInvoices.map((inv) => {
+            const cur = String(inv.Devise || 'USD');
+            const taux = (inv as Record<string, unknown>)['Taux facture'];
+            const amt = parseFloat(String(inv.Montant)) || 0;
+            return {
+              invoiceNumber: String(inv['Numéro de facture'] ?? ''),
+              supplier: String(inv.Fournisseur ?? ''),
+              amountUsd: convertMoneyToUsd(amt, cur, taux),
+              modePaiement: String(inv.paymentInfo?.modePaiement ?? ''),
+              banqueSgl: String(inv.paymentInfo?.BanqueSGL ?? ''),
+              compteSgl: String(inv.paymentInfo?.compteSGL ?? ''),
+              banqueFournisseur: String(inv.paymentInfo?.BanqueFournisseur ?? ''),
+              compteFournisseur: String(inv.paymentInfo?.compteFournisseur ?? ''),
+              paidBy: String(inv.paymentInfo?.paiedby ?? ''),
+              hasFichier: Boolean(inv.paymentInfo?.fichier),
+              datePaiement: inv.paymentInfo?.datePaiement
+                ? new Date(inv.paymentInfo.datePaiement).toLocaleDateString('fr-FR')
+                : '',
+            };
+          }),
+        });
+      } else {
+        await downloadInvoiceDetailModalPdf({
+          title: displayTitle,
+          summaryFooterUsd,
+          isPaidReportMode: false,
+          includeRegion,
+          fileBaseName,
+          normalRows: filteredInvoices.map((inv) => {
+            const due = calculateDueDate(inv);
+            const cur = String(inv.Devise || 'USD');
+            const taux = (inv as Record<string, unknown>)['Taux facture'];
+            const amt = parseFloat(String(inv.Montant)) || 0;
+            return {
+              invoiceNumber: String(inv['Numéro de facture'] ?? ''),
+              supplier: String(inv.Fournisseur ?? ''),
+              receptionDate: new Date(inv['Date de réception']).toLocaleDateString('fr-FR'),
+              ...(includeRegion ? { region: String(inv['Région'] || 'N/A') } : {}),
+              chargeCategory: String(inv['Catégorie de charge'] || 'N/A'),
+              urgency: formatSingleWord(inv['Niveau urgence']),
+              dueDate: due ? due.toLocaleDateString('fr-FR') : 'N/A',
+              validationPct: getValidationPercentage(inv),
+              amountUsd: convertMoneyToUsd(amt, cur, taux),
+              paidUsd: convertMoneyToUsd(inv.totalPaid, cur, taux),
+              balanceUsd: convertMoneyToUsd(inv.solde, cur, taux),
+            };
+          }),
+        });
+      }
+      success('PDF téléchargé.');
+    } catch (e) {
+      console.error(e);
+      showError(e instanceof Error ? e.message : 'Erreur export PDF');
+    } finally {
+      setPdfExporting(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -829,18 +956,32 @@ function InvoiceDetailModal({
                 <Maximize2 size={20} className="text-gray-600" />
               </button>
               <button
+                type="button"
                 onClick={exportToExcel}
-                className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors"
                 title="Exporter en Excel"
               >
-                <i className="fa fa-file-excel-o text-gray-600 text-xl"></i>
+                <FileSpreadsheet size={18} className="shrink-0 text-emerald-700" strokeWidth={2} aria-hidden />
+                Excel
               </button>
               <button
-                onClick={handlePrint}
-                className="p-2 hover:bg-gray-300 rounded-lg transition-colors"
-                title="Imprimer"
+                type="button"
+                onClick={() => void handleExportPdf()}
+                disabled={pdfExporting || filteredInvoices.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-semibold text-red-800 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Exporter en PDF"
               >
-                <Printer size={20} className="text-gray-600" />
+                {pdfExporting ? (
+                  <>
+                    <RefreshCw size={18} className="shrink-0 animate-spin text-red-700" aria-hidden />
+                    <span>PDF…</span>
+                  </>
+                ) : (
+                  <>
+                    <FileText size={18} className="shrink-0 text-red-700" strokeWidth={2} aria-hidden />
+                    PDF
+                  </>
+                )}
               </button>
               <button
                 onClick={handleClose}
@@ -1170,11 +1311,7 @@ function InvoiceDetailModal({
                           </td>
                           <td className="py-2 px-3">
                             {(() => {
-                              const drValidated = invoice['validation DR'] != null && String(invoice['validation DR']).trim() !== '';
-                              const dopValidated = invoice['validation DOP'] != null && String(invoice['validation DOP']).trim() !== '';
-                              let percentage = 0;
-                              if (dopValidated) percentage = 100;
-                              else if (drValidated) percentage = 50;
+                              const percentage = getValidationPercentage(invoice);
 
                               return (
                                 <div className="w-14 shrink-0">
