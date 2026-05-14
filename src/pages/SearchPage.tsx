@@ -2,8 +2,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, RefreshCw, Download, ClipboardList, X, FileText, FileDown, FileSpreadsheet, RotateCcw } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
-import html2canvas from 'html2canvas';
-import { PDFDocument } from 'pdf-lib';
 import { usePermission } from '../hooks/usePermission';
 import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
@@ -12,6 +10,7 @@ import PaiementModal from '../components/PaiementModal';
 import { Invoice as GlobalInvoice } from '../types';
 import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import { downloadReleveSoaPdf, downloadSearchDetailStatusPdf, type SearchPdfInvoiceRow } from '../utils/searchPageExportPdf';
 
 function escapeHtml(s: string): string {
   return String(s || '')
@@ -19,15 +18,6 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function dataUrlToUint8Array(dataUrl: string): Uint8Array {
-  const comma = dataUrl.indexOf(',');
-  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-  const raw = atob(base64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
 }
 
 /** Horodatage type 11/05/2026 11:00 (export relevé) */
@@ -83,21 +73,6 @@ function formatTempsRestantEcheance(dueDateStr: string | null, ref: Date = new D
   if (months === 0) return `${late} jrs de retard`;
   if (days === 0) return `${months} mois de retard`;
   return `${months} mois et ${days} jrs de retard`;
-}
-
-function buildTotalsFooterHtml(rows: Array<{ label: string; valueHtml: string }>): string {
-  const cells = rows
-    .map(
-      (r) =>
-        `<tr>
-          <td style="padding:2px 10px 2px 0;text-align:right;font-weight:700;color:#374151;white-space:nowrap;">${escapeHtml(r.label)}</td>
-          <td style="padding:2px 0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:9.5rem;">${r.valueHtml}</td>
-        </tr>`,
-    )
-    .join('');
-  return `<div style="margin-top:10px;padding-top:8px;border-top:2px solid #111827;text-align:right;font-size:14px;line-height:1.35;">
-    <table style="margin-left:auto;border-collapse:collapse;"><tbody>${cells}</tbody></table>
-  </div>`;
 }
 
 function isReleveInvoiceEchue(inv: Invoice): boolean {
@@ -179,237 +154,17 @@ interface Invoice {
   isRejected: boolean;
 }
 
-function buildReleveExportInnerHtml(opts: {
-  rows: Invoice[];
-  totals: { montant: number; paiement: number; solde: number };
-  agentNom: string | null;
-  releveSupplier: string;
-  releveYear: string;
-  releveDateStart: string;
-  releveDateEnd: string;
-  formatMoney: (n: number) => string;
-}): string {
-  const {
-    rows,
-    totals,
-    agentNom,
-    releveSupplier,
-    releveYear,
-    releveDateStart,
-    releveDateEnd,
-    formatMoney: fmt,
-  } = opts;
-  const periodCovered = getSoaPeriodCoveredLabel(releveYear, releveDateStart, releveDateEnd);
-  const soaDateEn = new Date().toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-  const accountNo = releveSupplier ? supplierToSoaAccountNumber(releveSupplier) : '—';
-
-  const soaLeftHtml = [
-    `<p style="margin:0 0 4px;font-weight:700;color:#111;">RELEVÉ DE COMPTE</p>`,
-    `<p style="margin:0 0 3px;">Companie : SHIPPING GL SARL</p>`,
-    `<p style="margin:0 0 3px;">Addresse : 157 Avenu du livre, Kinshasa/Gombe</p>`,
-    `<p style="margin:0 0 3px;">RCCM : CD/KNG/RCCM/24-B-02901</p>`,
-    `<p style="margin:0 0 3px;">NIF : A1519206T</p>`,
-    `<p style="margin:0 0 3px;">Contact : accounting@shippinggreatlakes.com</p>`,
-    `<p style="margin:0 0 3px;">Prepared By : ${escapeHtml(agentNom || '—')}</p>`,
-    `<p style="margin:0 0 3px;">Date : ${escapeHtml(soaDateEn)}</p>`,
-    `<p style="margin:0;">Currency : USD</p>`,
-  ].join('');
-
-  const soaRightHtml = [
-    `<p style="margin:0 0 4px;font-weight:700;color:#111;">ACCOUNT INFORMATION</p>`,
-    `<p style="margin:0 0 3px;">Supplier / Client : ${escapeHtml(releveSupplier || '—')}</p>`,
-    `<p style="margin:0 0 3px;">Account Number : ${escapeHtml(accountNo)}</p>`,
-    `<p style="margin:0 0 3px;">Payment Terms : TBA</p>`,
-    `<p style="margin:0;">Period Covered : ${escapeHtml(periodCovered)}</p>`,
-  ].join('');
-
-  const th = (label: string, align: 'left' | 'right' = 'left') =>
-    `<th style="padding:10px 8px;text-align:${align};font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.02em;border:1px solid #7f1d1d;">${escapeHtml(label)}</th>`;
-
-  const tableBody = rows
-    .map((inv, idx) => {
-      const echue = isReleveInvoiceEchue(inv);
-      const zebra = idx % 2 === 1;
-      let bg = zebra ? '#f3f4f6' : '#ffffff';
-      if (echue) bg = '#fef2f2';
-      const rowStyle = `background:${bg};${echue ? 'border-left:4px solid #b91c1c;' : ''}`;
-      const soldeCell = isReleveInvoiceFullyPaid(inv)
-        ? '<span style="color:#059669;font-weight:700;">−</span>'
-        : `<span style="color:#991b1b;font-weight:700;">${escapeHtml(fmt(inv.restAPayer))}</span>`;
-      return `<tr style="${rowStyle}">
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;">${idx + 1}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-weight:600;">${escapeHtml(inv.invoiceNumber)}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${escapeHtml(formatReleveDueDate(inv.date))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;${echue ? 'color:#991b1b;font-weight:600;' : ''}">${escapeHtml(formatReleveDueDate(inv.dueDate))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.amount))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.totalPaid))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${soldeCell}</td>
-      </tr>`;
-    })
-    .join('');
-
-  const ts = formatReleveExportTimestamp();
-
-  return `<div id="releve-export-root" style="max-width:100%;box-sizing:border-box;color:#111827;margin:0;padding:0;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px;padding:0;font-size:14px;color:#374151;">
-      <span>${escapeHtml(ts)}</span>
-      <span style="font-weight:700;">PMD — Shipping GL</span>
-    </div>
-    <div style="text-align:center;font-size:22px;font-weight:700;margin:0 0 4px;padding:0;text-transform:uppercase;letter-spacing:0.03em;">RELEVÉ — STATEMENT OF ACCOUNT (SOA)</div>
-    <div style="height:4px;background:#b91c1c;margin-bottom:12px;"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;font-size:13px;line-height:1.45;margin-bottom:14px;border:1px solid #e5e7eb;padding:12px 14px;background:#fafafa;border-radius:4px;">
-      <div>${soaLeftHtml}</div>
-      <div style="text-align:right;">${soaRightHtml}</div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #111827;">
-      <thead>
-        <tr style="background:#991b1b;color:#ffffff;">
-          ${th('N°', 'left')}
-          ${th('N° facture', 'left')}
-          ${th('Date réception', 'right')}
-          ${th('Échéance', 'right')}
-          ${th('Montant', 'right')}
-          ${th('Paiement', 'right')}
-          ${th('Solde', 'right')}
-        </tr>
-      </thead>
-      <tbody>${tableBody}</tbody>
-    </table>
-    ${buildTotalsFooterHtml([
-      { label: 'Montant Total :', valueHtml: escapeHtml(fmt(totals.montant)) },
-      { label: 'Montant payé :', valueHtml: escapeHtml(fmt(totals.paiement)) },
-      {
-        label: 'Solde à payer :',
-        valueHtml: `<span style="color:#991b1b;">${escapeHtml(fmt(totals.solde))}</span>`,
-      },
-    ])}
-  </div>`;
-}
-
-function buildDetailSearchExportInnerHtml(opts: {
-  rows: Invoice[];
-  totals: { montant: number; paiement: number; solde: number };
-  statusLabel: string;
-  filterLabel: string;
-  metaLine: string;
-  formatMoney: (n: number) => string;
-}): string {
-  const { rows, totals, statusLabel, filterLabel, metaLine, formatMoney: fmt } = opts;
-  const th = (label: string, align: 'left' | 'right' = 'left') =>
-    `<th style="padding:10px 8px;text-align:${align};font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.02em;border:1px solid #7f1d1d;">${escapeHtml(label)}</th>`;
-
-  const tableBody = rows
-    .map((inv, idx) => {
-      const echue = isReleveInvoiceEchue(inv);
-      const zebra = idx % 2 === 1;
-      let bg = zebra ? '#f3f4f6' : '#ffffff';
-      if (echue) bg = '#fef2f2';
-      const rowStyle = `background:${bg};${echue ? 'border-left:4px solid #b91c1c;' : ''}`;
-      const soldeCell = isReleveInvoiceFullyPaid(inv)
-        ? '<span style="color:#059669;font-weight:700;">−</span>'
-        : `<span style="color:#991b1b;font-weight:700;">${escapeHtml(fmt(inv.restAPayer))}</span>`;
-      const restant = formatTempsRestantEcheance(inv.dueDate);
-      const retard = restant.includes('retard');
-      const restantStyle =
-        retard || echue ? 'color:#991b1b;font-weight:600;' : restant === "Aujourd'hui" ? 'color:#b45309;font-weight:600;' : '';
-      return `<tr style="${rowStyle}">
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;">${idx + 1}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-weight:600;">${escapeHtml(inv.invoiceNumber)}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${escapeHtml(formatReleveDueDate(inv.date))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;${echue ? 'color:#991b1b;font-weight:600;' : ''}">${escapeHtml(formatReleveDueDate(inv.dueDate))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:12px;${restantStyle}">${escapeHtml(restant)}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.amount))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(fmt(inv.totalPaid))}</td>
-        <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;">${soldeCell}</td>
-      </tr>`;
-    })
-    .join('');
-
-  const ts = formatReleveExportTimestamp();
-  const title = `DÉTAIL — ${statusLabel.toUpperCase()}`;
-
-  return `<div id="detail-search-export-root" style="max-width:100%;box-sizing:border-box;color:#111827;margin:0;padding:0;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px;padding:0;font-size:14px;color:#374151;">
-      <span>${escapeHtml(ts)}</span>
-      <span style="font-weight:700;">PMD — Shipping GL</span>
-    </div>
-    <div style="text-align:center;font-size:22px;font-weight:700;margin:0 0 4px;padding:0;text-transform:uppercase;letter-spacing:0.03em;">${escapeHtml(title)}</div>
-    <div style="height:4px;background:#b91c1c;margin-bottom:12px;"></div>
-    <div style="font-size:13px;line-height:1.5;margin-bottom:14px;border:1px solid #e5e7eb;padding:12px 14px;background:#fafafa;border-radius:4px;">
-      <p style="margin:0 0 6px;font-weight:700;color:#111;">${escapeHtml(filterLabel)}</p>
-      <p style="margin:0;">${escapeHtml(metaLine)}</p>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #111827;">
-      <thead>
-        <tr style="background:#991b1b;color:#ffffff;">
-          ${th('N°', 'left')}
-          ${th('N° facture', 'left')}
-          ${th('Date réception', 'right')}
-          ${th("Date d'échéance", 'right')}
-          ${th('Temps restant', 'left')}
-          ${th('Montant facture', 'right')}
-          ${th('Montant payé', 'right')}
-          ${th('Solde à payer', 'right')}
-        </tr>
-      </thead>
-      <tbody>${tableBody}</tbody>
-    </table>
-    ${buildTotalsFooterHtml([
-      { label: 'Montant Total :', valueHtml: escapeHtml(fmt(totals.montant)) },
-      { label: 'Montant payé :', valueHtml: escapeHtml(fmt(totals.paiement)) },
-      {
-        label: 'Solde à payer :',
-        valueHtml: `<span style="color:#991b1b;">${escapeHtml(fmt(totals.solde))}</span>`,
-      },
-    ])}
-  </div>`;
-}
-
-async function exportInnerHtmlToPdf(innerHtml: string, downloadFileName: string): Promise<void> {
-  const wrap = document.createElement('div');
-  wrap.setAttribute('data-pmd-pdf-capture', '1');
-  wrap.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:1280px;background:#ffffff;padding:6px 8px 10px;z-index:2147483646;overflow:visible;';
-  wrap.innerHTML = innerHtml;
-  document.body.appendChild(wrap);
-  try {
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    const canvas = await html2canvas(wrap, {
-      scale: 1.35,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-    });
-    const pdf = await PDFDocument.create();
-    const pngBytes = dataUrlToUint8Array(canvas.toDataURL('image/png', 1.0));
-    const png = await pdf.embedPng(pngBytes);
-    const pageW = 841.89;
-    const pageH = 595.28;
-    const page = pdf.addPage([pageW, pageH]);
-    const scale = Math.min(pageW / png.width, pageH / png.height) * 0.98;
-    const dw = png.width * scale;
-    const dh = png.height * scale;
-    const x = (pageW - dw) / 2;
-    const y = (pageH - dh) / 2;
-    page.drawImage(png, { x, y, width: dw, height: dh });
-    const bytes = await pdf.save();
-    const blob = new Blob([bytes], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = downloadFileName.endsWith('.pdf') ? downloadFileName : `${downloadFileName}.pdf`;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } finally {
-    wrap.remove();
-  }
+function invoiceToSearchPdfRow(inv: Invoice): SearchPdfInvoiceRow {
+  return {
+    invoiceNumber: inv.invoiceNumber,
+    supplier: inv.supplier,
+    date: inv.date,
+    dueDate: inv.dueDate,
+    amount: inv.amount,
+    totalPaid: inv.totalPaid,
+    restAPayer: inv.restAPayer,
+    status: inv.status,
+  };
 }
 
 function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'operationnel' }: SearchPageProps) {
@@ -1166,8 +921,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     }
     setRelevePdfBusy(true);
     try {
-      const inner = buildReleveExportInnerHtml({
-        rows,
+      await downloadReleveSoaPdf({
+        rows: rows.map(invoiceToSearchPdfRow),
         totals: releveTotals,
         agentNom: agent?.Nom ?? null,
         releveSupplier,
@@ -1175,8 +930,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         releveDateStart,
         releveDateEnd,
         formatMoney,
+        fileName: `Releve_${new Date().toISOString().slice(0, 10)}.pdf`,
       });
-      await exportInnerHtmlToPdf(inner, `Releve_${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
       console.error(e);
       alert(`Erreur export PDF : ${e instanceof Error ? e.message : 'inconnue'}`);
@@ -1194,13 +949,13 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     const exportData = rows.map((inv, idx) => ({
       'N°': idx + 1,
       'N° facture': inv.invoiceNumber,
+      Fournisseur: inv.supplier,
       'Date réception': formatReleveDueDate(inv.date),
       'Échéance': formatReleveDueDate(inv.dueDate),
       'Temps restant': formatTempsRestantEcheance(inv.dueDate),
       Montant: inv.amount,
       Paiement: inv.totalPaid,
       Solde: inv.restAPayer,
-      Fournisseur: inv.supplier
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
@@ -1282,7 +1037,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       const regionPart = selectedRegion ? `Région : ${selectedRegion}` : 'Région : Toutes';
       const typePart =
         selectedInvoiceType === 'frais-generaux' ? 'Frais généraux' : 'Opérationnel';
-      const metaLine = `Statut affiché : ${statusLabel} | ${yearPart} | ${regionPart} | Type : ${typePart}`;
+      const metaLine = `Statut : ${statusLabel} | ${yearPart} | ${regionPart} | Type : ${typePart}`;
       const totals = rows.reduce(
         (acc, inv) => ({
           montant: acc.montant + inv.amount,
@@ -1291,16 +1046,16 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
         }),
         { montant: 0, paiement: 0, solde: 0 },
       );
-      const inner = buildDetailSearchExportInnerHtml({
-        rows,
+      const safeKey = String(detailStatusKey).replace(/[^a-zA-Z0-9_-]/g, '_');
+      await downloadSearchDetailStatusPdf({
+        rows: rows.map(invoiceToSearchPdfRow),
         totals,
         statusLabel,
         filterLabel,
         metaLine,
         formatMoney,
+        fileName: `Detail_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`,
       });
-      const safeKey = String(detailStatusKey).replace(/[^a-zA-Z0-9_-]/g, '_');
-      await exportInnerHtmlToPdf(inner, `Detail_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
       console.error(e);
       alert(`Erreur export PDF : ${e instanceof Error ? e.message : 'inconnue'}`);
@@ -1743,7 +1498,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
 
             {/* Right column ~80 % — détail factures */}
             {(selectedSupplier || selectedDossier || selectedGestionnaire) && (
-              <div className="w-full lg:flex-1 lg:min-w-0 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn h-full min-h-0 flex flex-col pb-2">
+              <div className="w-full lg:min-w-0 lg:flex-1 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-lg transition-all duration-300 ease-out animate-fadeIn h-full min-h-0 flex flex-col pb-2">
                 <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <div className="p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
                   <p className="text-sm font-semibold text-blue-900">
@@ -1820,13 +1575,14 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                           </button>
                         </div>
                         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white flex-1 min-h-0">
-                          <table className="w-full text-xs min-w-[960px]">
+                          <table className="w-full text-xs min-w-[1040px]">
                             <thead className="bg-gray-100 sticky top-0 z-10">
                               <tr>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">N° Facture</th>
+                                <th className="px-3 py-2 text-left font-semibold text-gray-900">Fournisseur</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Date réception</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Date d&apos;échéance</th>
-                                <th className="px-3 py-2 text-left font-semibold text-gray-900">Temps restant</th>
+                                <th className="px-3 py-2 text-right font-semibold text-gray-900">Temps restant</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant facture</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant payé</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Solde à payer</th>
@@ -1835,7 +1591,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             <tbody>
                               {detailInvoicesForCard().length === 0 ? (
                                 <tr>
-                                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                                  <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
                                     Aucune facture
                                   </td>
                                 </tr>
@@ -1859,6 +1615,9 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                         {inv.invoiceNumber}
                                       </button>
                                     </td>
+                                    <td className="px-3 py-2 text-gray-700 max-w-[200px] truncate" title={inv.supplier}>
+                                      {inv.supplier}
+                                    </td>
                                     <td className="px-3 py-2 text-gray-700">
                                       {new Date(inv.date).toLocaleDateString('fr-FR')}
                                     </td>
@@ -1869,7 +1628,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                     >
                                       {formatReleveDueDate(inv.dueDate)}
                                     </td>
-                                    <td className={`px-3 py-2 text-left ${tempsClass}`}>{temps}</td>
+                                    <td className={`px-3 py-2 text-right ${tempsClass}`}>{temps}</td>
                                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-gray-900">
                                       {formatMoney(inv.amount)}
                                     </td>
@@ -2125,11 +1884,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
               <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4 flex flex-col">
                 <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
                   <div className="min-h-0 flex-1 overflow-auto p-0.5">
-                    <table className="w-full min-w-[860px] text-sm leading-snug border-collapse">
+                    <table className="w-full min-w-[980px] text-sm leading-snug border-collapse">
                       <thead className="sticky top-0 z-20 border-b border-gray-200 bg-gray-100 shadow-sm">
                         <tr>
                           <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N°</th>
                           <th className="px-3 py-2.5 text-left font-semibold text-gray-800">N° facture</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-800">Fournisseur</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Date réception</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Échéance</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-800">Montant</th>
@@ -2140,7 +1900,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                       <tbody>
                         {releveRows.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="px-3 py-8 text-center text-sm text-gray-500">
+                            <td colSpan={8} className="px-3 py-8 text-center text-sm text-gray-500">
                               Aucune facture pour ces filtres.
                             </td>
                           </tr>
@@ -2174,6 +1934,9 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                 >
                                   {inv.invoiceNumber}
                                 </button>
+                              </td>
+                              <td className="px-3 py-2 text-left text-gray-800 align-middle max-w-[14rem] truncate" title={inv.supplier}>
+                                {inv.supplier}
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
                                 {formatReleveDueDate(inv.date)}
