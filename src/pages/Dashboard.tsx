@@ -1731,10 +1731,9 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
             {/* Tableau par fournisseur */}
             <div className="mt-8">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
-                  <h3 className="text-lg font-semibold text-gray-800">Tableau par fournisseur</h3>
-                </div>
+                <h3 className="inline-flex items-center px-4 py-2 font-semibold text-xs text-white bg-red-700 shadow-md transition-all duration-200">
+                  Tableau par fournisseur
+                </h3>
                 <div className="relative z-20 min-w-[min(100%,20rem)] max-w-md flex-1">
                   <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                     Fournisseur (détail par tranche)
