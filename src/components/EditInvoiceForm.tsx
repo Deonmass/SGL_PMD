@@ -1,0 +1,1488 @@
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { X, Plus, Upload, FileText, AlertCircle } from 'lucide-react';
+import { supabase } from '../services/supabase';
+import { cloudStorageService } from '../services/cloudStorage';
+import { useToast } from '../hooks/useToast';
+import { Invoice } from '../types';
+import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import {
+  appendFactureLogById,
+  buildFactureUpdateDetailedExplanation,
+  buildFactureUpdateExplanation,
+  buildLogActor,
+} from '../services/activityLogService';
+import { sendInvoiceNotification } from '../services/notificationService';
+import {
+  TRANSPORT_TITLE_OPTIONS,
+  getTransportNumeroLabel,
+  isAutreTransportTitle,
+  normalizeTransportTitle,
+  resolveTransportNumero,
+  shouldShowTransportNumero,
+} from '../constants/transportTitles';
+import ClientAutocompleteField from './fields/ClientAutocompleteField';
+
+interface EditInvoiceFormProps {
+  invoice: Invoice;
+  onSubmit: (formData: Record<string, any>) => void;
+  onCancel: () => void;
+}
+
+interface Supplier {
+  id: string;
+  Fournisseur: string;
+  "Catégorie fournisseur": string;
+}
+
+interface Agent {
+  id: string;
+  Nom: string;
+  Role: string;
+  email: string;
+  REGION: string;
+}
+
+interface CostCenter {
+  id?: string | number;
+  ID?: string | number;
+  Designation: string;
+  REGION: string;
+}
+
+interface Charge {
+  id?: string | number;
+  ID?: string | number;
+  "designation_Charges": string;
+  Bloquant: string;
+  type?: string | null;
+}
+
+function normalizeInvoiceType(value?: string | null) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
+  if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
+  return normalized;
+}
+
+function normalizeInvoiceNumber(value?: string | null) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getEntityId(entity: Record<string, unknown>) {
+  const id = entity.id ?? entity.ID;
+  return id !== undefined && id !== null ? String(id) : '';
+}
+
+function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) {
+  const { success, error: showError } = useToast();
+  const { agent } = useAuth();
+  const { canCreate } = usePermission();
+  const [formData, setFormData] = useState({
+    // Informations générales
+    emissionDate: invoice.emissionDate || '',
+    receptionDate: invoice.receptionDate || '',
+    invoiceNumber: invoice.invoiceNumber || '',
+    supplier: invoice.supplier || '',
+    supplierCategory: invoice.supplierCategory || '',
+    client: invoice.client || '',
+    transportTitle: normalizeTransportTitle(invoice.transportTitle || ''),
+    numero: invoice.numero || '',
+    
+    // Affectation organisationnelle
+    region: invoice.region || '',
+    costCenter: invoice.costCenter || '',
+    manager: invoice.manager || '',
+    
+    // Typologie de la facture
+    invoiceType: invoice.invoiceType || '',
+    chargeCategory: invoice.chargeCategory || '',
+    fileNumber: invoice.fileNumber || '',
+    motif: invoice.motif || '',
+    
+    // Données financières
+    invoiceAmount: invoice.amount?.toString() || '',
+    currency: invoice.currency || 'USD',
+    exchangeRate: invoice.exchangeRate?.toString() || '',
+    paymentDelay: invoice.paymentDelay || 'immediate',
+    urgencyLevel: invoice.urgencyLevel || 'normal',
+    
+    // Conditions & paiement
+    dueDate: invoice.dueDate || '',
+    paymentMode: invoice.paymentMode || '',
+    attachedInvoice: null as File | null,
+    attachedInvoiceUrl: invoice.attachedInvoiceUrl || '',
+    isUploading: false,
+    uploadError: '',
+    comments: invoice.comments || '',
+    isSubmitting: false,
+  });
+
+  // États pour le statut et validations
+  const [currentStatus, setCurrentStatus] = useState<string>('');
+  const [validations, setValidations] = useState({
+    dr: null as string | null,
+    dop: null as string | null,
+    dg: null as string | null
+  });
+
+  // États pour les suggestions et données
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [filteredSuppliers, setFilteredSuppliers] = useState<Supplier[]>([]);
+  const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
+  const [showAddSupplierModal, setShowAddSupplierModal] = useState(false);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [costCenters, setCostCenters] = useState<CostCenter[]>([]);
+  const [charges, setCharges] = useState<Charge[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [newSupplier, setNewSupplier] = useState({ name: '', category: '' });
+  const [showAddCostCenterModal, setShowAddCostCenterModal] = useState(false);
+  const [newCostCenter, setNewCostCenter] = useState({ Designation: '', REGION: String(invoice.region || agent?.REGION || 'OUEST') });
+  const [isAddingCostCenter, setIsAddingCostCenter] = useState(false);
+  const [paymentModeOptions, setPaymentModeOptions] = useState([
+    { value: 'cash', label: 'Cash' },
+    { value: 'bank', label: 'Banque' },
+    { value: 'mobile-money', label: 'Mobile Money' },
+    { value: 'check', label: 'Chèque' },
+  ]);
+  const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
+  
+  const supplierInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Filtrer les centres de coût par région
+  const filteredCostCenters = useMemo(() => {
+    if (!formData.region) return [];
+    return costCenters.filter(center => center.REGION === formData.region);
+  }, [costCenters, formData.region]);
+
+  const filteredCharges = useMemo(() => {
+    if (!formData.invoiceType) return charges;
+    const targetType = normalizeInvoiceType(formData.invoiceType);
+
+    return charges.filter((charge) => {
+      const chargeType = normalizeInvoiceType(charge.type);
+      if (!chargeType && targetType === 'operationnel') return true;
+      return chargeType === targetType;
+    });
+  }, [charges, formData.invoiceType]);
+
+  // Chargement des données depuis Supabase
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Charger les fournisseurs
+        const { data: suppliersData, error: suppliersError } = await supabase
+          .from('FOURNISSEURS')
+          .select('*');
+        
+        if (suppliersError) {
+          console.error('Erreur chargement fournisseurs:', suppliersError);
+        } else {
+          setSuppliers(suppliersData || []);
+        }
+
+        // Charger les agents
+        const { data: agentsData, error: agentsError } = await supabase
+          .from('AGENTS')
+          .select('*');
+        
+        if (agentsError) {
+          console.error('Erreur chargement agents:', agentsError);
+        } else {
+          setAgents(agentsData || []);
+        }
+
+        // Charger les centres de coût
+        const { data: costCentersData, error: costCentersError } = await supabase
+          .from('CENTRE_DE_COUT')
+          .select('*');
+        
+        if (costCentersError) {
+          console.error('Erreur chargement centres de coût:', costCentersError);
+        } else {
+          setCostCenters(costCentersData || []);
+        }
+
+        // Charger les charges
+        const { data: chargesData, error: chargesError } = await supabase
+          .from('CHARGES')
+          .select('*');
+        
+        if (chargesError) {
+          console.error('Erreur chargement charges:', chargesError);
+        } else {
+          setCharges(chargesData || []);
+        }
+      } catch (error) {
+        console.error('Erreur générale de chargement:', error);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    const currentMode = String(formData.paymentMode || '').trim();
+    if (!currentMode) return;
+    const exists = paymentModeOptions.some((option) => option.value === currentMode);
+    if (!exists) {
+      const label = currentMode
+        .split('-')
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+      setPaymentModeOptions((prev) => [...prev, { value: currentMode, label }]);
+    }
+  }, [formData.paymentMode, paymentModeOptions]);
+
+  // Charger les données complètes de la facture depuis la BDD (pour emissionDate et autres champs)
+  useEffect(() => {
+    const loadInvoiceData = async () => {
+      try {
+        const { data: invoiceData, error } = await supabase
+          .from('FACTURES')
+          .select('*')
+          .eq('ID', invoice.id)
+          .single();
+
+        if (!error && invoiceData) {
+          const data = invoiceData as Record<string, any>;
+          // Mettre à jour emissionDate avec la valeur de la BDD
+          setFormData(prev => ({
+            ...prev,
+            emissionDate: data["Date emission"] || prev.emissionDate,
+            client: data["Client"] || prev.client,
+            transportTitle: normalizeTransportTitle(
+              String(data['Titre de transport'] || prev.transportTitle || ''),
+            ),
+            numero: data["numero"] || prev.numero,
+          }));
+          
+          // Charger le statut et les validations
+          setCurrentStatus(data["Statut"] || '');
+          setValidations({
+            dr: data["validation DR"] || null,
+            dop: data["validation DOP"] || null,
+            dg: data["validation DG"] || null
+          });
+        }
+      } catch (err) {
+        console.error('Erreur chargement données facture:', err);
+      }
+    };
+
+    loadInvoiceData();
+  }, [invoice.id]);
+
+  // Réinitialiser le fournisseur sélectionné
+  const handleSupplierInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setFormData(prev => ({ ...prev, supplier: value }));
+    setSelectedSupplier(null);
+    
+    // Filtrer les fournisseurs
+    if (value.length > 0) {
+      const filtered = suppliers.filter(supplier => 
+        supplier.Fournisseur.toLowerCase().includes(value.toLowerCase())
+      );
+      setFilteredSuppliers(filtered);
+      setShowSupplierSuggestions(true);
+    } else {
+      setFilteredSuppliers([]);
+      setShowSupplierSuggestions(false);
+    }
+  };
+
+  // Sélectionner un fournisseur
+  const selectSupplier = (supplier: Supplier) => {
+    setSelectedSupplier(supplier);
+    setFormData(prev => ({
+      ...prev,
+      supplier: supplier.Fournisseur,
+      supplierCategory: supplier["Catégorie fournisseur"]
+    }));
+    setShowSupplierSuggestions(false);
+    setFilteredSuppliers([]);
+  };
+
+  // Gérer la saisie du fournisseur
+  const handleSupplierChange = handleSupplierInputChange;
+
+  // Ajouter un nouveau fournisseur
+  const handleAddSupplier = async () => {
+    if (newSupplier.name && newSupplier.category) {
+      try {
+        // Insérer dans la base de données
+        const { data, error } = await supabase
+          .from('FOURNISSEURS')
+          .insert({
+            Fournisseur: newSupplier.name,
+            "Catégorie fournisseur": newSupplier.category
+          })
+          .select()
+          .single();
+        
+        if (error) {
+          console.error('Erreur ajout fournisseur:', error);
+          return;
+        }
+        
+        // Ajouter à la liste locale
+        setSuppliers(prev => [...prev, data]);
+        selectSupplier(data);
+        setNewSupplier({ name: '', category: '' });
+        setShowAddSupplierModal(false);
+      } catch (error) {
+        console.error('Erreur générale ajout fournisseur:', error);
+      }
+    }
+  };
+
+  const handleAddCostCenter = async () => {
+    const designation = newCostCenter.Designation.trim();
+    if (!designation) {
+      showError('La désignation du centre de coût est obligatoire.');
+      return;
+    }
+    if (!canCreate('centres')) {
+      showError('Vous n\'avez pas la permission de créer un centre de coût.');
+      return;
+    }
+
+    setIsAddingCostCenter(true);
+    try {
+      const payload = {
+        Designation: designation,
+        REGION: newCostCenter.REGION || formData.region || 'OUEST'
+      };
+      const { data, error } = await supabase
+        .from('CENTRE_DE_COUT')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error) {
+        showError(`Erreur lors de l'ajout du centre de coût: ${error.message}`);
+        return;
+      }
+
+      if (data) {
+        setCostCenters((prev) => [data as CostCenter, ...prev]);
+        setFormData((prev) => ({ ...prev, costCenter: String((data as CostCenter).Designation || designation) }));
+      }
+      setShowAddCostCenterModal(false);
+      setNewCostCenter({ Designation: '', REGION: formData.region || 'OUEST' });
+      success('Centre de coût ajouté avec succès.');
+    } finally {
+      setIsAddingCostCenter(false);
+    }
+  };
+
+  // Gérer le drag and drop
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      uploadFileToCloudStorage(files[0]);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      uploadFileToCloudStorage(files[0]);
+    }
+  };
+
+  const uploadFileToCloudStorage = async (file: File) => {
+    // Vérifier si le service est configuré
+    if (!cloudStorageService.isConfigured()) {
+      setFormData(prev => ({
+        ...prev,
+        uploadError: 'Cloud Storage n\'est pas configuré. Veuillez contacter l\'administrateur.'
+      }));
+      return;
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      isUploading: true,
+      uploadError: '',
+      attachedInvoice: file
+    }));
+
+    try {
+      const result = await cloudStorageService.uploadFile(file);
+      
+      if (result.success && result.fileUrl) {
+        setFormData(prev => ({
+          ...prev,
+          attachedInvoiceUrl: result.fileUrl || '',
+          isUploading: false,
+          uploadError: ''
+        }));
+      } else {
+        setFormData(prev => ({
+          ...prev,
+          isUploading: false,
+          uploadError: result.error || 'Erreur lors de l\'upload du fichier'
+        }));
+      }
+    } catch (error) {
+      setFormData(prev => ({
+        ...prev,
+        isUploading: false,
+        uploadError: 'Erreur lors de l\'upload du fichier'
+      }));
+    }
+  };
+
+  const removeFile = () => {
+    setFormData(prev => ({
+      ...prev,
+      attachedInvoice: null,
+      attachedInvoiceUrl: '',
+      uploadError: ''
+    }));
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => {
+      const updated = { ...prev, [name]: value };
+
+      if (name === 'invoiceType') {
+        updated.chargeCategory = '';
+      }
+
+      if (name === 'transportTitle') {
+        if (!String(value).trim() || isAutreTransportTitle(value)) {
+          updated.numero = '';
+        }
+      }
+      
+      // Recalculate dueDate if receptionDate or paymentDelay changes
+      if (name === 'receptionDate' || name === 'paymentDelay') {
+        const receptionDate = name === 'receptionDate' ? value : prev.receptionDate;
+        const paymentDelay = name === 'paymentDelay' ? value : prev.paymentDelay;
+        
+        if (receptionDate) {
+          const date = new Date(receptionDate);
+          const delayDays = {
+            'immediate': 0,
+            'at-reception': 0,
+            'days-7': 7,
+            'days-15': 15,
+            'days-30': 30,
+            'days-45': 45,
+          }[paymentDelay] || 0;
+          
+          date.setDate(date.getDate() + delayDays);
+          updated.dueDate = date.toISOString().split('T')[0];
+        }
+      }
+      
+      return updated;
+    });
+  };
+
+  const showTransportNumero = shouldShowTransportNumero(formData.transportTitle);
+  const transportNumeroLabel = getTransportNumeroLabel(formData.transportTitle);
+
+  // Calculate converted amount
+  const convertedAmount = useMemo(() => {
+    const invoice = parseFloat(formData.invoiceAmount) || 0;
+    const rate = parseFloat(formData.exchangeRate) || 1;
+    
+    if (formData.currency === 'USD') return invoice;
+    if (formData.currency === 'CDF') return invoice / rate;
+    if (formData.currency === 'EUR') return invoice * rate;
+    return invoice;
+  }, [formData.invoiceAmount, formData.currency, formData.exchangeRate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Désactiver le bouton pendant l'envoi
+    setFormData(prev => ({ ...prev, isSubmitting: true }));
+    
+    try {
+      const rawInvoiceNumber = formData.invoiceNumber || '';
+      const cleanedInvoiceNumber = rawInvoiceNumber.trim();
+      if (!cleanedInvoiceNumber) {
+        showError('Le numéro de facture est obligatoire.');
+        return;
+      }
+
+      // Vérifier les doublons en excluant la facture en cours d'édition.
+      const { data: existingInvoices, error: duplicateCheckError } = await supabase
+        .from('FACTURES')
+        .select('ID, "Numéro de facture"')
+        .ilike('"Numéro de facture"', cleanedInvoiceNumber);
+
+      if (duplicateCheckError) {
+        console.error('Erreur vérification doublon facture (édition):', duplicateCheckError);
+        showError('Impossible de vérifier les doublons pour le numéro de facture.');
+        return;
+      }
+
+      const duplicateFound = (existingInvoices || []).some((existingInvoice: Record<string, unknown>) => {
+        const existingId = Number(existingInvoice.ID);
+        const existingNumber = String(existingInvoice['Numéro de facture'] ?? '');
+        return existingId !== Number(invoice.id) &&
+          normalizeInvoiceNumber(existingNumber) === normalizeInvoiceNumber(cleanedInvoiceNumber);
+      });
+
+      if (duplicateFound) {
+        showError(`Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`);
+        return;
+      }
+
+      // Calculer le nouveau statut si la facture est rejetée
+      let newStatus = currentStatus;
+      
+      if (currentStatus === 'Rejetée') {
+        // Déterminer le statut basé sur les validations
+        const hasDR = validations.dr !== null;
+        const hasDOP = validations.dop !== null;
+        if (!hasDR) {
+          newStatus = 'En attente validation DR';
+        } else if (hasDR && !hasDOP) {
+          newStatus = 'En attente validation DOP';
+        } else if (hasDR && hasDOP) {
+          newStatus = 'Validée';
+        }
+      }
+      
+      // Préparer les données pour la mise à jour
+      const beforeValues: Record<string, unknown> = {
+        'Date emission': invoice.emissionDate,
+        'Date de réception': invoice.receptionDate,
+        'Numéro de facture': invoice.invoiceNumber,
+        Fournisseur: invoice.supplier,
+        'Catégorie fournisseur': invoice.supplierCategory,
+        Client: invoice.client,
+        'Titre de transport': invoice.transportTitle,
+        numero: invoice.numero,
+        Région: invoice.region,
+        'Centre de coût': invoice.costCenter,
+        Gestionnaire: invoice.manager,
+        'Type de facture': invoice.invoiceType,
+        'Catégorie de charge': invoice.chargeCategory,
+        'Numéro de dossier': invoice.fileNumber,
+        'Motif / Description': invoice.motif,
+        Devise: invoice.currency,
+        'Taux facture': invoice.exchangeRate,
+        Montant: invoice.amount,
+        'Niveau urgence': invoice.urgencyLevel,
+        'Délais de paiement': invoice.paymentDelay,
+        Échéance: invoice.dueDate,
+        'Mode de paiement requis': invoice.paymentMode,
+        'Facture attachée': invoice.attachedInvoiceUrl,
+        Commentaires: invoice.comments,
+        Statut: currentStatus,
+      };
+
+      const invoiceData = {
+        "Date emission": formData.emissionDate,
+        "Date de réception": formData.receptionDate,
+        "Numéro de facture": cleanedInvoiceNumber,
+        "Fournisseur": formData.supplier,
+        "Catégorie fournisseur": formData.supplierCategory,
+        "Client": formData.client || null,
+        "Titre de transport": formData.transportTitle || null,
+        "numero": resolveTransportNumero(formData.transportTitle, formData.numero),
+        "Région": formData.region,
+        "Centre de coût": formData.costCenter || '',
+        "Gestionnaire": formData.manager || '',
+        "Type de facture": formData.invoiceType,
+        "Catégorie de charge": formData.chargeCategory,
+        "Numéro de dossier": formData.invoiceType === 'frais-generaux' ? null : formData.fileNumber,
+        "Motif / Description": formData.motif,
+        "Devise": formData.currency,
+        "Taux facture": parseFloat(formData.exchangeRate) || null,
+        "montant facture": parseFloat(formData.invoiceAmount) || 0,
+        "Montant": convertedAmount,
+        "Niveau urgence": formData.urgencyLevel,
+        "Délais de paiement": parseInt(formData.paymentDelay.replace('days-', '').replace('immediate', '0').replace('at-reception', '0')) || 0,
+        "Échéance": formData.dueDate,
+        "Mode de paiement requis": formData.paymentMode,
+        "Facture attachée": formData.attachedInvoiceUrl,
+        "Commentaires": formData.comments,
+        // Mise à jour du statut si la facture était rejetée
+        "Statut": newStatus
+      };
+
+      const afterValues: Record<string, unknown> = {
+        'Date emission': invoiceData['Date emission'],
+        'Date de réception': invoiceData['Date de réception'],
+        'Numéro de facture': invoiceData['Numéro de facture'],
+        Fournisseur: invoiceData['Fournisseur'],
+        'Catégorie fournisseur': invoiceData['Catégorie fournisseur'],
+        Client: invoiceData['Client'],
+        'Titre de transport': invoiceData['Titre de transport'],
+        numero: invoiceData['numero'],
+        Région: invoiceData['Région'],
+        'Centre de coût': invoiceData['Centre de coût'],
+        Gestionnaire: invoiceData['Gestionnaire'],
+        'Type de facture': invoiceData['Type de facture'],
+        'Catégorie de charge': invoiceData['Catégorie de charge'],
+        'Numéro de dossier': invoiceData['Numéro de dossier'],
+        'Motif / Description': invoiceData['Motif / Description'],
+        Devise: invoiceData['Devise'],
+        'Taux facture': invoiceData['Taux facture'],
+        Montant: invoiceData['Montant'],
+        'Niveau urgence': invoiceData['Niveau urgence'],
+        'Délais de paiement': invoiceData['Délais de paiement'],
+        Échéance: invoiceData['Échéance'],
+        'Mode de paiement requis': invoiceData['Mode de paiement requis'],
+        'Facture attachée': invoiceData['Facture attachée'],
+        Commentaires: invoiceData['Commentaires'],
+        Statut: invoiceData['Statut'],
+      };
+
+      const { data: rejetRow, error: rejetSelectError } = await supabase
+        .from('FACTURES')
+        .select('Rejet')
+        .eq('ID', invoice.id)
+        .single();
+
+      if (rejetSelectError) {
+        console.error('Erreur lecture Rejet (édition):', rejetSelectError);
+      }
+
+      let exchangeHistory: Record<string, unknown>[] = [];
+      const rawRejet = rejetRow?.Rejet as unknown;
+      if (rawRejet) {
+        try {
+          const parsed = typeof rawRejet === 'string' ? JSON.parse(rawRejet) : rawRejet;
+          exchangeHistory = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          exchangeHistory = [];
+        }
+      }
+
+      const exchangeComment = buildFactureUpdateDetailedExplanation(beforeValues, afterValues);
+      exchangeHistory.push({
+        eventType: 'mise à jour',
+        datetime: new Date().toISOString(),
+        name: agent?.Nom || '',
+        email: agent?.email || '',
+        raison: exchangeComment,
+      });
+
+      const invoiceDataWithHistory = {
+        ...invoiceData,
+        Rejet: JSON.stringify(exchangeHistory),
+      };
+
+      // Mettre à jour dans la table FACTURES
+      const { data, error } = await supabase
+        .from('FACTURES')
+        .update(invoiceDataWithHistory)
+        .eq('ID', invoice.id)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Erreur mise à jour facture:', error);
+        if (error.code === '23505') {
+          showError(`Le numéro de facture "${cleanedInvoiceNumber}" existe déjà. Aucune facture en doublon n'est autorisée.`);
+          return;
+        }
+        showError('Erreur lors de la mise à jour de la facture: ' + error.message);
+        return;
+      }
+
+      console.log('Facture mise à jour avec succès:', data);
+
+      const oldUrgency = String(invoice.urgencyLevel || '').toLowerCase();
+      const newUrgency = String(formData.urgencyLevel || '').toLowerCase();
+      if (newUrgency === 'urgent' && oldUrgency !== 'urgent') {
+        await sendInvoiceNotification({
+          notificationType: 'urgent',
+          invoice: {
+            fournisseur: formData.supplier,
+            numeroFacture: cleanedInvoiceNumber,
+            montant: convertedAmount,
+            devise: formData.currency,
+            region: formData.region,
+            categorie: formData.chargeCategory,
+            echeance: formData.dueDate,
+          },
+          createdByEmail: invoice.created_by || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
+        });
+      }
+
+      const normalizedStatus = String(newStatus || '').toLowerCase();
+      const normalizedOldStatus = String(currentStatus || '').toLowerCase();
+      const isOnHoldStatus =
+        normalizedStatus === 'en attente' ||
+        normalizedStatus.includes('mise en attente');
+      if (isOnHoldStatus && normalizedStatus !== normalizedOldStatus) {
+        await sendInvoiceNotification({
+          notificationType: 'on_hold',
+          invoice: {
+            fournisseur: formData.supplier,
+            numeroFacture: cleanedInvoiceNumber,
+            montant: convertedAmount,
+            devise: formData.currency,
+            region: formData.region,
+            categorie: formData.chargeCategory,
+            raisonAttente: formData.comments || formData.motif || 'Informations complementaires requises',
+          },
+          createdByEmail: invoice.created_by || null,
+          actorName: agent?.Nom || null,
+          actorEmail: agent?.email || null,
+          actorRole: agent?.Role?.trim() || null,
+        });
+      }
+
+      try {
+        const actor = buildLogActor(agent);
+        const explication = buildFactureUpdateExplanation(beforeValues, invoiceData);
+        await appendFactureLogById(Number(invoice.id), actor, 'Edition', explication);
+      } catch (logError) {
+        console.error('Erreur journalisation facture (édition):', logError);
+      }
+
+      success('Facture mise à jour avec succès !');
+      
+      // Appeler la fonction onSubmit avec les données complètes
+      onSubmit({ ...formData, convertedAmount, id: data.ID });
+      
+    } catch (error) {
+      console.error('Erreur générale lors de la mise à jour:', error);
+      showError('Erreur lors de la mise à jour de la facture');
+    } finally {
+      // Réactiver le bouton
+      setFormData(prev => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
+  const SectionTitle = ({ title }: { title: string }) => (
+    <h3 className="text-lg font-semibold text-red-900 mb-4 pb-3 border-b-2 border-red-900 mt-6 first:mt-0">
+      {title}
+    </h3>
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4 flex-shrink-0">
+          <h2 className="text-xl font-bold text-gray-800">Modifier la facture {invoice.invoiceNumber}</h2>
+          <button
+            onClick={onCancel}
+            className="text-gray-500 hover:text-gray-700"
+          >
+            <X size={24} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-6 overflow-y-auto flex-1">
+          {/* Informations générales */}
+          <div>
+            <SectionTitle title="Informations générales" />
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Date de réception *
+                </label>
+                <input
+                  type="date"
+                  name="receptionDate"
+                  value={formData.receptionDate}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Numéro de facture *
+                </label>
+                <input
+                  type="text"
+                  name="invoiceNumber"
+                  value={formData.invoiceNumber}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Fournisseur *
+                </label>
+                <div className="relative">
+                  <input
+                    ref={supplierInputRef}
+                    type="text"
+                    name="supplier"
+                    value={formData.supplier}
+                    onChange={handleSupplierChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                  {formData.supplier && filteredSuppliers.length === 0 && !selectedSupplier && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddSupplierModal(true)}
+                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded"
+                      title="Ajouter un fournisseur"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  )}
+                  
+                  {/* Suggestions de fournisseurs */}
+                  {showSupplierSuggestions && filteredSuppliers.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {filteredSuppliers.map((supplier) => (
+                        <button
+                          key={supplier.id}
+                          type="button"
+                          onClick={() => selectSupplier(supplier)}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="font-medium">{supplier.Fournisseur}</div>
+                          <div className="text-xs text-gray-500">{supplier["Catégorie fournisseur"]}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Catégorie fournisseur
+                </label>
+                <input
+                  type="text"
+                  name="supplierCategory"
+                  value={formData.supplierCategory}
+                  readOnly
+                  disabled
+                  placeholder="Sélection automatique"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 cursor-not-allowed"
+                />
+              </div>
+            </div>
+
+            <SectionTitle title="Client & titre de transport" />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <ClientAutocompleteField
+                  value={formData.client}
+                  onChange={(nom) => setFormData((prev) => ({ ...prev, client: nom }))}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Titre de transport
+                </label>
+                <select
+                  name="transportTitle"
+                  value={formData.transportTitle}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- Sélectionner --</option>
+                  {TRANSPORT_TITLE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {showTransportNumero && (
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    {transportNumeroLabel}
+                  </label>
+                  <input
+                    type="text"
+                    name="numero"
+                    value={formData.numero}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Date d'émission
+                </label>
+                <input
+                  type="date"
+                  name="emissionDate"
+                  value={formData.emissionDate}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Affectation organisationnelle */}
+          <div>
+            <SectionTitle title="Affectation organisationnelle" />
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Région *
+                </label>
+                <select
+                  name="region"
+                  value={formData.region}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">-- Sélectionner --</option>
+                  <option value="OUEST">OUEST</option>
+                  <option value="EST">EST</option>
+                  <option value="SUD">SUD</option>
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-semibold text-gray-700">
+                    Centre de coût *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewCostCenter((prev) => ({ ...prev, REGION: formData.region || prev.REGION || 'OUEST' }));
+                      setShowAddCostCenterModal(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
+                  >
+                    <Plus size={12} />
+                    Ajouter
+                  </button>
+                </div>
+                <select
+                  name="costCenter"
+                  value={formData.costCenter}
+                  onChange={handleChange}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    !formData.region ? 'bg-gray-100 cursor-not-allowed' : ''
+                  }`}
+                  disabled={!formData.region}
+                  required
+                >
+                  <option value="">
+                    {formData.region ? '-- Sélectionner --' : 'Sélectionnez une région d\'abord'}
+                  </option>
+                  {filteredCostCenters.map((center) => (
+                    <option key={getEntityId(center) || center.Designation} value={center.Designation}>
+                      {center.Designation}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Gestionnaire
+                </label>
+                <select
+                  name="manager"
+                  value={formData.manager}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- Sélectionner --</option>
+                  {agents.map((agent) => (
+                    <option key={getEntityId(agent) || agent.email} value={agent.Nom}>
+                      {agent.Nom}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Typologie de la facture */}
+          <div>
+            <SectionTitle title="Typologie de la facture" />
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Type de facture *
+                </label>
+                <select
+                  name="invoiceType"
+                  value={formData.invoiceType}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                  disabled
+                >
+                  <option value="">-- Sélectionner --</option>
+                  <option value="operationnel">Opérationnel</option>
+                  <option value="frais-generaux">Frais généraux</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Catégorie de charge *
+                </label>
+                <select
+                  name="chargeCategory"
+                  value={formData.chargeCategory}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">-- Sélectionner --</option>
+                  {filteredCharges.map((charge) => (
+                    <option key={getEntityId(charge) || charge.designation_Charges} value={charge["designation_Charges"]}>
+                      {charge["designation_Charges"]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Numéro de dossier
+                </label>
+                <input
+                  type="text"
+                  name="fileNumber"
+                  value={formData.fileNumber}
+                  onChange={handleChange}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    formData.invoiceType === 'frais-generaux' ? 'bg-gray-100 cursor-not-allowed' : ''
+                  }`}
+                  disabled={formData.invoiceType === 'frais-generaux'}
+                  placeholder={formData.invoiceType === 'frais-generaux' ? 'Non applicable pour frais généraux' : ''}
+                />
+              </div>
+              <div className="col-span-3">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Motif / Description
+                </label>
+                <textarea
+                  name="motif"
+                  value={formData.motif}
+                  onChange={handleChange}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Décrivez le motif de cette facture..."
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Données financières */}
+          <div>
+            <SectionTitle title="Données financières" />
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Devise *
+                </label>
+                <select
+                  name="currency"
+                  value={formData.currency}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="USD">USD</option>
+                  <option value="CDF">CDF</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Taux {formData.currency !== 'USD' ? '*' : ''}
+                </label>
+                <input
+                  type="number"
+                  step="0.0001"
+                  name="exchangeRate"
+                  value={formData.exchangeRate}
+                  onChange={handleChange}
+                  disabled={formData.currency === 'USD'}
+                  placeholder={formData.currency === 'USD' ? '1.00' : 'Ex: 2500'}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${
+                    formData.currency === 'USD' ? 'bg-gray-100 cursor-not-allowed' : ''
+                  }`}
+                  required={formData.currency !== 'USD'}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Montant facture ({formData.currency}) *
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  name="invoiceAmount"
+                  value={formData.invoiceAmount}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Montant USD (convertis) :
+                </label>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <p className="text-lg font-bold text-blue-600 font-mono">
+                    {convertedAmount.toFixed(2)} USD
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Conditions & paiement */}
+          <div>
+            <SectionTitle title="Conditions & paiement" />
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Niveau urgence *
+                </label>
+                <select
+                  name="urgencyLevel"
+                  value={formData.urgencyLevel}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="normal">Normal</option>
+                  <option value="prioritaire">Prioritaire</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Délai de paiement *
+                </label>
+                <select
+                  name="paymentDelay"
+                  value={formData.paymentDelay}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="immediate">Paiement comptant</option>
+                  <option value="at-reception">Paiement à réception</option>
+                  <option value="days-7">Paiement à 7 jours</option>
+                  <option value="days-15">Paiement à 15 jours</option>
+                  <option value="days-30">Paiement à 30 jours</option>
+                  <option value="days-45">Paiement à 45 jours</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Échéance *
+                </label>
+                <input
+                  type="date"
+                  name="dueDate"
+                  value={formData.dueDate}
+                  onChange={(e) => {
+                    // Allow manual selection for "Paiement comptant"
+                    if (formData.paymentDelay === 'immediate') {
+                      handleChange(e);
+                    }
+                  }}
+                  disabled={formData.paymentDelay !== 'immediate'}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    formData.paymentDelay !== 'immediate' ? 'bg-gray-100 cursor-not-allowed' : ''
+                  }`}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Mode de paiement requis
+                </label>
+                <select
+                  name="paymentMode"
+                  value={formData.paymentMode}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- Sélectionner --</option>
+                  {paymentModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Informations complémentaires */}
+          <div>
+            <SectionTitle title="Informations complémentaires" />
+            <div className="grid grid-cols-3 gap-4">
+              <div className="col-span-3">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Facture attachée
+                </label>
+                <div
+                  className={`border-2 border-dashed border-gray-300 rounded-lg p-6 text-center transition-colors ${
+                    isDragging ? 'border-blue-500 bg-blue-50' : 'hover:border-gray-400'
+                  }`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                  
+                  {formData.isUploading ? (
+                    <div className="flex flex-col items-center justify-center py-8">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3"></div>
+                      <p className="text-gray-600">Upload en cours vers Google Drive...</p>
+                      <p className="text-sm text-gray-500">{formData.attachedInvoice?.name}</p>
+                    </div>
+                  ) : formData.attachedInvoiceUrl ? (
+                    <div className="flex items-center justify-center gap-3 py-4">
+                      <FileText className="text-green-600" size={24} />
+                      <div className="flex-1">
+                        <p className="text-gray-700 font-medium">{formData.attachedInvoice?.name}</p>
+                        <a 
+                          href={formData.attachedInvoiceUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-sm text-blue-600 hover:text-blue-800 underline"
+                        >
+                          Voir sur Google Drive
+                        </a>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={removeFile}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <Upload className="mx-auto text-gray-400 mb-2" size={32} />
+                      <p className="text-gray-600 mb-2">
+                        Glissez-déposez un fichier ici ou
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                      >
+                        Parcourir les fichiers
+                      </button>
+                      <p className="text-xs text-gray-500 mt-2">
+                        PDF, JPG, JPEG, PNG (max 10MB)
+                      </p>
+                    </div>
+                  )}
+                  
+                  {formData.uploadError && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2">
+                      <AlertCircle className="text-red-500" size={16} />
+                      <span className="text-red-700 text-sm">{formData.uploadError}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Commentaires
+              </label>
+              <textarea
+                name="comments"
+                value={formData.comments}
+                onChange={handleChange}
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* Form Actions */}
+          <div className="flex justify-end gap-4 pt-6 border-t">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={formData.isSubmitting}
+              className="px-6 py-2 text-white font-medium rounded-lg bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500 hover:from-indigo-600 hover:via-blue-600 hover:to-cyan-600 shadow-md hover:shadow-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-all duration-300"
+            >
+              {formData.isSubmitting && (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+              )}
+              {formData.isSubmitting ? 'Mise à jour...' : 'Mettre à jour'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* Modal d'ajout de fournisseur */}
+      {showAddSupplierModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4">
+              <h3 className="text-lg font-bold text-gray-800">Ajouter un fournisseur</h3>
+              <button
+                onClick={() => setShowAddSupplierModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Nom du fournisseur *
+                </label>
+                <input
+                  type="text"
+                  value={newSupplier.name}
+                  onChange={(e) => setNewSupplier(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Société XYZ"
+                  required
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Catégorie *
+                </label>
+                <input
+                  type="text"
+                  value={newSupplier.category}
+                  onChange={(e) => setNewSupplier(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Services, Matériel, Énergie"
+                  required
+                />
+              </div>
+            </div>
+            
+            <div className="flex justify-end gap-4 px-6 py-4 border-t">
+              <button
+                type="button"
+                onClick={() => setShowAddSupplierModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleAddSupplier}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700"
+              >
+                Ajouter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddCostCenterModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between bg-gray-50 border-b px-6 py-4">
+              <h3 className="text-lg font-bold text-gray-800">Ajouter un centre de coût</h3>
+              <button onClick={() => setShowAddCostCenterModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Désignation *</label>
+                <input
+                  type="text"
+                  value={newCostCenter.Designation}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, Designation: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ex: Approvisionnement Kinshasa"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Région *</label>
+                <select
+                  value={newCostCenter.REGION}
+                  onChange={(e) => setNewCostCenter((prev) => ({ ...prev, REGION: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="OUEST">OUEST</option>
+                  <option value="EST">EST</option>
+                  <option value="SUD">SUD</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-4 px-6 py-4 border-t">
+              <button
+                type="button"
+                onClick={() => setShowAddCostCenterModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                disabled={isAddingCostCenter}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCostCenter}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                disabled={isAddingCostCenter}
+              >
+                {isAddingCostCenter ? 'Ajout...' : 'Ajouter'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+export default EditInvoiceForm;

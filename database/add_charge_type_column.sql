@@ -1,0 +1,2 @@
+ALTER TABLE public."CHARGES"
+  ADD COLUMN IF NOT EXISTS "type" text NULL;
