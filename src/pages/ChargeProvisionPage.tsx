@@ -24,8 +24,6 @@ import {
   type ChargeProvisionRow,
   type ChargeProvisionSummary,
 } from '../services/chargeProvisionService';
-import globeIcon from '../../image/globe.png';
-
 interface ChargeProvisionPageProps {
   menuTitle?: string;
 }
@@ -55,46 +53,56 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
   const [viewInvoice, setViewInvoice] = useState<GlobalInvoice | null>(null);
   const [openingInvoice, setOpeningInvoice] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadMovements = useCallback(async (charge: string) => {
+    const rows = await chargeProvisionService.getMovementsByCharge(charge);
+    setMovements(rows);
+  }, []);
+
+  const refreshAll = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const list = await chargeProvisionService.getSummaries();
       setSummaries(list);
-      setSelectedCharge((prev) => {
-        if (list.length === 0) return null;
-        if (prev && list.some((s) => s.charge === prev)) return prev;
-        return list[0].charge;
-      });
+
+      if (list.length === 0) {
+        setSelectedCharge(null);
+        setMovements([]);
+        return;
+      }
+
+      const charge =
+        selectedCharge && list.some((s) => s.charge === selectedCharge)
+          ? selectedCharge
+          : list[0].charge;
+      setSelectedCharge(charge);
+      await loadMovements(charge);
     } catch (err) {
       console.error(err);
       setError('Erreur lors du chargement des provisions.');
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  const loadMovements = useCallback(async (charge: string) => {
-    try {
-      const rows = await chargeProvisionService.getMovementsByCharge(charge);
-      setMovements(rows);
-    } catch (err) {
-      console.error(err);
-      setError('Erreur lors du chargement des mouvements.');
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
-
-  useEffect(() => {
-    if (selectedCharge) {
-      void loadMovements(selectedCharge);
-    } else {
-      setMovements([]);
-    }
   }, [selectedCharge, loadMovements]);
+
+  const selectCharge = useCallback(
+    async (charge: string) => {
+      setSelectedCharge(charge);
+      setError('');
+      try {
+        await loadMovements(charge);
+      } catch (err) {
+        console.error(err);
+        setError('Erreur lors du chargement des mouvements.');
+      }
+    },
+    [loadMovements],
+  );
+
+  useEffect(() => {
+    void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chargement initial uniquement
+  }, []);
 
   const selectedSummary = useMemo(
     () => summaries.find((s) => s.charge === selectedCharge) ?? null,
@@ -177,8 +185,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
     try {
       await chargeProvisionService.deleteAppro(row.ID);
       if (selectedCharge) {
-        await loadData();
-        await loadMovements(selectedCharge);
+        await refreshAll();
       }
     } catch (err) {
       console.error(err);
@@ -216,15 +223,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
       <div className="sticky top-0 z-10 border-b border-gray-200 bg-white shadow-sm">
         <div className="flex items-center justify-between gap-4 p-6 pb-4">
           <div>
-            <h1 className="flex items-center gap-2.5 text-xl font-bold text-gray-900">
-              <img
-                src={globeIcon}
-                alt=""
-                className="h-8 w-8 shrink-0 object-contain"
-                aria-hidden
-              />
-              {menuTitle}
-            </h1>
+            <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
             <p className="mt-1 text-sm text-gray-600">
               Suivi des approvisionnements et sorties liées aux charges en abonnement
             </p>
@@ -232,7 +231,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => void loadData()}
+              onClick={() => void refreshAll()}
               className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-green-500 to-green-600 px-3 py-2 text-sm font-medium text-white shadow-md transition hover:from-green-600 hover:to-green-700"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -277,7 +276,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
                   <button
                     key={item.charge}
                     type="button"
-                    onClick={() => setSelectedCharge(item.charge)}
+                    onClick={() => void selectCharge(item.charge)}
                     className={`group w-full rounded-2xl border p-3 text-left transition-all duration-300 ${
                       selected
                         ? 'border-indigo-500 bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-lg scale-[1.02]'
@@ -530,8 +529,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
             setEditingAppro(null);
           }}
           onSaved={() => {
-            void loadData();
-            void loadMovements(selectedCharge);
+            void refreshAll();
           }}
         />
       )}

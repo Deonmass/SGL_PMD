@@ -12,6 +12,7 @@ import { refreshAllData } from '../hooks/useDataRefresh';
 import { useAuth } from '../contexts/AuthContext';
 import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import { cloudStorageService } from '../services/cloudStorage';
+import { chargeProvisionService } from '../services/chargeProvisionService';
 
 // Fonctions utilitaires pour formater les dates et données
 const formatDateFr = (dateStr: string | null): string => {
@@ -229,6 +230,8 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
           console.warn('Suppression du fichier attaché (storage) impossible ou URL non reconnue:', invoice.attachedInvoiceUrl);
         }
       }
+
+      await chargeProvisionService.deleteSortiesForInvoice(invoice.invoiceNumber);
 
       const { error } = await supabase
         .from('FACTURES')

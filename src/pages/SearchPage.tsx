@@ -21,6 +21,7 @@ import {
   buildLogActor,
 } from '../services/activityLogService';
 import { cloudStorageService } from '../services/cloudStorage';
+import { chargeProvisionService } from '../services/chargeProvisionService';
 
 type LeftSearchTab = 'supplier' | 'dossier' | 'gestionnaire' | 'client' | 'transport';
 
@@ -1192,6 +1193,8 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           console.warn('Suppression du fichier attaché impossible:', attachedUrl);
         }
       }
+
+      await chargeProvisionService.deleteSortiesForInvoice(invoice.invoiceNumber);
 
       const { error } = await supabase.from('FACTURES').delete().eq('ID', invoice.id);
       if (error) {

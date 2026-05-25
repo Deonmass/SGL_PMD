@@ -488,6 +488,33 @@ export const chargeProvisionService = {
     await recalculateSoldesForCharge(existing.Charge);
   },
 
+  /** Supprime les sorties provision liées à une facture (ex. après suppression de la facture). */
+  async deleteSortiesForInvoice(invoiceNumber: string): Promise<number> {
+    const numero = invoiceNumber.trim();
+    if (!numero) return 0;
+
+    const all = await fetchAllProvisionRows();
+    const toDelete = all.filter(
+      (m) =>
+        m.Type_operation === 'out' &&
+        m.Numero_facture != null &&
+        m.Numero_facture.trim() === numero,
+    );
+    if (toDelete.length === 0) return 0;
+
+    const chargesAffected = new Set(toDelete.map((m) => m.Charge));
+    const ids = toDelete.map((m) => m.ID);
+
+    const { error } = await supabase.from('CHARGE_PROVISION').delete().in('ID', ids);
+    if (error) throw error;
+
+    for (const charge of chargesAffected) {
+      await recalculateSoldesForCharge(charge);
+    }
+
+    return toDelete.length;
+  },
+
   async recordSortieFromInvoice(params: {
     chargeDesignation: string;
     invoiceNumber: string;

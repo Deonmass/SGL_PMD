@@ -12,6 +12,7 @@ import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLo
 import { isEntryMiseAJour, isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { sendInvoiceNotification } from '../services/notificationService';
 import { cloudStorageService } from '../services/cloudStorage';
+import { chargeProvisionService } from '../services/chargeProvisionService';
 
 interface ViewInvoiceModalProps {
   invoice: Invoice;
@@ -802,6 +803,8 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
           console.warn('Suppression du fichier attaché (storage) impossible ou URL non reconnue:', currentInvoice.attachedInvoiceUrl);
         }
       }
+
+      await chargeProvisionService.deleteSortiesForInvoice(currentInvoice.invoiceNumber);
 
       const { error } = await supabase
         .from('FACTURES')
