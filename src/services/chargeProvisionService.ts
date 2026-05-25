@@ -213,6 +213,46 @@ export async function chargeHasAbonnement(designation: string): Promise<boolean>
   return isAbonnementCharge((data as { abonnement?: string } | null)?.abonnement);
 }
 
+async function fetchAllProvisionRows(): Promise<ChargeProvisionRow[]> {
+  const { data, error } = await supabase
+    .from('CHARGE_PROVISION')
+    .select('*')
+    .order('Date_operation', { ascending: false })
+    .order('ID', { ascending: false });
+
+  if (error) throw error;
+
+  return (data || [])
+    .map((row) => mapProvisionRow(row as Record<string, unknown>))
+    .filter((row): row is ChargeProvisionRow => row !== null);
+}
+
+async function getMovementRowsForCharge(chargeLabel: string): Promise<ChargeProvisionRow[]> {
+  const all = await fetchAllProvisionRows();
+  return all
+    .filter((m) => chargesMatch(chargeLabel, m.Charge))
+    .sort((a, b) => {
+      const dateA = new Date(a.Date_operation).getTime();
+      const dateB = new Date(b.Date_operation).getTime();
+      if (dateA !== dateB) return dateA - dateB;
+      return a.ID - b.ID;
+    });
+}
+
+async function recalculateSoldesForCharge(chargeLabel: string): Promise<void> {
+  const rows = await getMovementRowsForCharge(chargeLabel);
+  let running = 0;
+  for (const row of rows) {
+    if (row.Type_operation === 'in') running += row.Montant;
+    else running -= row.Montant;
+    const { error } = await supabase
+      .from('CHARGE_PROVISION')
+      .update({ Solde: running })
+      .eq('ID', row.ID);
+    if (error) throw error;
+  }
+}
+
 async function getLastSoldeForCharge(charge: string): Promise<number> {
   const { data, error } = await supabase
     .from('CHARGE_PROVISION')
@@ -251,17 +291,7 @@ export const chargeProvisionService = {
   },
 
   async getAllMovements(): Promise<ChargeProvisionRow[]> {
-    const { data, error } = await supabase
-      .from('CHARGE_PROVISION')
-      .select('*')
-      .order('Date_operation', { ascending: false })
-      .order('ID', { ascending: false });
-
-    if (error) throw error;
-
-    return (data || [])
-      .map((row) => mapProvisionRow(row as Record<string, unknown>))
-      .filter((row): row is ChargeProvisionRow => row !== null);
+    return fetchAllProvisionRows();
   },
 
   async getMovementsByCharge(charge: string): Promise<ChargeProvisionRow[]> {
@@ -409,6 +439,53 @@ export const chargeProvisionService = {
     const mapped = mapProvisionRow({ ...inserted, Reference: reference });
     if (!mapped) throw new Error('Mouvement appro invalide après insertion');
     return mapped;
+  },
+
+  async getMovementById(id: number): Promise<ChargeProvisionRow | null> {
+    const { data, error } = await supabase.from('CHARGE_PROVISION').select('*').eq('ID', id).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return mapProvisionRow(data as Record<string, unknown>);
+  },
+
+  async updateAppro(params: {
+    id: number;
+    dateOperation: string;
+    montant: number;
+  }): Promise<ChargeProvisionRow> {
+    const existing = await this.getMovementById(params.id);
+    if (!existing || existing.Type_operation !== 'in') {
+      throw new Error('Approvisionnement introuvable.');
+    }
+
+    const montant = parseAmount(params.montant);
+    if (montant <= 0) throw new Error('Montant invalide');
+
+    const { error } = await supabase
+      .from('CHARGE_PROVISION')
+      .update({
+        Date_operation: params.dateOperation,
+        Montant: montant,
+      })
+      .eq('ID', params.id);
+
+    if (error) throw error;
+    await recalculateSoldesForCharge(existing.Charge);
+
+    const updated = await this.getMovementById(params.id);
+    if (!updated) throw new Error('Approvisionnement introuvable après mise à jour.');
+    return updated;
+  },
+
+  async deleteAppro(id: number): Promise<void> {
+    const existing = await this.getMovementById(id);
+    if (!existing || existing.Type_operation !== 'in') {
+      throw new Error('Approvisionnement introuvable.');
+    }
+
+    const { error } = await supabase.from('CHARGE_PROVISION').delete().eq('ID', id);
+    if (error) throw error;
+    await recalculateSoldesForCharge(existing.Charge);
   },
 
   async recordSortieFromInvoice(params: {

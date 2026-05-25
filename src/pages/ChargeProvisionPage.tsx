@@ -7,6 +7,8 @@ import {
   FileText,
   TrendingDown,
   TrendingUp,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import AccessDenied from '../components/AccessDenied';
 import StatCard from '../components/StatCard';
@@ -22,6 +24,7 @@ import {
   type ChargeProvisionRow,
   type ChargeProvisionSummary,
 } from '../services/chargeProvisionService';
+import globeIcon from '../../image/globe.png';
 
 interface ChargeProvisionPageProps {
   menuTitle?: string;
@@ -36,13 +39,19 @@ function formatDate(iso: string): string {
 }
 
 function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargeProvisionPageProps) {
-  const { canView, canCreate } = usePermission();
+  const { canView, canCreate, canEdit, canDelete } = usePermission();
   const [summaries, setSummaries] = useState<ChargeProvisionSummary[]>([]);
   const [movements, setMovements] = useState<ChargeProvisionRow[]>([]);
   const [selectedCharge, setSelectedCharge] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showApproModal, setShowApproModal] = useState(false);
+  const [editingAppro, setEditingAppro] = useState<ChargeProvisionRow | null>(null);
+  const [approContextMenu, setApproContextMenu] = useState<{
+    row: ChargeProvisionRow;
+    position: { x: number; y: number };
+  } | null>(null);
+  const [deletingApproId, setDeletingApproId] = useState<number | null>(null);
   const [viewInvoice, setViewInvoice] = useState<GlobalInvoice | null>(null);
   const [openingInvoice, setOpeningInvoice] = useState<string | null>(null);
 
@@ -133,6 +142,52 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
   const displayTotalOut = movements.length > 0 ? totals.totalOut : (selectedSummary?.totalOut ?? 0);
   const currentSolde = displayTotalIn - displayTotalOut;
 
+  const openNewApproModal = () => {
+    setEditingAppro(null);
+    setShowApproModal(true);
+  };
+
+  const openEditApproModal = (row: ChargeProvisionRow) => {
+    setEditingAppro(row);
+    setShowApproModal(true);
+    setApproContextMenu(null);
+  };
+
+  const handleApproContextMenu = (e: React.MouseEvent, row: ChargeProvisionRow) => {
+    if (!canEdit('charges') && !canDelete('charges')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setApproContextMenu({
+      row,
+      position: { x: e.clientX, y: e.clientY },
+    });
+  };
+
+  const handleDeleteAppro = async (row: ChargeProvisionRow) => {
+    if (!canDelete('charges')) return;
+    const ref = getApproReference(row);
+    const confirmed = window.confirm(
+      `Supprimer l'approvisionnement ${ref} (${formatUsd(row.Montant)}) ?\nLes soldes seront recalculés.`,
+    );
+    if (!confirmed) return;
+
+    setApproContextMenu(null);
+    setDeletingApproId(row.ID);
+    setError('');
+    try {
+      await chargeProvisionService.deleteAppro(row.ID);
+      if (selectedCharge) {
+        await loadData();
+        await loadMovements(selectedCharge);
+      }
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Erreur lors de la suppression.');
+    } finally {
+      setDeletingApproId(null);
+    }
+  };
+
   const handleViewInvoice = async (invoiceNumber: string | null) => {
     if (!invoiceNumber?.trim()) return;
     setOpeningInvoice(invoiceNumber);
@@ -161,7 +216,15 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
       <div className="sticky top-0 z-10 border-b border-gray-200 bg-white shadow-sm">
         <div className="flex items-center justify-between gap-4 p-6 pb-4">
           <div>
-            <h1 className="text-xl font-bold text-gray-900">{menuTitle}</h1>
+            <h1 className="flex items-center gap-2.5 text-xl font-bold text-gray-900">
+              <img
+                src={globeIcon}
+                alt=""
+                className="h-8 w-8 shrink-0 object-contain"
+                aria-hidden
+              />
+              {menuTitle}
+            </h1>
             <p className="mt-1 text-sm text-gray-600">
               Suivi des approvisionnements et sorties liées aux charges en abonnement
             </p>
@@ -178,7 +241,7 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
             {canCreate('charges') && selectedCharge && (
               <button
                 type="button"
-                onClick={() => setShowApproModal(true)}
+                onClick={openNewApproModal}
                 className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 text-sm font-medium text-white shadow-md transition hover:from-blue-600 hover:to-blue-700"
               >
                 <Plus size={16} />
@@ -388,7 +451,10 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
                           appros.map((row) => (
                             <tr
                               key={row.ID}
-                              className="border-b border-emerald-100/80 transition hover:bg-emerald-100/40"
+                              className={`cursor-context-menu border-b border-emerald-100/80 transition hover:bg-emerald-100/40 ${
+                                deletingApproId === row.ID ? 'opacity-50' : ''
+                              }`}
+                              onContextMenu={(e) => handleApproContextMenu(e, row)}
                             >
                               <td className="px-3 py-2.5 text-gray-800">{formatDate(row.Date_operation)}</td>
                               <td className="px-3 py-2.5">
@@ -415,11 +481,54 @@ function ChargeProvisionPage({ menuTitle = 'Charges provisionnées' }: ChargePro
         </main>
       </div>
 
+      {approContextMenu && (canEdit('charges') || canDelete('charges')) && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setApproContextMenu(null)}
+            onContextMenu={(e) => e.preventDefault()}
+          />
+          <div
+            className="fixed z-50 min-w-[11rem] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+            style={{
+              left: `${Math.min(approContextMenu.position.x, window.innerWidth - 200)}px`,
+              top: `${Math.min(approContextMenu.position.y, window.innerHeight - 120)}px`,
+            }}
+          >
+            {canEdit('charges') && (
+              <button
+                type="button"
+                onClick={() => openEditApproModal(approContextMenu.row)}
+                className="flex w-full items-center gap-2 border-b border-gray-100 px-4 py-2.5 text-left text-sm text-gray-700 transition hover:bg-emerald-50"
+              >
+                <Pencil size={14} className="text-emerald-700" />
+                Modifier
+              </button>
+            )}
+            {canDelete('charges') && (
+              <button
+                type="button"
+                onClick={() => void handleDeleteAppro(approContextMenu.row)}
+                disabled={deletingApproId === approContextMenu.row.ID}
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+              >
+                <Trash2 size={14} />
+                Supprimer
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
       {selectedCharge && (
         <ChargeProvisionApproModal
           isOpen={showApproModal}
           charge={selectedCharge}
-          onClose={() => setShowApproModal(false)}
+          editingAppro={editingAppro}
+          onClose={() => {
+            setShowApproModal(false);
+            setEditingAppro(null);
+          }}
           onSaved={() => {
             void loadData();
             void loadMovements(selectedCharge);
