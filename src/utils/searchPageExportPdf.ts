@@ -11,8 +11,39 @@ const GAP = 2;
 const BODY_SIZE = 8.2;
 const HEADER_SIZE = 9;
 const META_SIZE = 9;
-/** Titre principal (ex. DÉTAIL — …) */
+/** Titre principal (ex. FACTURES ÉCHUES) */
 const TITLE_SIZE = 11.5;
+
+export type SearchDetailPdfStatusKey = 'unpaid' | 'overdue' | 'rejected' | 'paid';
+
+const SEARCH_DETAIL_PDF_TITLES: Record<SearchDetailPdfStatusKey, string> = {
+  unpaid: 'FACTURES NON PAYÉES',
+  overdue: 'FACTURES ÉCHUES',
+  rejected: 'FACTURES REJETÉES',
+  paid: 'FACTURES PAYÉES',
+};
+
+function getSearchDetailPdfTitle(
+  statusKey: SearchDetailPdfStatusKey | undefined,
+  statusLabel: string,
+): string {
+  if (statusKey && SEARCH_DETAIL_PDF_TITLES[statusKey]) {
+    return SEARCH_DETAIL_PDF_TITLES[statusKey];
+  }
+  const norm = statusLabel
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const byLabel: Record<string, string> = {
+    'non payees': 'FACTURES NON PAYÉES',
+    echues: 'FACTURES ÉCHUES',
+    rejetees: 'FACTURES REJETÉES',
+    payees: 'FACTURES PAYÉES',
+    'en attente de validation': 'FACTURES EN ATTENTE DE VALIDATION',
+  };
+  return byLabel[norm] ?? `FACTURES ${statusLabel.toUpperCase()}`;
+}
 const STAMP_SIZE = 9;
 
 const HEADER_FILL = rgb(0.72, 0.16, 0.2);
@@ -26,7 +57,6 @@ const GRAY_META = rgb(0.35, 0.35, 0.38);
 const RED_SOLDE = rgb(0.55, 0.08, 0.12);
 const GREEN_PAID = rgb(0.05, 0.55, 0.38);
 const ROW_ALT = rgb(0.86, 0.86, 0.88);
-const ROW_ECHUE = rgb(0.99, 0.93, 0.93);
 const WHITE = rgb(1, 1, 1);
 const META_BOX = rgb(0.98, 0.98, 0.99);
 const RED_ACCENT = rgb(0.72, 0.14, 0.17);
@@ -47,10 +77,6 @@ function formatCellDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('fr-FR');
-}
-
-function isInvoiceEchue(status: string): boolean {
-  return String(status || '').toUpperCase().includes('ÉCHU') || String(status || '').toUpperCase().includes('ECHU');
 }
 
 function isInvoiceFullyPaid(status: string): boolean {
@@ -404,13 +430,14 @@ function drawTotalsBlock(
 export async function downloadSearchDetailStatusPdf(opts: {
   rows: SearchPdfInvoiceRow[];
   totals: { montant: number; paiement: number; solde: number };
+  statusKey?: SearchDetailPdfStatusKey;
   statusLabel: string;
   filterLabel: string;
   metaLine: string;
   formatMoney: (n: number) => string;
   fileName: string;
 }): Promise<void> {
-  const { rows, totals, statusLabel, filterLabel, metaLine, fileName } = opts;
+  const { rows, totals, statusKey, statusLabel, filterLabel, metaLine, fileName } = opts;
   const pdf = await PDFDocument.create();
   const { font, fontBold } = await embedReportFonts(pdf);
 
@@ -441,7 +468,7 @@ export async function downloadSearchDetailStatusPdf(opts: {
     hour: '2-digit',
     minute: '2-digit',
   });
-  const title = `DÉTAIL — ${statusLabel.toUpperCase()}`;
+  const title = getSearchDetailPdfTitle(statusKey, statusLabel);
   const rowH = detailBodySize + 9;
   const footerH = 78;
   const metaParts = splitDetailMetaLine(metaLine);
@@ -580,10 +607,8 @@ export async function downloadSearchDetailStatusPdf(opts: {
   y = tableBottom - 4;
 
   const drawRow = (p: PDFPage, inv: SearchPdfInvoiceRow, idx: number, yy: number): number => {
-    const echue = isInvoiceEchue(inv.status);
     const zebra = idx % 2 === 1;
-    let bg = zebra ? ROW_ALT : WHITE;
-    if (echue) bg = ROW_ECHUE;
+    const bg = zebra ? ROW_ALT : WHITE;
     p.drawRectangle({
       x: MARGIN,
       y: yy - rowH,
@@ -612,9 +637,7 @@ export async function downloadSearchDetailStatusPdf(opts: {
           ? isInvoiceFullyPaid(inv.status)
             ? GREEN_PAID
             : RED_SOLDE
-          : c === 4 && echue
-            ? RED_SOLDE
-            : TEXT;
+          : TEXT;
       const f = c === 1 || c >= 5 ? fontBold : font;
       const t = fitText(raw, w - 4, f, detailBodySize);
       if (alignRight) {
@@ -732,7 +755,7 @@ export async function downloadReleveSoaPdf(opts: {
     const bw = font.widthOfTextAtSize(brand, STAMP_SIZE);
     p.drawText(brand, { x: PAGE_W - MARGIN - bw, y: yy - STAMP_SIZE * 0.85, size: STAMP_SIZE, font, color: GRAY_META });
     yy -= 22;
-    const ttl = 'RELEVÉ — STATEMENT OF ACCOUNT (SOA)';
+    const ttl = 'RELEVÉ DE FACTURES';
     const tw = fontBold.widthOfTextAtSize(ttl, TITLE_SIZE - 1);
     p.drawText(ttl, { x: MARGIN + (contentW - tw) / 2, y: yy - (TITLE_SIZE - 1) * 0.85, size: TITLE_SIZE - 1, font: fontBold, color: TEXT });
     yy -= TITLE_SIZE + 4;
@@ -796,10 +819,8 @@ export async function downloadReleveSoaPdf(opts: {
   y = tableBottom - 4;
 
   const drawRelRow = (p: PDFPage, inv: SearchPdfInvoiceRow, idx: number, yy: number): number => {
-    const echue = isInvoiceEchue(inv.status);
     const zebra = idx % 2 === 1;
-    let bg = zebra ? ROW_ALT : WHITE;
-    if (echue) bg = ROW_ECHUE;
+    const bg = zebra ? ROW_ALT : WHITE;
     p.drawRectangle({ x: MARGIN, y: yy - rowH, width: contentW, height: rowH, color: bg });
     const baseline = baselineVerticallyCentered(yy, rowH, BODY_SIZE);
     const cells = [
@@ -822,9 +843,7 @@ export async function downloadReleveSoaPdf(opts: {
           ? isInvoiceFullyPaid(inv.status)
             ? GREEN_PAID
             : RED_SOLDE
-          : c === 4 && echue
-            ? RED_SOLDE
-            : TEXT;
+          : TEXT;
       const f = c === 1 || c >= 5 ? fontBold : font;
       const t = fitText(raw, w - 4, f, BODY_SIZE);
       if (alignRight) drawRight(p, t, cx + w - 2, baseline, BODY_SIZE, f, color, w);

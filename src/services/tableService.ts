@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import type { ChargeSeuils } from '../utils/chargeSeuils';
+import { mergeChargeSeuils, parseChargeSeuils } from '../utils/chargeSeuils';
 
 // COMPTES
 export interface Compte {
@@ -217,12 +219,30 @@ export const agentService = {
   },
 };
 
+function normalizeChargeAbonnement(value: string | null | undefined): string {
+  const u = String(value ?? 'NON').trim().toUpperCase();
+  return u === 'OUI' ? 'OUI' : 'NON';
+}
+
 // CHARGES
 export interface Charge {
   ID?: number;
   designation_Charges: string;
   Bloquant: string;
   type?: string | null;
+  abonnement?: string | null;
+  Seuils?: ChargeSeuils | Record<string, unknown> | string | null;
+}
+
+function serializeChargeSeuils(
+  abonnement: string,
+  seuils: Charge['Seuils'],
+): ChargeSeuils | null {
+  if (abonnement !== 'OUI') return null;
+  const parsed = typeof seuils === 'object' && seuils !== null && 'alerte' in seuils
+    ? (seuils as ChargeSeuils)
+    : parseChargeSeuils(seuils);
+  return mergeChargeSeuils(parsed);
 }
 
 export const chargeService = {
@@ -242,10 +262,13 @@ export const chargeService = {
       throw new Error('Bloquant doit être OUI ou NON');
     }
     
+    const abonnement = normalizeChargeAbonnement(charge.abonnement);
     const payload = {
       designation_Charges: charge.designation_Charges,
       Bloquant: bloquant,
       type: charge.type || null,
+      abonnement,
+      Seuils: serializeChargeSeuils(abonnement, charge.Seuils),
     };
 
     const { data, error } = await supabase
@@ -273,6 +296,17 @@ export const chargeService = {
 
     if (charge.type !== undefined) {
       updateData.type = charge.type || null;
+    }
+
+    if (charge.abonnement !== undefined) {
+      updateData.abonnement = normalizeChargeAbonnement(charge.abonnement);
+    }
+
+    if (charge.Seuils !== undefined || charge.abonnement !== undefined) {
+      const ab = normalizeChargeAbonnement(
+        charge.abonnement ?? (updateData.abonnement as string | undefined) ?? 'NON',
+      );
+      (updateData as Record<string, unknown>).Seuils = serializeChargeSeuils(ab, charge.Seuils);
     }
     
     const { data, error } = await supabase

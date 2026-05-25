@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import bcrypt from 'bcryptjs';
 import { supabase } from '../services/supabase';
+import { refreshLogs } from '../hooks/useDataRefresh';
 import { Agent } from '../types';
 
 interface AuthContextType {
@@ -87,7 +88,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Email et mot de passe corrects - enregistrer l'agent
+      const nowIso = new Date().toISOString();
+      const { error: connexionError } = await supabase
+        .from('AGENTS')
+        .update({ Derniere_connexion: nowIso })
+        .eq('ID', data.ID);
+
+      if (connexionError) {
+        console.warn('Impossible de mettre à jour Derniere_connexion:', connexionError.message);
+      }
+
       const agentData: Agent = {
         ID: data.ID,
         Nom: data.Nom,
@@ -99,10 +109,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         Mot_de_passe: data['mot de passe'],
         permission: data.permission,
         Date_creation: data.Date_creation,
-        Derniere_connexion: data.Derniere_connexion,
+        Derniere_connexion: connexionError ? data.Derniere_connexion : nowIso,
       };
 
       setAgent(agentData);
+      refreshLogs();
     } catch (err) {
       console.error('Error signing in:', err);
       setError('Erreur lors de la connexion');

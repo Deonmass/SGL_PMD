@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Search, RefreshCw, Download, ClipboardList, X, FileText, FileDown, FileSpreadsheet, RotateCcw, ChevronDown } from 'lucide-react';
+import { Search, RefreshCw, Download, ClipboardList, X, FileText, FileDown, FileSpreadsheet, RotateCcw, ArrowLeft } from 'lucide-react';
+import Swal from 'sweetalert2';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 import { usePermission } from '../hooks/usePermission';
@@ -7,11 +8,19 @@ import { useAuth } from '../contexts/AuthContext';
 import AccessDenied from '../components/AccessDenied';
 import ViewInvoiceModal from '../components/ViewInvoiceModal';
 import PaiementModal from '../components/PaiementModal';
+import EditInvoiceForm from '../components/EditInvoiceForm';
+import ContextMenu from '../components/ContextMenu';
 import { Invoice as GlobalInvoice } from '../types';
-import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
+import { refreshAllData, useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { downloadReleveSoaPdf, downloadSearchDetailStatusPdf, type SearchPdfInvoiceRow } from '../utils/searchPageExportPdf';
 import { formatTransportCompact } from '../constants/transportTitles';
+import {
+  appendFactureDeletionAuditLog,
+  appendFactureLogByInvoiceNumber,
+  buildLogActor,
+} from '../services/activityLogService';
+import { cloudStorageService } from '../services/cloudStorage';
 
 type LeftSearchTab = 'supplier' | 'dossier' | 'gestionnaire' | 'client' | 'transport';
 
@@ -35,6 +44,8 @@ function SearchCriteriaCard({
   isSelected: boolean;
   onClick: () => void;
 }) {
+  const isNonRenseigne = label === 'Non renseigné';
+
   return (
     <div
       role="button"
@@ -47,10 +58,18 @@ function SearchCriteriaCard({
         }
       }}
       className={`p-3 rounded-lg cursor-pointer transition-all duration-200 overflow-hidden ${
-        isSelected ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
+        isSelected
+          ? 'bg-blue-600 text-white shadow-md hover:bg-blue-700'
+          : 'bg-gray-50 text-gray-900 hover:bg-blue-50 hover:shadow-md hover:ring-1 hover:ring-blue-200'
       }`}
     >
-      <div className="font-semibold text-sm break-words">{label}</div>
+      <div
+        className={`font-semibold text-sm break-words ${
+          isNonRenseigne ? (isSelected ? 'text-red-200' : 'text-red-600') : ''
+        }`}
+      >
+        {label}
+      </div>
       <div className={`text-xs mt-1 ${isSelected ? 'text-blue-100' : 'text-gray-600'}`}>
         <span>
           Solde à payer:{' '}
@@ -85,6 +104,21 @@ function getInvoiceTransportKey(transportTitle: string, transportNumero: string)
   return 'Non renseigné';
 }
 
+function getDisplayDossierNumber(inv: Invoice): string {
+  let dossierNumber =
+    inv.numeroDossier && inv.numeroDossier.trim() !== '' ? inv.numeroDossier : inv.invoiceNumber;
+
+  if (!inv.numeroDossier || inv.numeroDossier.trim() === '') {
+    if (inv.invoiceNumber.includes('/')) {
+      dossierNumber = inv.invoiceNumber.split('/')[0];
+    } else if (inv.invoiceNumber.includes('-')) {
+      dossierNumber = inv.invoiceNumber.split('-')[0];
+    }
+  }
+
+  return dossierNumber.trim() || '—';
+}
+
 function escapeHtml(s: string): string {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -109,47 +143,6 @@ function formatReleveDueDate(d: string | null): string {
   const t = new Date(d);
   if (Number.isNaN(t.getTime())) return '-';
   return t.toLocaleDateString('fr-FR');
-}
-
-function startOfLocalDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-/** Écart en mois calendaires + jours (from ≤ to). */
-function diffCalendarMonthsDays(from: Date, to: Date): { months: number; days: number } {
-  let months = to.getMonth() - from.getMonth() + 12 * (to.getFullYear() - from.getFullYear());
-  let days = to.getDate() - from.getDate();
-  if (days < 0) {
-    months -= 1;
-    days += new Date(to.getFullYear(), to.getMonth(), 0).getDate();
-  }
-  return { months, days };
-}
-
-/** Libellé court pour l’écart entre aujourd’hui et la date d’échéance (export / tableaux). */
-function formatTempsRestantEcheance(dueDateStr: string | null, ref: Date = new Date()): string {
-  if (!dueDateStr) return '—';
-  const due = new Date(dueDateStr);
-  if (Number.isNaN(due.getTime())) return '—';
-  const today = startOfLocalDay(ref);
-  const dueDay = startOfLocalDay(due);
-  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / 86400000);
-  if (diffDays === 0) return "Aujourd'hui";
-  if (diffDays > 0) {
-    const { months, days } = diffCalendarMonthsDays(today, dueDay);
-    if (months === 0) return `${diffDays} jrs`;
-    if (days === 0) return `${months} mois`;
-    return `${months} mois et ${days} jrs`;
-  }
-  const late = -diffDays;
-  const { months, days } = diffCalendarMonthsDays(dueDay, today);
-  if (months === 0) return `${late} jrs de retard`;
-  if (days === 0) return `${months} mois de retard`;
-  return `${months} mois et ${days} jrs de retard`;
-}
-
-function isReleveInvoiceEchue(inv: Invoice): boolean {
-  return inv.status === 'ÉCHUE';
 }
 
 function isReleveInvoiceFullyPaid(inv: Invoice): boolean {
@@ -230,6 +223,42 @@ interface Invoice {
   isRejected: boolean;
 }
 
+function searchInvoiceToGlobal(inv: Invoice): GlobalInvoice {
+  const idNum = parseInt(inv.id, 10);
+  const currency: GlobalInvoice['currency'] =
+    inv.currency === 'USD' || inv.currency === 'CDF' || inv.currency === 'EUR' ? inv.currency : 'USD';
+  const reg = String(inv.region || 'OUEST').toUpperCase();
+  const region: GlobalInvoice['region'] =
+    reg === 'OUEST' || reg === 'SUD' || reg === 'EST' || reg === 'NORD' ? reg : 'OUEST';
+  let status: GlobalInvoice['status'] = 'pending';
+  const st = inv.status.toUpperCase();
+  if (st.includes('PAY') && !st.includes('PARTIEL')) status = 'paid';
+  else if (inv.isRejected || st.includes('REJET')) status = 'rejected';
+  else if (st.includes('ÉCHU') || st.includes('ECHU')) status = 'overdue';
+
+  return {
+    id: Number.isNaN(idNum) ? 0 : idNum,
+    invoiceNumber: inv.invoiceNumber,
+    supplier: inv.supplier,
+    receptionDate: inv.date,
+    amount: inv.amount,
+    currency,
+    chargeCategory: '',
+    urgencyLevel: 'Basse',
+    status,
+    region,
+    validations: 0,
+    emissionDate: inv.date,
+    dueDate: inv.dueDate || undefined,
+    client: inv.client || undefined,
+    fileNumber: inv.numeroDossier || undefined,
+    manager: inv.manager || undefined,
+    costCenter: inv.costCenter || undefined,
+    transportTitle: inv.transportTitle || undefined,
+    numero: inv.transportNumero || undefined,
+  };
+}
+
 function invoiceToSearchPdfRow(inv: Invoice): SearchPdfInvoiceRow {
   return {
     invoiceNumber: inv.invoiceNumber,
@@ -255,6 +284,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
   const [selectedInvoiceForModal, setSelectedInvoiceForModal] = useState<GlobalInvoice | null>(null);
   const [showViewInvoiceModal, setShowViewInvoiceModal] = useState(false);
   const [showPaiementModal, setShowPaiementModal] = useState(false);
+  const [paiementModalReadOnly, setPaiementModalReadOnly] = useState(true);
+  const [editInvoiceModal, setEditInvoiceModal] = useState<GlobalInvoice | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    invoice: GlobalInvoice;
+    position: { x: number; y: number };
+  } | null>(null);
 
   /** Carte statut sélectionnée → détail tableau en dessous */
   const [detailStatusKey, setDetailStatusKey] = useState<'unpaid' | 'overdue' | 'rejected' | 'paid' | null>(null);
@@ -289,14 +324,15 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     selectedTransport
   );
 
-  const [expandedLeftTab, setExpandedLeftTab] = useState<LeftSearchTab | null>('supplier');
+  const [expandedLeftTab, setExpandedLeftTab] = useState<LeftSearchTab | null>(null);
 
-  const toggleLeftAccordion = useCallback((tab: LeftSearchTab) => {
-    setExpandedLeftTab((prev) => {
-      const next = prev === tab ? null : tab;
-      if (next) setActiveLeftTab(next);
-      return next;
-    });
+  const openLeftAccordion = useCallback((tab: LeftSearchTab) => {
+    setExpandedLeftTab(tab);
+    setActiveLeftTab(tab);
+  }, []);
+
+  const closeLeftAccordion = useCallback(() => {
+    setExpandedLeftTab(null);
   }, []);
 
   // Search & Filter states
@@ -324,6 +360,11 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     );
     return tabs;
   }, [selectedInvoiceType]);
+
+  const expandedTabMeta = useMemo(
+    () => leftSearchTabs.find((t) => t.id === expandedLeftTab),
+    [leftSearchTabs, expandedLeftTab],
+  );
 
   // Filtres année + plage (visibles seulement après choix fournisseur ou dossier) — par défaut : année seule
   const [filterDateStart, setFilterDateStart] = useState<string>('');
@@ -478,7 +519,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
   useEffect(() => {
     if (selectedInvoiceType === 'frais-generaux' && activeLeftTab === 'dossier') {
       setActiveLeftTab('supplier');
-      setExpandedLeftTab('supplier');
+      setExpandedLeftTab(null);
       setSelectedDossier(null);
     }
   }, [selectedInvoiceType, activeLeftTab]);
@@ -1060,24 +1101,11 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
 
   const handleInvoiceClick = async (invoice: Invoice) => {
     try {
-      const globalInvoice: GlobalInvoice = {
-        id: parseInt(invoice.id),
-        invoiceNumber: invoice.invoiceNumber,
-        supplier: invoice.supplier,
-        receptionDate: invoice.date,
-        amount: invoice.amount,
-        currency: (invoice.currency === 'USD' || invoice.currency === 'CDF' || invoice.currency === 'EUR') ? invoice.currency : 'USD',
-        chargeCategory: '',
-        urgencyLevel: 'Basse',
-        status: invoice.status === 'PAYÉE' ? 'paid' : 'pending',
-        region: (invoice.region as 'OUEST' | 'SUD' | 'EST' | 'NORD') || 'OUEST',
-        validations: 0,
-        emissionDate: invoice.date,
-      };
-
+      const globalInvoice = searchInvoiceToGlobal(invoice);
       setSelectedInvoiceForModal(globalInvoice);
       // Si totalPaid > 0, afficher PaiementModal en lecture; sinon ViewInvoiceModal
       if (invoice.totalPaid > 0) {
+        setPaiementModalReadOnly(true);
         setShowPaiementModal(true);
       } else {
         setShowViewInvoiceModal(true);
@@ -1085,6 +1113,98 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     } catch (err) {
       console.error('Erreur:', err);
       setShowViewInvoiceModal(true);
+    }
+  };
+
+  const contextMenuActiveMenu =
+    selectedInvoiceType === 'frais-generaux' ? 'factures-ffg' : 'factures';
+
+  const handleContextMenu = (e: React.MouseEvent, invoice: Invoice) => {
+    e.preventDefault();
+    setContextMenu({
+      invoice: searchInvoiceToGlobal(invoice),
+      position: { x: e.clientX, y: e.clientY },
+    });
+  };
+
+  const handleContextView = (invoice: GlobalInvoice) => {
+    setSelectedInvoiceForModal(invoice);
+    setShowViewInvoiceModal(true);
+  };
+
+  const handleContextEdit = (invoice: GlobalInvoice) => {
+    setEditInvoiceModal(invoice);
+  };
+
+  const handleContextPay = (invoice: GlobalInvoice) => {
+    setSelectedInvoiceForModal(invoice);
+    setPaiementModalReadOnly(false);
+    setShowPaiementModal(true);
+  };
+
+  const handleContextDelete = async (invoice: GlobalInvoice) => {
+    if (!invoice?.id) {
+      Swal.fire('Erreur', 'Facture invalide, suppression impossible.', 'error');
+      return;
+    }
+
+    const result = await Swal.fire({
+      title: 'Supprimer cette facture ?',
+      text: `La facture ${invoice.invoiceNumber} sera supprimée définitivement.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Supprimer',
+      cancelButtonText: 'Annuler',
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#9ca3af',
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      try {
+        const actor = buildLogActor(agent);
+        await appendFactureLogByInvoiceNumber(
+          invoice.invoiceNumber,
+          actor,
+          'Suppression',
+          'Facture supprimée depuis la recherche avancée.',
+        );
+        await appendFactureDeletionAuditLog({
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceType: selectedInvoiceType,
+          actor,
+          explication: 'Facture supprimée depuis la recherche avancée.',
+        });
+      } catch (logError) {
+        console.error('Erreur journalisation facture (suppression):', logError);
+      }
+
+      const { data: attachmentRow } = await supabase
+        .from('FACTURES')
+        .select('"URL facture jointe"')
+        .eq('ID', invoice.id)
+        .maybeSingle();
+
+      const attachedUrl = (attachmentRow as Record<string, unknown> | null)?.['URL facture jointe'];
+      if (typeof attachedUrl === 'string' && attachedUrl.trim()) {
+        const storageOk = await cloudStorageService.deleteInvoiceAttachmentByUrl(attachedUrl);
+        if (!storageOk) {
+          console.warn('Suppression du fichier attaché impossible:', attachedUrl);
+        }
+      }
+
+      const { error } = await supabase.from('FACTURES').delete().eq('ID', invoice.id);
+      if (error) {
+        Swal.fire('Erreur', `Suppression impossible: ${error.message}`, 'error');
+        return;
+      }
+
+      Swal.fire('Succès', 'Facture supprimée avec succès.', 'success');
+      refreshAllData();
+      await loadSearchData();
+    } catch (error) {
+      console.error('Erreur suppression facture:', error);
+      Swal.fire('Erreur', 'Une erreur est survenue lors de la suppression.', 'error');
     }
   };
 
@@ -1189,7 +1309,6 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       Fournisseur: inv.supplier,
       'Date réception': formatReleveDueDate(inv.date),
       'Échéance': formatReleveDueDate(inv.dueDate),
-      'Temps restant': formatTempsRestantEcheance(inv.dueDate),
       Montant: inv.amount,
       Paiement: inv.totalPaid,
       Solde: inv.restAPayer,
@@ -1291,11 +1410,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       await downloadSearchDetailStatusPdf({
         rows: rows.map(invoiceToSearchPdfRow),
         totals,
+        statusKey: detailStatusKey ?? undefined,
         statusLabel,
         filterLabel,
         metaLine,
         formatMoney,
-        fileName: `Detail_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`,
+        fileName: `Factures_${safeKey}_${new Date().toISOString().slice(0, 10)}.pdf`,
       });
     } catch (e) {
       console.error(e);
@@ -1311,9 +1431,10 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
     items: SearchCriteriaListItem[],
     selectedKey: string | null,
     onPick: (key: string | null) => void,
+    fullHeight = false,
   ) => (
-    <>
-      <div className="mb-3 relative">
+    <div className={fullHeight ? 'flex min-h-0 flex-1 flex-col' : undefined}>
+      <div className="mb-3 relative shrink-0">
         <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
         <input
           type="text"
@@ -1324,7 +1445,13 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
-      <div className="space-y-2 max-h-[min(40vh,16rem)] overflow-y-auto pr-0.5">
+      <div
+        className={
+          fullHeight
+            ? 'min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5'
+            : 'space-y-2 max-h-[min(65vh,28rem)] overflow-y-auto pr-0.5'
+        }
+      >
         {items.length === 0 ? (
           <div className="text-center py-6 text-gray-500 text-sm">{emptyMessage}</div>
         ) : (
@@ -1340,10 +1467,10 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
           ))
         )}
       </div>
-    </>
+    </div>
   );
 
-  const renderLeftAccordionPanel = (tabId: LeftSearchTab) => {
+  const renderLeftAccordionPanel = (tabId: LeftSearchTab, fullHeight = false) => {
     switch (tabId) {
       case 'supplier':
         return renderCriteriaListSection(
@@ -1363,6 +1490,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             setSelectedClient(null);
             setSelectedTransport(null);
           },
+          fullHeight,
         );
       case 'dossier':
         return renderCriteriaListSection(
@@ -1382,6 +1510,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             setSelectedClient(null);
             setSelectedTransport(null);
           },
+          fullHeight,
         );
       case 'gestionnaire':
         return renderCriteriaListSection(
@@ -1401,6 +1530,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             setSelectedClient(null);
             setSelectedTransport(null);
           },
+          fullHeight,
         );
       case 'client':
         return renderCriteriaListSection(
@@ -1420,6 +1550,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             setSelectedGestionnaire(null);
             setSelectedTransport(null);
           },
+          fullHeight,
         );
       case 'transport':
         return renderCriteriaListSection(
@@ -1439,6 +1570,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
             setSelectedGestionnaire(null);
             setSelectedClient(null);
           },
+          fullHeight,
         );
       default:
         return null;
@@ -1636,51 +1768,52 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                 : 'w-full lg:w-80 lg:min-w-[15rem]'
             } border border-gray-200 rounded-lg bg-white overflow-hidden h-full min-h-0 flex flex-col pb-2`}>
               
-              {/* Accordéon critères — contenu sous chaque onglet */}
+              {/* Critères : liste de boutons ou panneau liste (bouton fixé + retour) */}
               <div
-                className="flex-1 min-h-0 overflow-y-auto"
+                className="flex flex-1 min-h-0 flex-col overflow-hidden"
                 role="region"
                 aria-label="Critères de recherche"
               >
-                {leftSearchTabs.map((tab) => {
-                  const isExpanded = expandedLeftTab === tab.id;
-                  const panelId = `search-accordion-panel-${tab.id}`;
-                  return (
-                    <section key={tab.id} className="border-b border-gray-200 last:border-b-0">
+                {expandedLeftTab && expandedTabMeta ? (
+                  <div className="flex h-full min-h-0 flex-col p-2">
+                    <div className="sticky top-0 z-10 shrink-0 flex items-stretch pb-2 bg-white">
                       <button
                         type="button"
-                        id={`search-accordion-trigger-${tab.id}`}
-                        aria-expanded={isExpanded}
-                        aria-controls={panelId}
-                        onClick={() => toggleLeftAccordion(tab.id)}
-                        className={`flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs font-medium transition-colors ${
-                          isExpanded
-                            ? 'border-l-4 border-l-blue-600 bg-white text-gray-900'
-                            : 'border-l-4 border-l-transparent bg-gray-50 text-gray-700 hover:bg-gray-100'
-                        }`}
+                        onClick={closeLeftAccordion}
+                        aria-label="Retour aux critères"
+                        className="shrink-0 rounded-l-md border border-r-0 border-slate-300 bg-slate-100 px-2.5 py-2.5 text-slate-700 shadow-sm transition-all duration-200 hover:border-blue-400 hover:bg-blue-100 hover:text-blue-900 active:scale-[0.98]"
                       >
-                        <span>{tab.label}</span>
-                        <ChevronDown
-                          size={16}
-                          className={`shrink-0 text-gray-500 transition-transform duration-200 ${
-                            isExpanded ? 'rotate-180' : ''
-                          }`}
-                          aria-hidden
-                        />
+                        <ArrowLeft size={18} strokeWidth={2.5} />
                       </button>
-                      {isExpanded && (
-                        <div
-                          id={panelId}
-                          role="region"
-                          aria-labelledby={`search-accordion-trigger-${tab.id}`}
-                          className="border-t border-gray-100 bg-white px-3 py-3"
-                        >
-                          {renderLeftAccordionPanel(tab.id)}
-                        </div>
-                      )}
-                    </section>
-                  );
-                })}
+                      <div
+                        className="min-w-0 flex-1 rounded-r-md border border-l-0 border-blue-500 bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white shadow-md transition-all duration-200 hover:bg-blue-700 hover:shadow-lg"
+                        aria-current="true"
+                      >
+                        {expandedTabMeta.label}
+                      </div>
+                    </div>
+                    <div
+                      id={`search-accordion-panel-${expandedLeftTab}`}
+                      className="flex min-h-0 flex-1 flex-col rounded-md border border-blue-200/80 bg-white px-3 py-3 shadow-sm"
+                    >
+                      {renderLeftAccordionPanel(expandedLeftTab, true)}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="overflow-y-auto p-2 space-y-2">
+                    {leftSearchTabs.map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        id={`search-accordion-trigger-${tab.id}`}
+                        onClick={() => openLeftAccordion(tab.id)}
+                        className="w-full rounded-md border border-slate-200 bg-slate-100 px-3 py-2.5 text-left text-xs font-semibold text-slate-800 shadow-sm transition-all duration-200 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-900 hover:shadow-md active:scale-[0.98]"
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1779,9 +1912,9 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">N° Facture</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Fournisseur</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Client</th>
+                                <th className="px-3 py-2 text-left font-semibold text-gray-900">N° dossier</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Date réception</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Date d&apos;échéance</th>
-                                <th className="px-3 py-2 text-right font-semibold text-gray-900">Temps restant</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant facture</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Montant payé</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Solde à payer</th>
@@ -1795,16 +1928,12 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                   </td>
                                 </tr>
                               ) : (
-                                detailInvoicesForCard().map((inv) => {
-                                  const temps = formatTempsRestantEcheance(inv.dueDate);
-                                  const tempsClass =
-                                    temps.includes('retard') || isReleveInvoiceEchue(inv)
-                                      ? 'text-red-700 font-semibold'
-                                      : temps === "Aujourd'hui"
-                                        ? 'text-amber-700 font-semibold'
-                                        : 'text-gray-700';
-                                  return (
-                                  <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50">
+                                detailInvoicesForCard().map((inv) => (
+                                  <tr
+                                    key={inv.id}
+                                    className="border-b border-gray-100 hover:bg-blue-50 cursor-context-menu transition-colors"
+                                    onContextMenu={(e) => handleContextMenu(e, inv)}
+                                  >
                                     <td className="px-3 py-2">
                                       <button
                                         type="button"
@@ -1823,17 +1952,18 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                     >
                                       {inv.client.trim() || '—'}
                                     </td>
+                                    <td
+                                      className="px-3 py-2 text-gray-700 max-w-[120px] truncate"
+                                      title={getDisplayDossierNumber(inv)}
+                                    >
+                                      {getDisplayDossierNumber(inv)}
+                                    </td>
                                     <td className="px-3 py-2 text-gray-700">
                                       {new Date(inv.date).toLocaleDateString('fr-FR')}
                                     </td>
-                                    <td
-                                      className={`px-3 py-2 text-right tabular-nums ${
-                                        isReleveInvoiceEchue(inv) ? 'font-semibold text-red-800' : 'text-gray-700'
-                                      }`}
-                                    >
+                                    <td className="px-3 py-2 text-right tabular-nums text-gray-700">
                                       {formatReleveDueDate(inv.dueDate)}
                                     </td>
-                                    <td className={`px-3 py-2 text-right ${tempsClass}`}>{temps}</td>
                                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-gray-900">
                                       {formatMoney(inv.amount)}
                                     </td>
@@ -1846,8 +1976,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                       </span>
                                     </td>
                                   </tr>
-                                  );
-                                })
+                                ))
                               )}
                             </tbody>
                           </table>
@@ -1873,8 +2002,41 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
       {showPaiementModal && selectedInvoiceForModal && (
         <PaiementModal
           invoice={selectedInvoiceForModal}
-          onClose={() => setShowPaiementModal(false)}
-          readOnly={true}
+          onClose={() => {
+            setShowPaiementModal(false);
+            setPaiementModalReadOnly(true);
+          }}
+          readOnly={paiementModalReadOnly}
+          onSuccess={() => {
+            setShowPaiementModal(false);
+            setPaiementModalReadOnly(true);
+            void loadSearchData();
+          }}
+        />
+      )}
+
+      {editInvoiceModal && (
+        <EditInvoiceForm
+          invoice={editInvoiceModal}
+          onSubmit={() => {
+            setEditInvoiceModal(null);
+            void loadSearchData();
+          }}
+          onCancel={() => setEditInvoiceModal(null)}
+        />
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          invoice={contextMenu.invoice}
+          position={contextMenu.position}
+          activeMenu={contextMenuActiveMenu}
+          enablePayAction
+          onView={handleContextView}
+          onEdit={handleContextEdit}
+          onPay={handleContextPay}
+          onDelete={handleContextDelete}
+          onClose={() => setContextMenu(null)}
         />
       )}
 
@@ -2113,19 +2275,9 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                           releveRows.map((inv, idx) => (
                             <tr
                               key={inv.id}
-                              className={`border-b border-gray-100 transform transition duration-200 ease-out hover:z-[1] hover:scale-[1.003] hover:shadow-md motion-reduce:hover:scale-100 ${
-                                isReleveInvoiceEchue(inv)
-                                  ? 'bg-red-50/90 hover:bg-red-50'
-                                  : 'hover:bg-gray-50/80'
-                              }`}
+                              className="border-b border-gray-100 transform transition duration-200 ease-out hover:z-[1] hover:scale-[1.003] hover:shadow-md hover:bg-gray-50/80 motion-reduce:hover:scale-100"
                             >
-                              <td
-                                className={`relative px-3 py-2 text-gray-600 tabular-nums align-middle ${
-                                  isReleveInvoiceEchue(inv)
-                                    ? "pl-4 before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-600 before:content-['']"
-                                    : ''
-                                }`}
-                              >
+                              <td className="relative px-3 py-2 text-gray-600 tabular-nums align-middle">
                                 {idx + 1}
                               </td>
                               <td className="px-3 py-2 align-middle">
@@ -2146,11 +2298,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                               <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
                                 {formatReleveDueDate(inv.date)}
                               </td>
-                              <td
-                                className={`px-3 py-2 text-right tabular-nums align-middle ${
-                                  isReleveInvoiceEchue(inv) ? 'font-medium text-red-800' : 'text-gray-800'
-                                }`}
-                              >
+                              <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle">
                                 {formatReleveDueDate(inv.dueDate)}
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-gray-800 align-middle font-bold">

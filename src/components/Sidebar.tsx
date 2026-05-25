@@ -20,7 +20,9 @@ import {
   Lock,
   FileSignature,
   ChevronsLeft,
-  ChevronsRight
+  ChevronsRight,
+  Bell,
+  Wallet
 } from 'lucide-react';
 import { useState } from 'react';
 import Swal from 'sweetalert2';
@@ -98,6 +100,7 @@ function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollap
       subItems: [
         { id: 'parameters-suppliers', label: 'Fournisseurs', icon: Building },
         { id: 'parameters-charges', label: 'Types de charges', icon: Tag },
+        { id: 'parameters-charge-provision', label: 'Charges provisionnées', icon: Wallet },
         { id: 'parameters-centres', label: 'Centres de coût', icon: MapPin },
         { id: 'parameters-caisses', label: 'Caisses', icon: Building },
         { id: 'parameters-comptes', label: 'Comptes', icon: CreditCard },
@@ -109,6 +112,7 @@ function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollap
       icon: Users,
       subItems: [
         { id: 'parameters-agents', label: 'Utilisateurs', icon: UserCheck },
+        { id: 'users-notifications', label: 'Notifications', icon: Bell },
         { id: 'users-logs', label: 'LOGs', icon: FileText },
       ],
     },
@@ -522,7 +526,11 @@ function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollap
           };
 
           const requiredPermission = itemPermissionMap[item.id];
-          if (requiredPermission && !canView(requiredPermission)) {
+          if (item.id === 'users') {
+            const canAccessUsersMenu =
+              canView('utilisateurs') || canView('notifications') || canView('logs');
+            if (!canAccessUsersMenu) return null;
+          } else if (requiredPermission && !canView(requiredPermission)) {
             return null; // Masquer cet élément si pas de permission
           }
 
@@ -591,19 +599,26 @@ function Sidebar({ activeMenu, onMenuChange, isCollapsed = false, onToggleCollap
                           'factures-ffg-partially-paid': 'factures_ffg_partially_paid',
                           'parameters-suppliers': 'fournisseurs',
                           'parameters-charges': 'charges',
+                          'parameters-charge-provision': 'charges',
                           'parameters-centres': 'centres',
                           'parameters-caisses': 'caisses',
                           'parameters-comptes': 'comptes',
+                          'parameters-agents': 'utilisateurs',
                           'users-logs': 'logs',
+                          'users-notifications': 'notifications',
                         };
 
                         const requiredSubPermission = subItemPermissionMap[subItem.id];
-                        
+                        const canViewNotifications =
+                          canView('notifications') || canView('utilisateurs');
+
                         // Pour les onglets de factures, utiliser canViewInvoiceTab au lieu de canView
                         if ((item.id === 'factures' || item.id === 'factures-ffg') && (subItem.id === 'factures-pending' || subItem.id === 'factures-pending-dop' || subItem.id === 'factures-pending-dq' || subItem.id === 'factures-ffg-pending' || subItem.id === 'factures-ffg-pending-dop')) {
                           if (!canViewInvoiceTab(subItem.id)) {
                             return null; // Masquer cet onglet si pas de permission pour la région
                           }
+                        } else if (subItem.id === 'users-notifications') {
+                          if (!canViewNotifications) return null;
                         } else if (requiredSubPermission && !canView(requiredSubPermission)) {
                           return null; // Masquer ce sous-élément si pas de permission
                         }

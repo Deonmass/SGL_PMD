@@ -26,11 +26,18 @@ import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { downloadSupplierAgedBalanceExcel } from '../utils/agedBalanceSupplierExcel';
 import { downloadSupplierAgedBalancePdf } from '../utils/agedBalanceSupplierPdf';
+import { usePermission } from '../hooks/usePermission';
+import {
+  chargeProvisionService,
+  findProvisionSummary,
+  type ChargeProvisionSummary,
+} from '../services/chargeProvisionService';
 
 interface DashboardProps {
   activeMenu?: string;
   menuTitle?: string;
   invoiceTypeScope?: 'operationnel' | 'frais-generaux';
+  onMenuChange?: (menu: string) => void;
 }
 
 interface BlockingCharge {
@@ -155,8 +162,9 @@ const AGED_BALANCE_CATEGORY_BLOCKS: Array<{
   { key: 'plus90', title: 'Catégorie 4 : plus de 90 jours', accent: 'border-l-red-600' },
 ];
 
-function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardProps) {
+function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel', onMenuChange }: DashboardProps) {
   const { agent } = useAuth();
+  const { canView } = usePermission();
   const [activeTab, setActiveTab] = useState(1);
   const [selectedYear, setSelectedYear] = useState('2026');
   const [selectedMonth, setSelectedMonth] = useState('all');
@@ -204,6 +212,8 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
   const [top10Modal, setTop10Modal] = useState<{ isOpen: boolean }>({
     isOpen: false,
   });
+  const [provisionFeri, setProvisionFeri] = useState<ChargeProvisionSummary | null>(null);
+  const [provisionAssurance, setProvisionAssurance] = useState<ChargeProvisionSummary | null>(null);
 
   const tabs = [
     { id: 1, label: 'Global' },
@@ -486,6 +496,25 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
     }
   }, [selectedSupplierForModal]);
 
+  const loadProvisionBalances = async () => {
+    if (invoiceTypeScope !== 'operationnel' || !canView('charges')) {
+      setProvisionFeri(null);
+      setProvisionAssurance(null);
+      return;
+    }
+    try {
+      const summaries = await chargeProvisionService.getSummaries();
+      setProvisionFeri(findProvisionSummary(summaries, 'FERI'));
+      setProvisionAssurance(
+        findProvisionSummary(summaries, 'Frais assurance', "Frais d'assurance", 'Assurance'),
+      );
+    } catch (err) {
+      console.error('Erreur soldes provisions:', err);
+      setProvisionFeri(null);
+      setProvisionAssurance(null);
+    }
+  };
+
   const loadDashboardData = async (withLoader = false) => {
     console.log('?? [Dashboard] loadDashboardData called with: year=', selectedYear, ', region=', selectedRegionBulletin, ', month=', selectedMonth);
     const shouldShowLoader = withLoader || (isInitialLoad && !stats);
@@ -534,6 +563,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
       
       // Phase 3: Charger les données des centres de coûts (non critique, non bloquant)
       void loadCostCenterData();
+      void loadProvisionBalances();
       
     } catch (err) {
       console.error('Erreur lors du chargement des données du dashboard:', err);
@@ -1376,6 +1406,7 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     variant="default"
                   />
                 </div>
+
             </div>
 
             <div className="space-y-6">
@@ -1427,6 +1458,44 @@ function Dashboard({ menuTitle, invoiceTypeScope = 'operationnel' }: DashboardPr
                     onDetailClick={() => openModalByUrgency('normales', 'Factures Normales')}
                   />
                 </div>
+
+                {invoiceTypeScope === 'operationnel' &&
+                  canView('charges') &&
+                  provisionFeri &&
+                  provisionAssurance && (
+                  <div className="grid grid-cols-2 gap-6">
+                    <StatCard
+                      label="FERI — Provision"
+                      value={provisionFeri.solde}
+                      currency="USD"
+                      bgColor={provisionFeri.solde < 0 ? 'bg-red-600' : 'bg-indigo-600'}
+                      textColor="text-gray-700"
+                      montantPaye={provisionFeri.totalIn}
+                      montantReste={provisionFeri.totalOut}
+                      detailCountPaye={provisionFeri.countIn}
+                      detailCountReste={provisionFeri.countOut}
+                      labelMontantPaye="Entrées"
+                      labelMontantReste="Sorties"
+                      detailFormat="countAndAmount"
+                      onDetailClick={() => onMenuChange?.('parameters-charge-provision')}
+                    />
+                    <StatCard
+                      label="Assurance — Provision"
+                      value={provisionAssurance.solde}
+                      currency="USD"
+                      bgColor={provisionAssurance.solde < 0 ? 'bg-red-600' : 'bg-blue-600'}
+                      textColor="text-gray-700"
+                      montantPaye={provisionAssurance.totalIn}
+                      montantReste={provisionAssurance.totalOut}
+                      detailCountPaye={provisionAssurance.countIn}
+                      detailCountReste={provisionAssurance.countOut}
+                      labelMontantPaye="Entrées"
+                      labelMontantReste="Sorties"
+                      detailFormat="countAndAmount"
+                      onDetailClick={() => onMenuChange?.('parameters-charge-provision')}
+                    />
+                  </div>
+                )}
             </div>
 
             {/* Graphique mensuel */}

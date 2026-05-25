@@ -9,6 +9,8 @@ import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import { buildLogActor } from '../services/activityLogService';
 import { sendInvoiceNotification } from '../services/notificationService';
+import { chargeProvisionService, isAbonnementCharge } from '../services/chargeProvisionService';
+import type { ProvisionSoldeStatus } from '../utils/chargeSeuils';
 import defaultUserAvatar from '../images/user.jpeg';
 import {
   TRANSPORT_TITLE_OPTIONS,
@@ -54,6 +56,8 @@ interface Charge {
   "designation_Charges": string;
   Bloquant: string;
   type?: string | null;
+  abonnement?: string | null;
+  Seuils?: unknown;
 }
 
 function normalizeInvoiceType(value?: string | null) {
@@ -375,6 +379,16 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
     }
   }, [invoiceTypeScope, formData.invoiceType]);
 
+  const selectedChargeForForm = useMemo(
+    () =>
+      charges.find(
+        (c) => String(c.designation_Charges || '') === String(formData.chargeCategory || ''),
+      ) ?? null,
+    [charges, formData.chargeCategory],
+  );
+
+  const isSelectedChargeProvision = isAbonnementCharge(selectedChargeForForm?.abonnement);
+
   const filteredCharges = charges.filter((charge) => {
     if (!formData.invoiceType) return true;
     const chargeType = normalizeInvoiceType(charge.type);
@@ -402,7 +416,8 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       const payload = {
         designation_Charges: designation,
         Bloquant: newCharge.Bloquant,
-        type: newCharge.type
+        type: newCharge.type,
+        abonnement: 'NON',
       };
 
       const { data, error } = await supabase
@@ -678,14 +693,84 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
     return invoice;
   }, [formData.invoiceAmount, formData.currency, formData.exchangeRate]);
 
+  const [provisionCheck, setProvisionCheck] = useState<{
+    loading: boolean;
+    solde: number | null;
+    projectedSolde: number | null;
+    status: ProvisionSoldeStatus | 'idle';
+    message?: string;
+  }>({ loading: false, solde: null, projectedSolde: null, status: 'idle' });
+
+  useEffect(() => {
+    if (!isSelectedChargeProvision || !formData.chargeCategory.trim()) {
+      setProvisionCheck({ loading: false, solde: null, projectedSolde: null, status: 'idle' });
+      return;
+    }
+
+    let cancelled = false;
+    const chargeName = formData.chargeCategory;
+    const seuilsRaw = selectedChargeForForm?.Seuils;
+    const amount = convertedAmount;
+
+    void (async () => {
+      setProvisionCheck((prev) => ({ ...prev, loading: true }));
+      try {
+        const result = await chargeProvisionService.evaluateInvoiceAgainstProvision({
+          chargeDesignation: chargeName,
+          seuilsRaw,
+          invoiceAmount: amount,
+        });
+        if (cancelled) return;
+        setProvisionCheck({
+          loading: false,
+          solde: result.solde,
+          projectedSolde: result.projectedSolde,
+          status: result.status,
+          message: result.message,
+        });
+      } catch (err) {
+        console.error('Contrôle provision:', err);
+        if (!cancelled) {
+          setProvisionCheck({
+            loading: false,
+            solde: null,
+            projectedSolde: null,
+            status: 'idle',
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    formData.chargeCategory,
+    isSelectedChargeProvision,
+    selectedChargeForForm?.Seuils,
+    convertedAmount,
+  ]);
+
   const isSubmitDisabled = useMemo(() => {
     if (formData.isSubmitting || formData.isUploading) return true;
     if (isLoadingInvoiceRegistry) return true;
     if (invoiceNumberCheck.status === 'checking' || invoiceNumberCheck.status === 'duplicate') return true;
     if (invoiceNumberCheck.status === 'error') return true;
     if (formData.invoiceType === 'operationnel' && !String(formData.fileNumber || '').trim()) return true;
+    if (provisionCheck.loading) return true;
+    if (isSelectedChargeProvision && provisionCheck.status === 'blocked') return true;
     return false;
-  }, [formData.isSubmitting, formData.isUploading, invoiceNumberCheck.status, formData.invoiceType, formData.fileNumber, isLoadingInvoiceRegistry]);
+  }, [
+    formData.isSubmitting,
+    formData.isUploading,
+    invoiceNumberCheck.status,
+    formData.invoiceType,
+    formData.fileNumber,
+    isLoadingInvoiceRegistry,
+    provisionCheck.loading,
+    provisionCheck.status,
+    isSelectedChargeProvision,
+  ]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -759,6 +844,22 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         showError(numeroMessage);
         Swal.fire('Erreur', numeroMessage, 'error');
         return;
+      }
+
+      if (isSelectedChargeProvision && selectedChargeForForm) {
+        const provisionResult = await chargeProvisionService.evaluateInvoiceAgainstProvision({
+          chargeDesignation: formData.chargeCategory,
+          seuilsRaw: selectedChargeForForm.Seuils,
+          invoiceAmount: convertedAmount,
+        });
+        if (!provisionResult.allowed) {
+          const blockMessage =
+            provisionResult.message ||
+            "Il n'y a plus d'abonnement pour cette charge. Veuillez approvisionner.";
+          showError(blockMessage);
+          Swal.fire('Provision épuisée', blockMessage, 'error');
+          return;
+        }
       }
 
       // Vérification approfondie juste avant insertion pour éviter tout doublon
@@ -844,6 +945,24 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
       }
 
       console.log('Facture enregistrée avec succès:', data);
+
+      const chargeDesignation =
+        charges.find((c) => String(c.designation_Charges || '') === String(formData.chargeCategory || ''))
+          ?.designation_Charges || formData.chargeCategory;
+      try {
+        const provisionResult = await chargeProvisionService.recordSortieFromInvoice({
+          chargeDesignation: String(chargeDesignation || ''),
+          invoiceNumber: cleanedInvoiceNumber,
+          montant: convertedAmount,
+          dateOperation: formData.receptionDate || formData.emissionDate,
+        });
+        if (provisionResult.recorded) {
+          console.log('Sortie provision enregistrée pour', chargeDesignation);
+        }
+      } catch (provisionErr) {
+        console.warn('Provision charge (sortie auto):', provisionErr);
+      }
+
       const creationNotifResult = await sendInvoiceNotification({
         notificationType: 'invoice_registered',
         invoice: {
@@ -884,11 +1003,12 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
         });
       }
 
-      const notifOk = creationNotifResult.ok && urgentNotifResult.ok;
+      const notifSucceeded = (r: typeof creationNotifResult) => r.ok || r.skipped === true;
+      const notifOk = notifSucceeded(creationNotifResult) && notifSucceeded(urgentNotifResult);
       const notifDetail =
-        !creationNotifResult.ok
+        !notifSucceeded(creationNotifResult)
           ? creationNotifResult.reason || creationNotifResult.error || 'échec notification création'
-          : !urgentNotifResult.ok
+          : !notifSucceeded(urgentNotifResult)
             ? urgentNotifResult.reason || urgentNotifResult.error || 'échec notification urgence'
             : '';
       const recipientsForUi = Array.from(
@@ -1261,6 +1381,26 @@ function InvoiceForm({ onSubmit, onCancel, invoiceTypeScope = 'operationnel' }: 
                     </option>
                   ))}
                 </select>
+                {isSelectedChargeProvision && (
+                  <div className="mt-2">
+                    {provisionCheck.loading ? (
+                      <p className="text-xs text-gray-500">Vérification du solde de provision…</p>
+                    ) : provisionCheck.status === 'blocked' && provisionCheck.message ? (
+                      <p className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
+                        {provisionCheck.message}
+                      </p>
+                    ) : provisionCheck.status === 'alert' && provisionCheck.message ? (
+                      <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                        {provisionCheck.message}
+                      </p>
+                    ) : (
+                      <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800">
+                        Charge provisionnée : une sortie sera enregistrée automatiquement lors de
+                        l&apos;enregistrement de cette facture.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">

@@ -13,18 +13,24 @@ interface ContextMenuProps {
   onClose: () => void;
   position: { x: number; y: number };
   activeMenu?: string;
+  /** Affiche « Payer » selon les permissions, sans exiger le menu factures validées */
+  enablePayAction?: boolean;
 }
 
-function ContextMenu({ invoice, onView, onEdit, onPay, onDelete, onAddToPaymentOrder, onClose, position, activeMenu }: ContextMenuProps) {
+function ContextMenu({ invoice, onView, onEdit, onPay, onDelete, onAddToPaymentOrder, onClose, position, activeMenu, enablePayAction = false }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { canMarkAsPaid, canEdit, canDelete, canEstablishPaymentOrder } = usePermission();
+  const { canMarkAsPaid, canEdit, canDelete, canEstablishPaymentOrder, canView } = usePermission();
   const isFfgContext = String(activeMenu || '').includes('ffg');
   const scope = isFfgContext ? 'frais-generaux' : 'operationnel';
   const rootMenuPermissionKey = isFfgContext ? 'factures_ffg' : 'factures';
+  const canViewCurrentScope = canView(rootMenuPermissionKey);
   const canEditCurrentScope = canEdit(rootMenuPermissionKey);
   const canDeleteCurrentScope = canDelete(rootMenuPermissionKey);
   const canAddToPaymentOrder = canEstablishPaymentOrder(scope);
   const canPayCurrentScope = canMarkAsPaid(scope);
+  const showValidatedPaymentActions =
+    activeMenu === 'factures-validated' || activeMenu === 'factures-ffg-validated';
+  const showPayAction = canPayCurrentScope && (enablePayAction || showValidatedPaymentActions);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -67,16 +73,18 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onDelete, onAddToPaymentO
 
       {/* Options du menu */}
       <div className="py-1">
-        <button
-          onClick={() => {
-            onView(invoice);
-            onClose();
-          }}
-          className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
-        >
-          <Eye size={16} className="text-gray-600" />
-          Visualiser
-        </button>
+        {canViewCurrentScope && (
+          <button
+            onClick={() => {
+              onView(invoice);
+              onClose();
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
+          >
+            <Eye size={16} className="text-gray-600" />
+            Visualiser
+          </button>
+        )}
 
         {canEditCurrentScope && (
           <button
@@ -104,37 +112,33 @@ function ContextMenu({ invoice, onView, onEdit, onPay, onDelete, onAddToPaymentO
           </button>
         )}
 
-        {activeMenu === 'factures-validated' || activeMenu === 'factures-ffg-validated' ? (
-          <>
-            {canAddToPaymentOrder && (
-              <button
-                onClick={() => {
-                  if (onAddToPaymentOrder) {
-                    onAddToPaymentOrder(invoice);
-                  }
-                  onClose();
-                }}
-                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
-              >
-                <Calendar size={16} className="text-gray-600" />
-                Ajouter à l'ordre de paiement du jour
-              </button>
-            )}
+        {showValidatedPaymentActions && canAddToPaymentOrder && (
+          <button
+            onClick={() => {
+              if (onAddToPaymentOrder) {
+                onAddToPaymentOrder(invoice);
+              }
+              onClose();
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center gap-3"
+          >
+            <Calendar size={16} className="text-gray-600" />
+            Ajouter à l'ordre de paiement du jour
+          </button>
+        )}
 
-            {canPayCurrentScope && (
-              <button
-                onClick={() => {
-                  onPay(invoice);
-                  onClose();
-                }}
-                className="w-full px-4 py-2 text-left text-sm text-green-700 hover:bg-green-50 transition-colors flex items-center gap-3"
-              >
-                <CreditCard size={16} className="text-green-600" />
-                Payer
-              </button>
-            )}
-          </>
-        ) : null}
+        {showPayAction && (
+          <button
+            onClick={() => {
+              onPay(invoice);
+              onClose();
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-green-700 hover:bg-green-50 transition-colors flex items-center gap-3"
+          >
+            <CreditCard size={16} className="text-green-600" />
+            Payer
+          </button>
+        )}
       </div>
 
       <div className="border-t border-gray-200">

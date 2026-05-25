@@ -96,6 +96,9 @@ export const REFRESH_EVENTS = {
   // Validation
   VALIDATION_DATA: 'validation_data',
   
+  // Logs
+  LOGS: 'logs_data',
+
   // Parameters
   SUPPLIERS: 'suppliers',
   CHARGES: 'charges',
@@ -111,6 +114,10 @@ export const REFRESH_EVENTS = {
 /**
  * Rafraîchir les données du dashboard
  */
+export function refreshLogs() {
+  dataRefreshEmitter.emit(REFRESH_EVENTS.LOGS);
+}
+
 export function refreshDashboard() {
   dataRefreshEmitter.emitMultiple([
     REFRESH_EVENTS.DASHBOARD_STATS,

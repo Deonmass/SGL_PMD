@@ -7,6 +7,7 @@ import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import { appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
+import { refreshLogs } from '../hooks/useDataRefresh';
 import CompteModal from './modals/CompteModal';
 import Swal from 'sweetalert2';
 import { cloudStorageService } from '../services/cloudStorage';
@@ -689,6 +690,8 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       } catch (logError) {
         console.error('Erreur journalisation facture (paiement):', logError);
       }
+
+      refreshLogs();
 
       console.log('Paiement enregistré avec succès!');
       success('Paiement enregistré avec succès!');

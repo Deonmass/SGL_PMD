@@ -718,6 +718,166 @@ const sendMailGrouped = async (
   });
 };
 
+type NotificationParamsMatrix = Record<string, Record<string, boolean>>;
+
+const LEGACY_KEY_ALIASES: Record<string, string> = {
+  _emitter: "emitter",
+  _actor: "actor",
+  _regional_validator: "dr",
+  _dg: "dg",
+  _finance: "finance",
+  DR: "dr",
+  DOP: "dop",
+  DG: "dg",
+  Finance: "finance",
+  Gestionnaire: "gestionnaire",
+  Utilisateur: "utilisateur",
+  Administrateur: "administrateur",
+};
+
+function normalizeParamsKey(raw: string): string {
+  if (LEGACY_KEY_ALIASES[raw]) return LEGACY_KEY_ALIASES[raw];
+  return raw.toLowerCase();
+}
+
+function normalizeParamsMatrix(matrix: NotificationParamsMatrix): NotificationParamsMatrix {
+  const out: NotificationParamsMatrix = {};
+  for (const [trigger, row] of Object.entries(matrix)) {
+    const merged: Record<string, boolean> = {};
+    for (const [rawKey, value] of Object.entries(row || {})) {
+      if (rawKey === "_regional_validator") {
+        merged.dr = merged.dr !== false && value !== false;
+        merged.dop = merged.dop !== false && value !== false;
+        continue;
+      }
+      const key = normalizeParamsKey(rawKey);
+      if (!(key in merged)) merged[key] = value;
+      else merged[key] = merged[key] && value;
+    }
+    out[trigger] = merged;
+  }
+  return out;
+}
+
+async function loadNotificationParams(module: string): Promise<NotificationParamsMatrix | null> {
+  const { data, error } = await supabase
+    .from("notification_params")
+    .select("params")
+    .eq("module", module)
+    .maybeSingle();
+  if (error || !data?.params) return null;
+  try {
+    const parsed = JSON.parse(String(data.params)) as { matrix?: NotificationParamsMatrix };
+    if (parsed?.matrix && typeof parsed.matrix === "object") {
+      return normalizeParamsMatrix(parsed.matrix);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function matrixCellEnabled(
+  matrix: NotificationParamsMatrix | null,
+  trigger: NotificationType,
+  key: string,
+): boolean {
+  if (!matrix) return false;
+  const row = matrix[trigger];
+  const normalized = normalizeParamsKey(key);
+  if (!row) return false;
+  if (normalized in row) return row[normalized] === true;
+  if (key in row) return row[key] === true;
+  return false;
+}
+
+const isDrValidator = (agent: AgentRow, region: string): boolean => {
+  const perms = parsePermission(agent.permission);
+  if (!perms) return false;
+  const canDr =
+    hasNestedFlag(perms, "factures_pending_dr", "valider") ||
+    hasNestedFlag(perms, "factures_ffg_pending_dr", "valider");
+  if (!canDr) return false;
+  const agentRegion = asUpper(agent.REGION);
+  return agentRegion === "TOUT" || agentRegion === asUpper(region);
+};
+
+const isDopValidator = (agent: AgentRow, region: string): boolean => {
+  const perms = parsePermission(agent.permission);
+  if (!perms) return false;
+  const canDop =
+    hasNestedFlag(perms, "factures_pending_dop", "valider") ||
+    hasNestedFlag(perms, "factures_ffg_pending_dop", "valider");
+  if (!canDop) return false;
+  const agentRegion = asUpper(agent.REGION);
+  return agentRegion === "TOUT" || agentRegion === asUpper(region);
+};
+
+const isFinanceRecipient = (agent: AgentRow): boolean => {
+  const r = asUpper(agent.Role);
+  const financeLike = r === "FINANCE" || r.includes("FINANCE");
+  return financeLike && canMarkAsPaid(agent.permission);
+};
+
+const agentProfileFilterKey = (agent: AgentRow): string | null => {
+  const r = asText(agent.Role).toLowerCase();
+  if (r === "gestionnaire") return "gestionnaire";
+  if (r === "utilisateur") return "utilisateur";
+  if (r === "administrateur") return "administrateur";
+  return null;
+};
+
+function resolveAgentRecipientProfiles(
+  agent: AgentRow,
+  payload: Payload,
+  region: string,
+  emitterEmails: Set<string>,
+  trigger: NotificationType,
+): string[] {
+  const profiles: string[] = [];
+  const email = agent.email?.toLowerCase().trim();
+  if (email && emitterEmails.has(email)) profiles.push("emitter");
+  if (region && isDrValidator(agent, region)) profiles.push("dr");
+  if (region && isDopValidator(agent, region)) profiles.push("dop");
+  const isDgAgent = isDG(agent) || asUpper(agent.Role) === "DG";
+  if (isDgAgent && (trigger === "validated_dop" || trigger === "validated_dg")) {
+    profiles.push("dg");
+  }
+  if (isFinanceRecipient(agent)) profiles.push("finance");
+  const actor = payload.actorEmail?.toLowerCase().trim();
+  if (actor && email === actor) profiles.push("actor");
+  return [...new Set(profiles)];
+}
+
+function agentEligibleForNotification(
+  agent: AgentRow,
+  trigger: NotificationType,
+  payload: Payload,
+  region: string,
+  emitterEmails: Set<string>,
+  matrix: NotificationParamsMatrix | null,
+): boolean {
+  if (!matrix) return false;
+
+  const profiles = resolveAgentRecipientProfiles(agent, payload, region, emitterEmails, trigger);
+  if (profiles.length === 0) return false;
+
+  if (!profiles.some((p) => matrixCellEnabled(matrix, trigger, p))) return false;
+
+  const filterKey = agentProfileFilterKey(agent);
+  if (filterKey && !matrixCellEnabled(matrix, trigger, filterKey)) return false;
+
+  return true;
+}
+
+function externalEmailEligible(
+  matrix: NotificationParamsMatrix | null,
+  trigger: NotificationType,
+  profile: "emitter" | "actor",
+): boolean {
+  return matrixCellEnabled(matrix, trigger, profile);
+}
+
 function pickPrimaryRecipient(emails: string[], payload: Payload): string {
   const lower = (s: string) => s.toLowerCase().trim();
   const sorted = [...emails].sort((a, b) => a.localeCompare(b, "fr"));
@@ -789,32 +949,73 @@ Deno.serve(async (req) => {
         .filter(validEmail),
     );
 
-    const recipients = new Set<string>();
+    const paramsMatrix = await loadNotificationParams("FACTURE");
 
-    // Base targets: emitter + regional validators
-    for (const e of emitterRecipients) recipients.add(e);
-    for (const v of regionalValidators) recipients.add(v);
+    const triggerEnabled = (matrix: NotificationParamsMatrix | null, trigger: NotificationType): boolean => {
+      if (!matrix) return false;
+      const row = matrix[trigger];
+      if (!row) return false;
+      return Object.values(row).some((v) => v === true);
+    };
 
-    // DG only on DOP validation
-    if (payload.notificationType === "validated_dop") {
-      for (const dg of dgRecipients) recipients.add(dg);
+    if (!triggerEnabled(paramsMatrix, payload.notificationType)) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          skipped: true,
+          reason: "notification_disabled_by_params",
+          notificationType: payload.notificationType,
+        }),
+        { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
     }
 
-    // Finance (rôle Finance + marquer_payee) : toutes les notifications facture
-    for (const fin of financeRecipients) recipients.add(fin);
+    const emitterEmailSet = new Set(
+      [...emitterRecipients].map((e) => e.toLowerCase().trim()),
+    );
 
-    if (validEmail(payload.actorEmail)) recipients.add(payload.actorEmail);
-    if (validEmail(payload.createdByEmail)) recipients.add(payload.createdByEmail);
+    const recipients = new Set<string>();
+
+    for (const agent of allAgents) {
+      if (!validEmail(agent.email)) continue;
+
+      let include = false;
+
+      if (paramsMatrix) {
+        include = agentEligibleForNotification(
+          agent,
+          payload.notificationType,
+          payload,
+          region,
+          emitterEmailSet,
+          paramsMatrix,
+        );
+      }
+
+      if (include) recipients.add(agent.email!);
+    }
+
+    if (paramsMatrix && validEmail(payload.createdByEmail)) {
+      if (externalEmailEligible(paramsMatrix, payload.notificationType, "emitter")) {
+        recipients.add(payload.createdByEmail);
+      }
+    }
+    if (paramsMatrix && validEmail(payload.actorEmail)) {
+      if (externalEmailEligible(paramsMatrix, payload.notificationType, "actor")) {
+        recipients.add(payload.actorEmail);
+      }
+    }
 
     const recipientList = Array.from(recipients).filter(validEmail);
     if (recipientList.length === 0) {
       return new Response(
         JSON.stringify({
-          success: false,
-          error: "No recipients resolved for this notification.",
+          success: true,
+          skipped: true,
+          reason: "no_recipients_for_params",
           notificationType: payload.notificationType,
         }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+        { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }
 

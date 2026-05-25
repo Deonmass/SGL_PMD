@@ -712,6 +712,7 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                       <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Nom</th>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Type</th>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Bloquant ?</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Abonnement ?</th>
                       <th className="px-4 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Actions</th>
                     </tr>
                   </thead>
@@ -721,6 +722,17 @@ function ParametersPage({ subMenu, menuTitle = 'Paramètres' }: ParametersPagePr
                         <td className="px-4 py-2 text-xs font-medium text-gray-900">{charge.designation_Charges}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{charge.type || '-'}</td>
                         <td className="px-4 py-2 text-xs text-gray-600">{charge.Bloquant}</td>
+                        <td className="px-4 py-2 text-xs">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${
+                              String(charge.abonnement || '').toUpperCase() === 'OUI'
+                                ? 'bg-indigo-100 text-indigo-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {String(charge.abonnement || 'NON').toUpperCase() === 'OUI' ? 'OUI' : 'NON'}
+                          </span>
+                        </td>
                         <td className="px-4 py-2 text-xs text-right">
                           <div className="flex justify-end gap-1">
                             {canEdit('charges') && (

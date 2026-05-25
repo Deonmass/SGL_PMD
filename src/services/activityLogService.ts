@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { refreshLogs } from '../hooks/useDataRefresh';
 
 export interface FactureLogEntry {
   timestamp: string;
@@ -96,6 +97,7 @@ export const appendFactureLogByInvoiceNumber = async (
     .eq('Numéro de facture', safeNumber);
 
   if (updateError) throw updateError;
+  refreshLogs();
 };
 
 export const appendFactureLogById = async (
@@ -121,6 +123,7 @@ export const appendFactureLogById = async (
     .eq('ID', invoiceId);
 
   if (updateError) throw updateError;
+  refreshLogs();
 };
 
 export const appendFactureDeletionAuditLog = async (params: {
@@ -159,6 +162,7 @@ export const appendFactureDeletionAuditLog = async (params: {
 
   const { error } = await supabase.from('PAIEMENTS').insert(payload);
   if (error) throw error;
+  refreshLogs();
 };
 
 export const buildFactureUpdateExplanation = (

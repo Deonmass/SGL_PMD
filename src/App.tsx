@@ -17,6 +17,8 @@ import PaymentOrdersPage from './pages/PaymentOrdersPage';
 import { useBackgroundRealtimeSync } from './hooks/useBackgroundRealtimeSync';
 import ProfileSignaturePage from './pages/ProfileSignaturePage';
 import LogsPage from './pages/LogsPage';
+import NotificationParamsPage from './pages/NotificationParamsPage';
+import ChargeProvisionPage from './pages/ChargeProvisionPage';
 
 // Menu labels mapping
 const menuLabels: { [key: string]: string } = {
@@ -48,6 +50,7 @@ const menuLabels: { [key: string]: string } = {
   parameters: 'Paramètres',
   'parameters-suppliers': 'Fournisseurs',
   'parameters-charges': 'Types de charges',
+  'parameters-charge-provision': 'Charges provisionnées',
   'parameters-agents': 'Agents',
   'parameters-centres': 'Centres de coût',
   'parameters-caisses': 'Caisses',
@@ -55,6 +58,7 @@ const menuLabels: { [key: string]: string } = {
   users: 'Utilisateurs',
   'profile-signature': 'Ma signature',
   'users-logs': 'LOGs',
+  'users-notifications': 'Notifications',
 };
 
 function AppContent() {
@@ -113,23 +117,33 @@ function AppContent() {
       'parameters': 'paramettre',
       'parameters-suppliers': 'fournisseurs',
       'parameters-charges': 'charges',
+      'parameters-charge-provision': 'charges',
       'parameters-agents': 'utilisateurs',
       'parameters-centres': 'centres',
       'parameters-caisses': 'caisses',
       'parameters-comptes': 'comptes',
       'users': 'utilisateurs',
       'users-logs': 'logs',
+      'users-notifications': 'notifications',
       'profile-signature': null
     };
 
     const requiredPermission = menuPermissionMap[activeMenu];
-    
+
+    const canAccessMenu = (menu: string, permission: string | null): boolean => {
+      if (!permission) return true;
+      if (menu === 'users-notifications') {
+        return canView('notifications') || canView('utilisateurs');
+      }
+      return canView(permission);
+    };
+
     // Si une permission est requise et l'utilisateur ne l'a pas, retourner au dashboard
     if (activeMenu === 'profile-signature' && !canManageOwnSignature()) {
-      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" />;
+      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" onMenuChange={handleMenuChange} />;
     }
-    if (requiredPermission && !canView(requiredPermission)) {
-      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" />;
+    if (requiredPermission && !canAccessMenu(activeMenu, requiredPermission)) {
+      return <Dashboard activeMenu="dashboard" menuTitle={getMenuTitle('dashboard')} invoiceTypeScope="operationnel" onMenuChange={handleMenuChange} />;
     }
 
     // New Invoice Modal
@@ -139,10 +153,10 @@ function AppContent() {
 
     // Dashboard pages
     if (activeMenu === 'dashboard' || activeMenu === 'dashboard-factures' || activeMenu === 'dashboard-liquidation') {
-      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" />;
+      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="operationnel" onMenuChange={handleMenuChange} />;
     }
     if (activeMenu === 'dashboard-ffg') {
-      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="frais-generaux" />;
+      return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} invoiceTypeScope="frais-generaux" onMenuChange={handleMenuChange} />;
     }
 
     // Search page
@@ -197,6 +211,9 @@ function AppContent() {
     if (activeMenu === 'parameters-charges') {
       return <ParametersPage subMenu="charges" activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
     }
+    if (activeMenu === 'parameters-charge-provision') {
+      return <ChargeProvisionPage menuTitle={getMenuTitle(activeMenu)} />;
+    }
     if (activeMenu === 'parameters-agents') {
       return <UsersPage activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
     }
@@ -220,12 +237,15 @@ function AppContent() {
     if (activeMenu === 'users-logs') {
       return <LogsPage menuTitle={getMenuTitle(activeMenu)} />;
     }
+    if (activeMenu === 'users-notifications') {
+      return <NotificationParamsPage menuTitle={getMenuTitle(activeMenu)} />;
+    }
     if (activeMenu === 'profile-signature') {
       return <ProfileSignaturePage menuTitle={getMenuTitle(activeMenu)} />;
     }
 
     // Default
-    return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} />;
+    return <Dashboard activeMenu={activeMenu} menuTitle={getMenuTitle(activeMenu)} onMenuChange={handleMenuChange} />;
   };
 
   const handleMenuChange = (menu: string) => {

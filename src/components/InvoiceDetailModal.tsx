@@ -28,16 +28,32 @@ import { downloadInvoiceDetailModalPdf, convertMoneyToUsd } from '../services/in
 import { formatTransportCompact } from '../constants/transportTitles';
 
 const FACTURES_DETAIL_SELECT =
-  'ID, "Numéro de facture", Fournisseur, Client, "Titre de transport", numero, Montant, "Statut", "Date de réception", "Région", "Catégorie de charge", "Niveau urgence", "Échéance", "Délais de paiement", "validation DR", "validation DOP", "validation DG", "Facture attachée", Devise, Rejet';
+  'ID, "Numéro de facture", Fournisseur, Client, "Numéro de dossier", "Titre de transport", numero, Montant, "Statut", "Date de réception", "Région", "Catégorie de charge", "Niveau urgence", "Échéance", "Délais de paiement", "validation DR", "validation DOP", "validation DG", "Facture attachée", Devise, Rejet';
+
+const invoiceNumberCellClass =
+  'py-2 px-2 text-xs align-top w-[11.5rem] max-w-[11.5rem] min-w-[8rem] whitespace-normal break-all leading-snug';
+
+const pdfColumnCellClass =
+  'py-1 px-0.5 text-center align-middle w-[2.25rem] max-w-[2.25rem] min-w-[2.25rem]';
+
+function getInvoiceDossierNumber(invoice: {
+  'Numéro de dossier'?: string | null;
+  fileNumber?: string | null;
+}): string {
+  return String(invoice['Numéro de dossier'] ?? invoice.fileNumber ?? '').trim();
+}
 
 function SupplierWithClientCell({
   supplier,
   client,
+  dossierNumber,
 }: {
   supplier?: string;
   client?: string;
+  dossierNumber?: string;
 }) {
   const clientName = String(client || '').trim();
+  const dossier = String(dossierNumber || '').trim();
 
   return (
     <div className="flex flex-col gap-0.5 min-w-0 whitespace-normal">
@@ -45,6 +61,11 @@ function SupplierWithClientCell({
       {clientName ? (
         <span className="text-[10px] text-gray-500 leading-snug">
           Client <span className="font-medium text-gray-700">{clientName}</span>
+        </span>
+      ) : null}
+      {dossier ? (
+        <span className="text-[10px] text-gray-500 leading-snug">
+          Dossier : <span className="font-medium text-gray-700">{dossier}</span>
         </span>
       ) : null}
     </div>
@@ -110,6 +131,8 @@ interface InvoiceWithPayments extends DbInvoice {
   solde: number;
   hasPayments: boolean;
   Client?: string;
+  'Numéro de dossier'?: string;
+  fileNumber?: string;
   'Titre de transport'?: string;
   numero?: string;
   'Facture attachée'?: string;
@@ -312,7 +335,7 @@ function InvoiceDetailModal({
       if (invoiceNumbersForDetails.length > 0) {
         const { data: detailRows, error: detailError } = await supabase
           .from('FACTURES')
-          .select('"Numéro de facture", Client, "Titre de transport", numero')
+          .select('"Numéro de facture", Client, "Numéro de dossier", "Titre de transport", numero')
           .in('Numéro de facture', invoiceNumbersForDetails);
         if (!detailError && detailRows) {
           const detailMap = new Map(
@@ -327,6 +350,10 @@ function InvoiceDetailModal({
             return {
               ...inv,
               Client: (detail.Client as string | null) ?? (inv as InvoiceWithPayments).Client,
+              'Numéro de dossier':
+                (detail['Numéro de dossier'] as string | null) ??
+                (inv as InvoiceWithPayments)['Numéro de dossier'] ??
+                (inv as InvoiceWithPayments).fileNumber,
               'Titre de transport':
                 (detail['Titre de transport'] as string | null) ??
                 (inv as InvoiceWithPayments)['Titre de transport'],
@@ -477,7 +504,11 @@ function InvoiceDetailModal({
           'Fournisseur': (() => {
             const s = String(invoice.Fournisseur ?? '');
             const c = String(invoice.Client ?? '').trim();
-            return c ? `${s} | Client: ${c}` : s;
+            const d = String(invoice['Numéro de dossier'] ?? '').trim();
+            const parts = [s];
+            if (c) parts.push(`Client: ${c}`);
+            if (d) parts.push(`Dossier: ${d}`);
+            return parts.join(' | ');
           })(),
           'Date Réception': new Date(invoice['Date de réception']).toLocaleDateString('fr-FR'),
         };
@@ -640,6 +671,7 @@ function InvoiceDetailModal({
       const invoiceNumber = String(invoice['Numéro de facture'] || '').toLowerCase();
       const supplier = String(invoice.Fournisseur || '').toLowerCase();
       const client = String(invoice.Client || '').toLowerCase();
+      const dossier = getInvoiceDossierNumber(invoice).toLowerCase();
       const category = String(invoice['Catégorie de charge'] || '').toLowerCase();
       const transportTitle = String(invoice['Titre de transport'] || '').toLowerCase();
       const numero = String(invoice.numero || '').toLowerCase();
@@ -649,7 +681,8 @@ function InvoiceDetailModal({
         client.includes(search) ||
         category.includes(search) ||
         transportTitle.includes(search) ||
-        numero.includes(search);
+        numero.includes(search) ||
+        dossier.includes(search);
       if (!matchesSearch) return false;
     }
 
@@ -988,9 +1021,13 @@ function InvoiceDetailModal({
             const amt = parseFloat(String(inv.Montant)) || 0;
             const supplierBase = String(inv.Fournisseur ?? '');
             const clientName = String(inv.Client ?? '').trim();
+            const dossierNum = String(inv['Numéro de dossier'] ?? '').trim();
+            const supplierParts = [supplierBase];
+            if (clientName) supplierParts.push(`Client: ${clientName}`);
+            if (dossierNum) supplierParts.push(`Dossier: ${dossierNum}`);
             return {
               invoiceNumber: String(inv['Numéro de facture'] ?? ''),
-              supplier: clientName ? `${supplierBase} | Client: ${clientName}` : supplierBase,
+              supplier: supplierParts.join(' | '),
               receptionDate: new Date(inv['Date de réception']).toLocaleDateString('fr-FR'),
               ...(includeRegion ? { region: String(inv['Région'] || 'N/A') } : {}),
               chargeCategory: (() => {
@@ -1037,7 +1074,7 @@ function InvoiceDetailModal({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Rechercher: numéro, fournisseur, client, catégorie, transport…"
+                  placeholder="Rechercher: n° facture, n° dossier, fournisseur, client…"
                   className="w-full h-9 pl-9 pr-3 border border-gray-300 rounded-lg text-xs leading-none focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 />
               </div>
@@ -1221,14 +1258,20 @@ function InvoiceDetailModal({
                 <p className="text-xs text-gray-500">Ajustez les filtres ou actualisez les données.</p>
               </div>
             ) : (
-              <table className="w-full text-sm whitespace-nowrap">
+              <table className="w-full text-sm table-fixed">
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b bg-gray-200">
                     {isPaidReportMode ? (
                       <>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Numéro Facture</th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Fournisseur</th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">Montant</th>
+                        <th className={`text-left font-semibold text-gray-900 text-xs ${invoiceNumberCellClass}`}>
+                          Numéro Facture
+                        </th>
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-normal">
+                          Fournisseur
+                        </th>
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                          Montant
+                        </th>
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Mode paiement</th>
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Banque SGL / Compte</th>
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">Banque fournisseur / Compte</th>
@@ -1238,13 +1281,13 @@ function InvoiceDetailModal({
                       </>
                     ) : (
                       <>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className={`text-left font-semibold text-gray-900 text-xs ${invoiceNumberCellClass}`}>
                           Numéro Facture
                         </th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-normal min-w-0">
                           Fournisseur
                         </th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Date Réception
                         </th>
                         {agent?.REGION === 'TOUT' && (
@@ -1252,28 +1295,28 @@ function InvoiceDetailModal({
                             Région
                           </th>
                         )}
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-normal min-w-0">
                           Catégorie de charge
                         </th>
-                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Priorité de paiement
                         </th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Échéance
                         </th>
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs w-16 min-w-[3.5rem]">
                           Validation
                         </th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Montant
                         </th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Montant Payé
                         </th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Solde à Payer
                         </th>
-                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
+                        <th className={`font-semibold text-gray-900 text-[10px] ${pdfColumnCellClass}`}>
                           PDF
                         </th>
                         {ordoPaiementId && (
@@ -1305,8 +1348,8 @@ function InvoiceDetailModal({
                       } ${isBonAPayer(invoice) ? 'cursor-context-menu' : ''}`}
                       onContextMenu={(e) => handleContextMenu(e, invoice)}
                     >
-                      <td 
-                        className="py-2 px-3 text-xs text-blue-600 cursor-pointer hover:underline font-semibold hover:text-blue-800 transform hover:scale-105 transition-all duration-200"
+                      <td
+                        className={`${invoiceNumberCellClass} text-blue-600 cursor-pointer hover:underline font-semibold hover:text-blue-800 transition-colors`}
                         onClick={() => handleInvoiceNumberClick(invoice)}
                       >
                         {invoice['Numéro de facture']}
@@ -1316,7 +1359,7 @@ function InvoiceDetailModal({
                           <td className="py-2 px-3 text-xs text-gray-700">
                             {invoice.Fournisseur || 'N/A'}
                           </td>
-                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold">
+                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold whitespace-nowrap">
                             {formatCurrency(invoice.Montant)} USD
                           </td>
                           <td className="py-2 px-3 text-xs text-gray-700">
@@ -1375,9 +1418,10 @@ function InvoiceDetailModal({
                             <SupplierWithClientCell
                               supplier={invoice.Fournisseur}
                               client={invoice.Client}
+                              dossierNumber={getInvoiceDossierNumber(invoice)}
                             />
                           </td>
-                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
+                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors whitespace-nowrap">
                             {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
                           </td>
                           {agent?.REGION === 'TOUT' && (
@@ -1445,20 +1489,20 @@ function InvoiceDetailModal({
                               );
                             })()}
                           </td>
-                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors">
+                          <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors whitespace-nowrap">
                             {formatCurrency(invoice.Montant)} USD
                           </td>
-                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
+                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
                             <span className={invoice.totalPaid > 0 ? 'text-green-600' : 'text-gray-700'}>
                               {formatCurrency(invoice.totalPaid)} USD
                             </span>
                           </td>
-                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors">
+                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
                             <span className={invoice.solde > 0 ? 'text-red-600' : 'text-green-600'}>
                               {formatCurrency(invoice.solde)} USD
                             </span>
                           </td>
-                          <td className="py-2 px-3 text-center hover:bg-blue-100 rounded transition-all duration-200">
+                          <td className={pdfColumnCellClass}>
                             {invoice['Facture attachée'] ? (
                               <button
                                 onClick={() => 
@@ -1473,13 +1517,13 @@ function InvoiceDetailModal({
                                     }
                                   })
                                 }
-                                className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-125"
+                                className="inline-flex items-center justify-center p-0.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"
                                 title="Afficher le PDF"
                               >
-                                <i className="fa fa-file-pdf-o text-lg"></i>
+                                <i className="fa fa-file-pdf-o text-sm leading-none"></i>
                               </button>
                             ) : (
-                              <span className="text-gray-400 text-xs">N/A</span>
+                              <span className="text-gray-400 text-[10px]">—</span>
                             )}
                           </td>
                           {ordoPaiementId && (

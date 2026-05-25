@@ -34,6 +34,11 @@ interface StatCardProps {
   cornerPercent?: number;
   /** Légende sous le %, alignée à droite avec le nombre de factures sur la même ligne de base. */
   cornerPercentCaption?: string;
+  /** Affiche montantPaye / montantReste en nombre entier (ex. compteurs de mouvements). */
+  detailFormat?: 'currency' | 'integer' | 'countAndAmount';
+  /** Avec detailFormat countAndAmount : nombre de mouvements (montantPaye/Reste = montants). */
+  detailCountPaye?: number;
+  detailCountReste?: number;
 }
 
 function StatCard({ 
@@ -59,6 +64,9 @@ function StatCard({
   onHover = true,
   cornerPercent,
   cornerPercentCaption,
+  detailFormat = 'currency',
+  detailCountPaye,
+  detailCountReste,
 }: StatCardProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -328,12 +336,26 @@ function StatCard({
           <div className="space-y-0.5 my-1 text-xs">
             {montantPaye !== undefined && (
               <p style={{ color: isHovered ? 'rgba(255,255,255,0.9)' : '#4b5563' }}>
-                {labelMontantPaye}: <span className="font-semibold">{formatCurrency(montantPaye)} {currency}</span>
+                {labelMontantPaye}:{' '}
+                <span className="font-semibold">
+                  {detailFormat === 'countAndAmount' && detailCountPaye !== undefined
+                    ? `${formatNumber(detailCountPaye)} · ${formatCurrency(montantPaye)} ${currency}`
+                    : detailFormat === 'integer'
+                      ? formatNumber(montantPaye)
+                      : `${formatCurrency(montantPaye)} ${currency}`}
+                </span>
               </p>
             )}
             {montantReste !== undefined && (
               <p style={{ color: isHovered ? 'rgba(255,255,255,0.9)' : '#4b5563' }}>
-                {labelMontantReste}: <span className="font-semibold">{formatCurrency(montantReste)} {currency}</span>
+                {labelMontantReste}:{' '}
+                <span className="font-semibold">
+                  {detailFormat === 'countAndAmount' && detailCountReste !== undefined
+                    ? `${formatNumber(detailCountReste)} · ${formatCurrency(montantReste)} ${currency}`
+                    : detailFormat === 'integer'
+                      ? formatNumber(montantReste)
+                      : `${formatCurrency(montantReste)} ${currency}`}
+                </span>
               </p>
             )}
           </div>

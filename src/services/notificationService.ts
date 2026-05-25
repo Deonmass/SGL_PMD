@@ -1,16 +1,11 @@
 import { supabase, SUPABASE_URL } from './supabase';
+import {
+  isNotificationTriggerEnabled,
+  type InvoiceNotificationType,
+} from '../constants/notificationConfig';
+import { getNotificationParamsForSending } from './notificationParamsService';
 
-export type InvoiceNotificationType =
-  | 'invoice_registered'
-  | 'validated_dr'
-  | 'validated_dop'
-  | 'validated_dg'
-  | 'rejected'
-  | 'on_hold'
-  | 'paid'
-  | 'urgent'
-  | 'validation_delay'
-  | 'partial_payment';
+export type { InvoiceNotificationType };
 
 export interface InvoiceNotificationPayload {
   notificationType: InvoiceNotificationType;
@@ -48,6 +43,8 @@ export interface InvoiceNotificationPayload {
 
 export interface InvoiceNotificationResult {
   ok: boolean;
+  /** Envoi ignoré (déclencheur désactivé dans Paramètres → Notifications) */
+  skipped?: boolean;
   dryRun?: boolean;
   reason?: string;
   error?: string;
@@ -58,8 +55,35 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
 
-export async function sendInvoiceNotification(payload: InvoiceNotificationPayload): Promise<InvoiceNotificationResult> {
+const SKIPPED_RESULT: InvoiceNotificationResult = {
+  ok: true,
+  skipped: true,
+  reason: 'notification_disabled_by_params',
+};
+
+/** Vérifie notification_params (module FACTURE) avant tout appel edge. */
+export async function isTriggerEnabledForSending(
+  notificationType: InvoiceNotificationType,
+): Promise<boolean> {
+  const { hasSavedParams, data } = await getNotificationParamsForSending();
+  return isNotificationTriggerEnabled(data.matrix, hasSavedParams, notificationType);
+}
+
+export async function sendInvoiceNotification(
+  payload: InvoiceNotificationPayload,
+): Promise<InvoiceNotificationResult> {
   try {
+    if (payload.dryRun !== true) {
+      const enabled = await isTriggerEnabledForSending(payload.notificationType);
+      if (!enabled) {
+        console.info(
+          '[Notification] Envoi ignoré — déclencheur désactivé dans les paramètres:',
+          payload.notificationType,
+        );
+        return { ...SKIPPED_RESULT };
+      }
+    }
+
     const projectRef = String(SUPABASE_URL).match(/https?:\/\/([^.]+)\.supabase\.co/i)?.[1] ?? 'URL inattendue';
     console.info('[Notification] Appel edge send-invoice-notification', {
       projectRef,
@@ -74,10 +98,12 @@ export async function sendInvoiceNotification(payload: InvoiceNotificationPayloa
     const recipientsFrom = (r: unknown): string[] | undefined =>
       Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : undefined;
 
-    // Erreur HTTP (4xx/5xx) : le corps JSON peut être dans `data` selon la version du client
     if (error) {
       console.warn('[Notification] send-invoice-notification failed:', error.message, body);
       const serverError = body && typeof body.error === 'string' ? body.error : undefined;
+      if (body?.skipped === true) {
+        return { ok: true, skipped: true, reason: String(body.reason || serverError) };
+      }
       return {
         ok: false,
         error: error.message,
@@ -94,6 +120,15 @@ export async function sendInvoiceNotification(payload: InvoiceNotificationPayloa
       };
     }
 
+    if (body.skipped === true) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: String(body.reason || 'notification_disabled_by_params'),
+        recipients: recipientsFrom(body.recipients),
+      };
+    }
+
     if (body.dryRun === true) {
       return {
         ok: false,
@@ -104,9 +139,13 @@ export async function sendInvoiceNotification(payload: InvoiceNotificationPayloa
     }
 
     if (body.success !== true) {
+      const errText = String(body.error || 'notification failed');
+      if (errText.includes('No recipients')) {
+        return { ok: true, skipped: true, reason: 'no_recipients_for_params' };
+      }
       return {
         ok: false,
-        reason: String(body.error || 'notification failed'),
+        reason: errText,
         recipients: recipientsFrom(body.recipients),
       };
     }
