@@ -13,6 +13,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import { cloudStorageService } from '../services/cloudStorage';
 import { chargeProvisionService } from '../services/chargeProvisionService';
+import { formatTransportCodeNumero } from '../constants/transportTitles';
 
 // Fonctions utilitaires pour formater les dates et données
 const formatDateFr = (dateStr: string | null): string => {
@@ -70,6 +71,9 @@ const calculateDaysRemaining = (dueDate: string | null): { days: number; text: s
   }
 };
 
+const getTransportCodeNumeroDisplay = (transportTitle?: string, transportNumero?: string): string =>
+  formatTransportCodeNumero(String(transportTitle || ''), String(transportNumero || '')) || '—';
+
 interface InvoiceTableProps {
   invoices: Invoice[];
   onDelete?: (id: number) => void;
@@ -115,6 +119,45 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
   const [sortBy, setSortBy] = useState<SortField>('receptionDate');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [invoicesInOrderPaiement, setInvoicesInOrderPaiement] = useState<number[]>([]);
+  const isRejectedMenu = activeMenu === 'factures-rejected' || activeMenu === 'factures-ffg-rejected';
+  const isOverdueMenu = activeMenu === 'factures-overdue' || activeMenu === 'factures-ffg-overdue';
+  const isValidatedMenu =
+    activeMenu === 'factures-validated' || activeMenu === 'factures-ffg-validated';
+
+  const invoiceNumberColClass = isValidatedMenu
+    ? 'px-3 py-2 text-left w-[7.25rem] max-w-[7.25rem] min-w-[6rem]'
+    : 'px-4 py-2 text-left';
+  const supplierColClass = isValidatedMenu
+    ? 'px-3 py-2 text-left w-[8.5rem] max-w-[8.5rem] min-w-[6.5rem]'
+    : 'px-4 py-2 text-left';
+  const dossierColClass = isValidatedMenu
+    ? 'px-3 py-2 text-left w-[7.5rem] max-w-[7.5rem] min-w-[6rem]'
+    : 'px-4 py-2 text-left';
+  const chargeColClass = isValidatedMenu
+    ? 'px-3 py-2 text-left w-[8rem] max-w-[8rem] min-w-[6.5rem]'
+    : 'px-4 py-2 text-left';
+  const fichierColClass = isValidatedMenu
+    ? 'px-2 py-2 text-center w-[2.75rem] max-w-[2.75rem] min-w-[2.5rem]'
+    : 'px-4 py-2 text-center';
+
+  const extractLatestRejectionReason = (raw: unknown): string => {
+    const text = String(raw ?? '').trim();
+    if (!text) return '-';
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const last = parsed[parsed.length - 1] as Record<string, unknown>;
+        return String(last.raison || last.commentaire || last.commentaires || '-').trim() || '-';
+      }
+      if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>;
+        return String(obj.raison || obj.commentaire || obj.commentaires || '-').trim() || '-';
+      }
+    } catch {
+      // texte brut
+    }
+    return text;
+  };
 
   // Charger les factures dans l'ordre de paiement du jour
   useEffect(() => {
@@ -283,7 +326,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
     <>
       <div className="bg-white rounded-lg overflow-hidden p-0 m-4">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className={`w-full ${isValidatedMenu ? 'table-fixed' : ''}`}>
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 {activeMenu === 'factures-validated' && (
@@ -292,28 +335,52 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('receptionDate')}>
                   Date réception {sortBy === 'receptionDate' && (sortOrder === 'asc' ? '↑' : '↓')}
                 </th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">N° facture</th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Fournisseur</th>
+                <th className={`${invoiceNumberColClass} text-[10px] font-bold text-gray-900 uppercase`}>
+                  N° facture
+                </th>
+                <th className={`${supplierColClass} text-[10px] font-bold text-gray-900 uppercase`}>
+                  Fournisseur
+                </th>
                 {agent?.REGION === 'TOUT' && (
                   <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Région</th>
                 )}
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('amount')}>
                   Montant {sortBy === 'amount' && (sortOrder === 'asc' ? '↑' : '↓')}
                 </th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">N° dossier</th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Catégorie de charge</th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('dueDate')}>
-                  Échéance {sortBy === 'dueDate' && (sortOrder === 'asc' ? '↑' : '↓')}
+                <th className={`${dossierColClass} text-[10px] font-bold text-gray-900 uppercase`}>
+                  N° dossier
                 </th>
-                <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Priorité de paiement</th>
-                <th className="px-4 py-2 text-center text-[10px] font-bold text-gray-900 uppercase">Fichier</th>
+                {!isRejectedMenu && (
+                  <th className={`${chargeColClass} text-[10px] font-bold text-gray-900 uppercase`}>
+                    Catégorie de charge
+                  </th>
+                )}
+                {isOverdueMenu && (
+                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Date réception facture</th>
+                )}
+                {!isRejectedMenu && (
+                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('dueDate')}>
+                    Échéance {sortBy === 'dueDate' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                )}
+                {!isRejectedMenu && !isOverdueMenu && (
+                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Priorité de paiement</th>
+                )}
+                {!isRejectedMenu && (
+                  <th className={`${fichierColClass} text-[10px] font-bold text-gray-900 uppercase`}>
+                    Fichier
+                  </th>
+                )}
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Validation</th>
+                {isRejectedMenu && (
+                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Dernière raison du rejet</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {sortedInvoices.length === 0 ? (
                 <tr key="no-invoices">
-                  <td colSpan={agent?.REGION === 'TOUT' ? 11 : 10} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={agent?.REGION === 'TOUT' ? 12 : 11} className="px-6 py-8 text-center text-gray-500">
                     Aucune facture trouvée
                   </td>
                 </tr>
@@ -361,15 +428,28 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-2 text-[11px] font-semibold">
+                      <td className={`${invoiceNumberColClass} text-[11px] font-semibold align-top`}>
                         <button
                           onClick={() => handleViewInvoice(invoice)}
-                          className="block w-full text-left text-blue-600 hover:text-blue-800 hover:underline transition-all duration-200"
+                          className="block w-full max-w-full truncate text-left text-blue-600 hover:text-blue-800 hover:underline transition-all duration-200"
+                          title={invoice.invoiceNumber}
                         >
                           {invoice.invoiceNumber}
                         </button>
+                        <div
+                          className="mt-0.5 max-w-full truncate text-[10px] font-normal text-gray-500"
+                          title={invoice.client?.trim() || undefined}
+                        >
+                          {`Client : ${invoice.client?.trim() || '—'}`}
+                        </div>
                       </td>
-                      <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">{invoice.supplier}</td>
+                      <td
+                        className={`${supplierColClass} text-[11px] text-gray-900 hover:text-gray-700 transition-colors align-top`}
+                      >
+                        <span className="block truncate" title={invoice.supplier}>
+                          {invoice.supplier}
+                        </span>
+                      </td>
                       {agent?.REGION === 'TOUT' && (
                         <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">{invoice.region}</td>
                       )}
@@ -379,50 +459,76 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                           return amountInfo.formatted;
                         })()}$</span>
                       </td>
-                      <td className="px-4 py-2 text-[11px] text-gray-900 whitespace-nowrap">
-                        {invoice.fileNumber || '-'}
-                      </td>
-                      <td className="px-4 py-2">
-                        {invoice.chargeCategory?.toLowerCase() === 'bulletin' ? (
-                          <span className="inline-flex items-center gap-1 bg-red-200 bg-opacity-40 text-red-800 text-[10px] px-2 py-1 rounded-full font-semibold border border-red-300">
-                            ⚠️ Bulletin
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-gray-600">{invoice.chargeCategory || '-'}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">
-                        <div className="flex flex-col gap-1">
-                          <div className={`${isOverdue ? 'animate-blink text-red-600 font-bold' : 'text-gray-900'} whitespace-nowrap`}>
-                            {formatDateFr(invoice.dueDate || null)}
-                          </div>
-                          <div className={`w-fit px-2 py-1 rounded-full text-[9px] font-semibold whitespace-nowrap ${
-                            isOverdue 
-                              ? 'bg-red-100 text-red-800' 
-                              : daysInfo.days === 0 
-                              ? 'bg-orange-100 text-orange-800'
-                              : daysInfo.days <= 3
-                              ? 'bg-yellow-100 text-yellow-800'
-                              : 'bg-green-100 text-green-800'
-                          }`}>
-                            {daysInfo.text}
-                          </div>
+                      <td className={`${dossierColClass} text-[11px] text-gray-900 align-top`}>
+                        <div className="max-w-full truncate whitespace-nowrap" title={invoice.fileNumber || undefined}>
+                          {invoice.fileNumber || '-'}
+                        </div>
+                        <div
+                          className="mt-0.5 max-w-full truncate text-[10px] text-gray-500"
+                          title={getTransportCodeNumeroDisplay(invoice.transportTitle, invoice.numero)}
+                        >
+                          {getTransportCodeNumeroDisplay(invoice.transportTitle, invoice.numero)}
                         </div>
                       </td>
-                      <td className="px-4 py-2 hover:transform hover:scale-105 transition-all duration-200">
-                        {getUrgencyBadge(invoice.urgencyLevel)}
+                      {!isRejectedMenu && (
+                        <td className={`${chargeColClass} align-top`}>
+                          {invoice.chargeCategory?.toLowerCase() === 'bulletin' ? (
+                            <span className="inline-flex items-center gap-1 bg-red-200 bg-opacity-40 text-red-800 text-[10px] px-2 py-1 rounded-full font-semibold border border-red-300">
+                              ⚠️ Bulletin
+                            </span>
+                          ) : (
+                            <span
+                              className="block text-[11px] text-gray-600 truncate max-w-full"
+                              title={invoice.chargeCategory || undefined}
+                            >
+                              {invoice.chargeCategory || '-'}
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      {isOverdueMenu && (
+                        <td className="px-4 py-2 text-[11px] text-gray-900 whitespace-nowrap font-semibold">
+                          {formatDateFr(invoice.receptionDate)}
+                        </td>
+                      )}
+                      {!isRejectedMenu && (
+                        <td className="px-4 py-2 text-[11px] text-gray-900 hover:text-gray-700 transition-colors">
+                          <div className="flex flex-col gap-1">
+                            <div className={`${isOverdue ? 'animate-blink text-red-600 font-bold' : 'text-gray-900'} whitespace-nowrap`}>
+                              {formatDateFr(invoice.dueDate || null)}
+                            </div>
+                            <div className={`w-fit px-2 py-1 rounded-full text-[9px] font-semibold whitespace-nowrap ${
+                              isOverdue 
+                                ? 'bg-red-100 text-red-800' 
+                                : daysInfo.days === 0 
+                                ? 'bg-orange-100 text-orange-800'
+                                : daysInfo.days <= 3
+                                ? 'bg-yellow-100 text-yellow-800'
+                                : 'bg-green-100 text-green-800'
+                            }`}>
+                              {daysInfo.text}
+                            </div>
+                          </div>
+                        </td>
+                      )}
+                      {!isRejectedMenu && !isOverdueMenu && (
+                        <td className="px-4 py-2 hover:transform hover:scale-105 transition-all duration-200">
+                          {getUrgencyBadge(invoice.urgencyLevel)}
+                        </td>
+                      )}
+                      {!isRejectedMenu && (
+                        <td className={`${fichierColClass} hover:bg-gray-50 rounded transition-colors duration-200`}>
+                        {invoice.attachedInvoiceUrl ? (
+                          <button
+                            onClick={() => setPdfModal({ invoice, url: invoice.attachedInvoiceUrl! })}
+                            className="inline-flex items-center justify-center text-red-900 hover:text-red-700 hover:bg-red-100 p-1.5 rounded transition-all duration-200 transform hover:scale-110"
+                            title="Visualiser la facture"
+                          >
+                            <FileText size={16} />
+                          </button>
+                        ) : null}
                       </td>
-                      <td className="px-4 py-2 text-center hover:bg-gray-50 rounded transition-colors duration-200">
-                      {invoice.attachedInvoiceUrl ? (
-                        <button
-                          onClick={() => setPdfModal({ invoice, url: invoice.attachedInvoiceUrl! })}
-                          className="inline-flex items-center justify-center text-red-900 hover:text-red-700 hover:bg-red-100 p-1.5 rounded transition-all duration-200 transform hover:scale-110"
-                          title="Visualiser la facture"
-                        >
-                          <FileText size={16} />
-                        </button>
-                      ) : null}
-                    </td>
+                      )}
                     <td className="px-4 py-2 hover:bg-gray-50 rounded transition-colors duration-200">
                       {/* Barre de progression des validations */}
                       <div className="w-full">
@@ -462,6 +568,13 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                         })()}
                       </div>
                     </td>
+                    {isRejectedMenu && (
+                      <td className="px-4 py-2 text-[11px] text-gray-700">
+                        <div className="max-w-[320px] break-words" title={invoice.rejectionReason || '-'}>
+                          {invoice.rejectionReason || extractLatestRejectionReason((invoice as unknown as Record<string, unknown>).Rejet)}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                   );
                 })

@@ -29,6 +29,8 @@ const TRANSPORT_COMPACT_CODES: Record<string, string> = {
   'Lettre de transport ferroviaire CIM': 'CIM',
 };
 
+const TRANSPORT_CODES = ['BL', 'LTA', 'CMR', 'CIM'] as const;
+
 /** Normalise un titre stocké (anciennes valeurs en base). */
 export function normalizeTransportTitle(transportTitle: string): string {
   const title = String(transportTitle || '').trim();
@@ -67,6 +69,37 @@ export function formatTransportCompact(
   if (!code || !num || num.toUpperCase() === 'NA') return null;
 
   return `${code}${num}`;
+}
+
+/** Affichage code + numéro au format `BL:HLCUBO12512BBOC8` */
+export function formatTransportCodeNumero(
+  transportTitle: string,
+  numero?: string | null,
+): string | null {
+  const title = normalizeTransportTitle(transportTitle);
+  const num = String(numero || '').trim();
+  const compact = formatTransportCompact(title, num);
+
+  if (compact) {
+    const code = TRANSPORT_COMPACT_CODES[title];
+    if (code) return `${code}:${num}`;
+  }
+
+  if (!title && !num) return null;
+
+  const upperTitle = title.toUpperCase();
+  for (const code of TRANSPORT_CODES) {
+    if (upperTitle.startsWith(code)) {
+      const suffix = title.slice(code.length).trim();
+      const merged = `${suffix}${num}`.trim();
+      return merged ? `${code}:${merged}` : `${code}:`;
+    }
+  }
+
+  if (title && num) return `${title}:${num}`;
+  if (title) return title;
+  if (num) return num;
+  return null;
 }
 
 /** Valeur enregistrée en base pour la colonne numero */

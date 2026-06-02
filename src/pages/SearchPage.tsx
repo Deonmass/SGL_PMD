@@ -14,7 +14,7 @@ import { Invoice as GlobalInvoice } from '../types';
 import { refreshAllData, useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { downloadReleveSoaPdf, downloadSearchDetailStatusPdf, type SearchPdfInvoiceRow } from '../utils/searchPageExportPdf';
-import { formatTransportCompact } from '../constants/transportTitles';
+import { formatTransportCodeNumero, formatTransportCompact } from '../constants/transportTitles';
 import {
   appendFactureDeletionAuditLog,
   appendFactureLogByInvoiceNumber,
@@ -103,6 +103,10 @@ function getInvoiceTransportKey(transportTitle: string, transportNumero: string)
   if (title) return title;
   if (num) return num;
   return 'Non renseigné';
+}
+
+function getTransportCodeNumeroDisplay(transportTitle: string, transportNumero: string): string {
+  return formatTransportCodeNumero(transportTitle, transportNumero) || '—';
 }
 
 function getDisplayDossierNumber(inv: Invoice): string {
@@ -1914,7 +1918,6 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                               <tr>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">N° Facture</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Fournisseur</th>
-                                <th className="px-3 py-2 text-left font-semibold text-gray-900">Client</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">N° dossier</th>
                                 <th className="px-3 py-2 text-left font-semibold text-gray-900">Date réception</th>
                                 <th className="px-3 py-2 text-right font-semibold text-gray-900">Date d&apos;échéance</th>
@@ -1926,7 +1929,7 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                             <tbody>
                               {detailInvoicesForCard().length === 0 ? (
                                 <tr>
-                                  <td colSpan={9} className="px-4 py-6 text-center text-gray-500">
+                                  <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
                                     Aucune facture
                                   </td>
                                 </tr>
@@ -1945,21 +1948,28 @@ function SearchPage({ menuTitle = 'Recherche avancée', invoiceTypeScope = 'oper
                                       >
                                         {inv.invoiceNumber}
                                       </button>
+                                      <div
+                                        className="mt-0.5 max-w-[180px] truncate text-[11px] font-normal text-gray-500"
+                                        title={inv.client.trim() || undefined}
+                                      >
+                                        {`Client : ${inv.client.trim() || '—'}`}
+                                      </div>
                                     </td>
                                     <td className="px-3 py-2 text-gray-700 max-w-[200px] truncate" title={inv.supplier}>
                                       {inv.supplier}
                                     </td>
                                     <td
-                                      className="px-3 py-2 text-gray-700 max-w-[140px] truncate"
-                                      title={inv.client.trim() || undefined}
+                                      className="px-3 py-2 text-gray-700"
                                     >
-                                      {inv.client.trim() || '—'}
-                                    </td>
-                                    <td
-                                      className="px-3 py-2 text-gray-700 max-w-[120px] truncate"
-                                      title={getDisplayDossierNumber(inv)}
-                                    >
-                                      {getDisplayDossierNumber(inv)}
+                                      <div className="max-w-[120px] truncate" title={getDisplayDossierNumber(inv)}>
+                                        {getDisplayDossierNumber(inv)}
+                                      </div>
+                                      <div
+                                        className="mt-0.5 max-w-[180px] truncate text-[11px] text-gray-500"
+                                        title={getTransportCodeNumeroDisplay(inv.transportTitle, inv.transportNumero)}
+                                      >
+                                        {getTransportCodeNumeroDisplay(inv.transportTitle, inv.transportNumero)}
+                                      </div>
                                     </td>
                                     <td className="px-3 py-2 text-gray-700">
                                       {new Date(inv.date).toLocaleDateString('fr-FR')}

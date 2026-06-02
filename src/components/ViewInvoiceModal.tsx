@@ -8,8 +8,20 @@ import { refreshAllData } from '../hooks/useDataRefresh';
 import { useAuth } from '../contexts/AuthContext';
 import { PDFDocument, PDFImage } from 'pdf-lib';
 import EditInvoiceForm from './EditInvoiceForm';
-import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
-import { isEntryMiseAJour, isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
+import {
+  appendFactureDeletionAuditLog,
+  appendFactureLogByInvoiceNumber,
+  buildLogActor,
+  sanitizeExchangeHistoryText,
+} from '../services/activityLogService';
+import {
+  canAgentWithdrawLastRejection,
+  getLastRejectionEntry,
+  isAgentRejectionAuthor,
+  isEntryMiseAJour,
+  isEntryRetraitRejet,
+  isInvoiceEffectivelyRejected,
+} from '../utils/factureRejetHistory';
 import { sendInvoiceNotification } from '../services/notificationService';
 import { cloudStorageService } from '../services/cloudStorage';
 import { chargeProvisionService } from '../services/chargeProvisionService';
@@ -81,7 +93,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationType, setValidationType] = useState<'dr' | 'dop' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [withdrawSaving, setWithdrawSaving] = useState<null | 'dr' | 'dop'>(null);
+  const [withdrawSaving, setWithdrawSaving] = useState<null | 'dr' | 'dop' | 'rejet'>(null);
   const [isLoadingValidations, setIsLoadingValidations] = useState(true);
   const [activeTab, setActiveTab] = useState<'visualization' | 'details'>('visualization');
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -207,6 +219,13 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
 
   // Vérifier si la facture est "Bon à payer" selon les nouvelles règles (signature DOP enregistrée)
   const isBonAPayer = () => hasValidatorSigned(validations.dop);
+
+  const canWithdrawOwnRejection =
+    isRejected &&
+    canAgentWithdrawLastRejection(
+      rejections.length ? JSON.stringify(rejections) : null,
+      agent
+    );
 
   const loadExistingData = useCallback(async () => {
     setIsLoadingValidations(true);
@@ -941,6 +960,86 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
     return url.includes('#') ? `${url}&${hash}` : `${url}#${hash}`;
   };
 
+  const resolveStatusAfterRejectionWithdraw = () => {
+    const hasDR = hasValidatorSigned(validations.dr);
+    const hasDOP = hasValidatorSigned(validations.dop);
+    if (!hasDR) return statutEnAttenteDr();
+    if (hasDR && !hasDOP) return statutEnAttenteDop();
+    return 'Validée';
+  };
+
+  const withdrawRejection = async () => {
+    const lastRejection = getLastRejectionEntry(rejections);
+    if (!lastRejection || !isAgentRejectionAuthor(lastRejection, agent)) {
+      showError('Seul le validateur ayant enregistré le rejet peut le retirer.');
+      return;
+    }
+
+    const level = String(lastRejection.type || '').toUpperCase() || 'N/A';
+    if (
+      !window.confirm(
+        `Retirer votre rejet (niveau ${level}) ? La facture reprendra le statut correspondant aux validations déjà enregistrées.`
+      )
+    ) {
+      return;
+    }
+
+    setWithdrawSaving('rejet');
+    try {
+      const nextStatus = resolveStatusAfterRejectionWithdraw();
+      const retraitEntry: FactureExchangeEntry = {
+        eventType: 'retrait rejet',
+        datetime: new Date().toISOString(),
+        raison: `Retrait du rejet au niveau ${level}.`,
+        type: lastRejection.type,
+        name: agent?.Nom || '',
+        email: agent?.email || '',
+      };
+      const updatedRejections = [...rejections, retraitEntry];
+
+      const { error } = await supabase
+        .from('FACTURES')
+        .update({
+          Statut: nextStatus,
+          Rejet: JSON.stringify(updatedRejections),
+        })
+        .eq('ID', currentInvoice.id);
+
+      if (error) {
+        showError('Erreur lors du retrait du rejet: ' + error.message);
+        return;
+      }
+
+      try {
+        const actor = buildLogActor(agent);
+        await appendFactureLogByInvoiceNumber(
+          currentInvoice.invoiceNumber,
+          actor,
+          'Retrait rejet',
+          `Retrait du rejet au niveau ${level}. Nouveau statut : ${nextStatus}.`
+        );
+      } catch (logError) {
+        console.error('Erreur journalisation retrait rejet:', logError);
+      }
+
+      success('Rejet retiré avec succès.');
+      setRejections(updatedRejections);
+      setDbStatus(nextStatus);
+      setCurrentInvoice((prev) => ({
+        ...prev,
+        status: nextStatus.toLowerCase().includes('valid') ? 'validated' : 'pending',
+      }));
+
+      await loadExistingData();
+      refreshAllData();
+      onRefresh?.();
+    } catch {
+      showError('Erreur lors du retrait du rejet.');
+    } finally {
+      setWithdrawSaving(null);
+    }
+  };
+
   const confirmReject = async () => {
     setIsRejectSubmitting(true);
     
@@ -1077,7 +1176,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
         <div className="flex-1 overflow-hidden p-0">
           <div className="flex flex-col lg:flex-row gap-1 h-full">
             {/* Colonne gauche - 70% : Données de la facture */}
-            <div className="flex-1 lg:flex-[0.7] flex flex-col h-full">
+            <div className="flex-1 min-w-0 lg:basis-[70%] lg:max-w-[70%] lg:min-w-[70%] flex flex-col h-full">
               {/* Onglets */}
               <div className="flex bg-gray-200">
                 <button
@@ -1372,13 +1471,35 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
             </div>
 
             {/* Colonne droite - 30% : Validations et rejet */}
-            <div className="flex-1 lg:flex-[0.3] mt-0 flex flex-col h-full bg-slate-900 border-l border-slate-800">
+            <div className="flex-1 min-w-0 lg:basis-[30%] lg:max-w-[30%] lg:min-w-[30%] lg:shrink-0 mt-0 flex flex-col h-full bg-slate-900 border-l border-slate-800">
               {/* Bloc de validation DR, DOP, DG */}
               <div className="flex-1 overflow-y-auto p-3">
                 <h3 className="text-base font-semibold text-slate-100 mb-3">
                   Validation
                 </h3>
-                
+
+                {canWithdrawOwnRejection && (
+                  <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5">
+                    <p className="text-[11px] text-amber-100/90 mb-2 leading-snug">
+                      Vous avez rejeté cette facture. Vous pouvez annuler ce rejet ; elle reprendra son
+                      statut selon les validations DR/DOP déjà enregistrées.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void withdrawRejection()}
+                      disabled={withdrawSaving !== null || isSubmitting}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-amber-400/50 bg-slate-800/80 px-2 py-1.5 text-[11px] font-medium text-amber-100 hover:bg-slate-700/90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {withdrawSaving === 'rejet' ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                      ) : (
+                        <Undo2 className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                      Retirer le rejet
+                    </button>
+                  </div>
+                )}
+
                 {/* Tableau des validations */}
                 {isLoadingValidations ? (
                   <div className="flex items-center justify-center py-4">
@@ -1561,12 +1682,16 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                       .sort((a, b) => exchangeTimestamp(a) - exchangeTimestamp(b))
                       .map((entry, idx) => {
                         const rawDate = entry.datetime || entry.date;
-                        const isUpdate = isEntryMiseAJour(entry as Record<string, unknown>);
+                        const entryRecord = entry as Record<string, unknown>;
+                        const isUpdate =
+                          isEntryMiseAJour(entryRecord) || isEntryRetraitRejet(entryRecord);
                         const by = entry.name || 'Utilisateur';
                         const level = (entry.type || '').toUpperCase();
 
                         if (isUpdate) {
-                          const { status, comment } = extractStatusAndComment(entry.raison);
+                          const { status, comment } = extractStatusAndComment(
+                            sanitizeExchangeHistoryText(entry.raison || '')
+                          );
                           return (
                             <div key={idx} className="flex w-full justify-end">
                               <div className="max-w-[min(92%,20rem)] rounded-2xl rounded-br-md bg-sky-900/50 border border-sky-700/50 px-3 py-2.5 shadow-md ml-auto text-left">
@@ -1600,7 +1725,7 @@ function ViewInvoiceModal({ invoice, onClose, onRefresh }: ViewInvoiceModalProps
                                 {by}
                               </div>
                               <p className="text-[11px] text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
-                                {entry.raison}
+                                {sanitizeExchangeHistoryText(entry.raison || '')}
                               </p>
                               <div className="mt-2 pt-1.5 border-t border-red-800/40 text-[9px] text-slate-400 lowercase">
                                 rejet

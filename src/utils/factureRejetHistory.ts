@@ -40,9 +40,62 @@ export function isEntryMiseAJour(entry: RejetExchangeEntry): boolean {
   return ty === 'miseajour';
 }
 
-/** Rejet validateur ou legacy : tout sauf une entrée explicitement « mise à jour ». */
+/** Entrée de retrait de rejet (ne compte pas comme un rejet actif). */
+export function isEntryRetraitRejet(entry: RejetExchangeEntry): boolean {
+  const et = normExchangeKind(entry.eventType);
+  return et === 'retraitrejet';
+}
+
+/** Rejet validateur ou legacy : tout sauf mise à jour ou retrait de rejet. */
 export function isEntryRejetHistorique(entry: RejetExchangeEntry): boolean {
+  if (isEntryRetraitRejet(entry)) return false;
   return !isEntryMiseAJour(entry);
+}
+
+/** Dernière entrée de rejet (hors mises à jour et retraits). */
+export function getLastRejectionEntry(entries: RejetExchangeEntry[]): RejetExchangeEntry | null {
+  if (!entries.length) return null;
+  const sorted = [...entries].sort((a, b) => entryTimestamp(a) - entryTimestamp(b));
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const entry = sorted[i]!;
+    if (isEntryMiseAJour(entry) || isEntryRetraitRejet(entry)) continue;
+    if (isEntryRejetHistorique(entry)) return entry;
+  }
+  return null;
+}
+
+export function isAgentRejectionAuthor(
+  entry: RejetExchangeEntry,
+  agent?: { email?: string | null; Nom?: string | null } | null
+): boolean {
+  const myEmail = String(agent?.email || '')
+    .trim()
+    .toLowerCase();
+  const authorEmail = String(entry.email || '')
+    .trim()
+    .toLowerCase();
+  if (myEmail && authorEmail && myEmail === authorEmail) return true;
+
+  const myName = String(agent?.Nom || '')
+    .trim()
+    .toLowerCase();
+  const authorName = String(entry.name || '')
+    .trim()
+    .toLowerCase();
+  if (myName && authorName && myName === authorName) return true;
+
+  return false;
+}
+
+/** L’agent courant est l’auteur du dernier rejet enregistré (email ou nom). */
+export function canAgentWithdrawLastRejection(
+  rejetRaw: unknown,
+  agent?: { email?: string | null; Nom?: string | null } | null
+): boolean {
+  const entries = parseFactureRejetEntries(rejetRaw);
+  const last = getLastRejectionEntry(entries);
+  if (!last) return false;
+  return isAgentRejectionAuthor(last, agent);
 }
 
 function entryTimestamp(entry: RejetExchangeEntry): number {
