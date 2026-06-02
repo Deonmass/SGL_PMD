@@ -12,6 +12,7 @@ import { useDataRefresh, REFRESH_EVENTS } from '../hooks/useDataRefresh';
 import { formatMoney } from '../utils/formatters';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { sendInvoiceNotification } from '../services/notificationService';
+import { formatTransportCodeNumero } from '../constants/transportTitles';
 
 interface Facture {
   ID: string;
@@ -63,6 +64,25 @@ function normalizeInvoiceType(value?: string | null) {
   if (normalized === 'frais generaux' || normalized === 'frais-generaux') return 'frais-generaux';
   if (normalized === 'operationnel' || normalized === 'operationel') return 'operationnel';
   return normalized;
+}
+
+function extractLatestRejectionReason(raw: unknown): string {
+  const text = String(raw ?? '').trim();
+  if (!text) return '-';
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const last = parsed[parsed.length - 1] as Record<string, unknown>;
+      return String(last.raison || last.commentaire || last.commentaires || '-').trim() || '-';
+    }
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      return String(obj.raison || obj.commentaire || obj.commentaires || '-').trim() || '-';
+    }
+  } catch {
+    // texte brut
+  }
+  return text;
 }
 
 function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoiceTypeScope = 'operationnel' }: ValidationPageProps) {
@@ -622,19 +642,32 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     
     let filtered = [...allInvoices];
 
-    // Filtre par recherche (N° dossier, fournisseur, montant, priorité)
+    // Filtre par recherche (N° dossier, facture, fournisseur, client, transport, montant, priorité)
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase().trim();
       filtered = filtered.filter(inv => {
         const dossierNum = (inv["Numéro de dossier"] || '').toLowerCase();
         const invoiceNumber = (inv["Numéro de facture"] || '').toLowerCase();
         const supplier = (inv.Fournisseur || '').toLowerCase();
+        const client = (inv.Client || '').toLowerCase();
+        const transportTitle = (inv["Titre de transport"] || '').toLowerCase();
+        const transportNumero = String(inv.numero || '').toLowerCase();
+        const transportCodeNumero = (
+          formatTransportCodeNumero(
+            String(inv["Titre de transport"] || ''),
+            String(inv.numero || ''),
+          ) || ''
+        ).toLowerCase();
         const amount = String(inv.Montant || '');
         const urgency = (inv["Niveau urgence"] || '').toLowerCase();
         
         return dossierNum.includes(term) || 
                invoiceNumber.includes(term) || 
                supplier.includes(term) || 
+               client.includes(term) ||
+               transportTitle.includes(term) ||
+               transportNumero.includes(term) ||
+               transportCodeNumero.includes(term) ||
                amount.includes(term) || 
                urgency.includes(term);
       });
@@ -759,6 +792,8 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       paymentMode: inv["Mode de paiement requis"],
       attachedInvoiceUrl: inv["Facture attachée"],
       comments: inv["Commentaires"]
+      ,
+      rejectionReason: extractLatestRejectionReason(inv.Rejet),
     };
     });
 
@@ -869,6 +904,10 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       acc[currency] = (acc[currency] || 0) + (inv.amount || 0);
       return acc;
     }, {});
+    const totalInUsd =
+      (totalsByCurrency.USD || 0) +
+      ((totalsByCurrency.CDF || 0) / 2000) +
+      (totalsByCurrency.EUR || 0);
     const urgentCount = invoices.filter(inv => {
       const urgency = inv.urgencyLevel?.toLowerCase();
       return urgency === 'urgent'; // Uniquement les factures avec Priorité de paiement Urgent
@@ -882,6 +921,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
 
     return {
       totalsByCurrency,
+      totalInUsd,
       count: invoices.length,
       urgent: urgentCount,
       overdue: overdueCount
@@ -946,10 +986,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
     const clonedContent = exportContainerRef.current.cloneNode(true) as HTMLElement;
     const statsCardsSection = clonedContent.querySelector('[data-export-stats="cards"]');
     if (statsCardsSection) {
-      const totalsByCurrency = Object.entries(stats.totalsByCurrency);
-      const totalAmountLabel = totalsByCurrency.length === 0
-        ? '0'
-        : totalsByCurrency.map(([currency, amount]) => formatMoney(amount, currency)).join(' | ');
+      const totalAmountLabel = formatMoney(stats.totalInUsd || 0, 'USD');
 
       const tableWrapper = document.createElement('div');
       tableWrapper.className = 'mb-4';
@@ -1204,24 +1241,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
               <div className="flex items-center gap-3">
                 <div>
                   <p className="text-sm font-semibold opacity-90">Montant Total</p>
-                  {Object.keys(stats.totalsByCurrency).length === 0 ? (
-                    <p className="text-3xl font-bold">0</p>
-                  ) : Object.keys(stats.totalsByCurrency).length === 1 ? (
-                    <p className="text-2xl font-bold">
-                      {formatMoney(
-                        stats.totalsByCurrency[Object.keys(stats.totalsByCurrency)[0]],
-                        Object.keys(stats.totalsByCurrency)[0]
-                      )}
-                    </p>
-                  ) : (
-                    <div className="mt-1 space-y-1">
-                      {Object.entries(stats.totalsByCurrency).map(([currency, amount]) => (
-                        <p key={currency} className="text-xs font-semibold">
-                          {formatMoney(amount, currency)}
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                  <p className="text-2xl font-bold">{formatMoney(stats.totalInUsd || 0, 'USD')}</p>
                 </div>
               </div>
             </div>

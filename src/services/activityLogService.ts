@@ -16,6 +16,46 @@ interface Actor {
 
 const asText = (value: unknown) => String(value ?? '').trim();
 
+const isAttachedInvoiceUrl = (value: string): boolean => {
+  const v = value.trim();
+  if (!v || v === '—') return false;
+  return /^https?:\/\//i.test(v) || /\/storage\/v1\/object\//i.test(v);
+};
+
+const formatAttachedInvoiceForExchange = (value: string, role: 'before' | 'after'): string => {
+  const v = asText(value);
+  if (!v || v === '—') return '—';
+  if (!isAttachedInvoiceUrl(v)) return v;
+  return role === 'before' ? 'Fichier joint' : 'Nouveau fichier attaché';
+};
+
+/** Masque les URLs de pièces jointes dans le texte d'historique d'échanges (entrées déjà en base). */
+export const sanitizeExchangeHistoryText = (text: string): string => {
+  if (!text) return text;
+
+  return text
+    .split('\n')
+    .map((line) => {
+      if (!/facture\s+attach[eé]e/i.test(line)) return line;
+      return line.replace(
+        /«\s*([^»]*?)\s*»\s*→\s*«\s*([^»]*?)\s*»/gi,
+        (_match, beforePart: string, afterPart: string) => {
+          const b = String(beforePart).trim();
+          const a = String(afterPart).trim();
+          const fmt = (val: string, role: 'before' | 'after') => {
+            if (!val || val === '—') return '—';
+            if (isAttachedInvoiceUrl(val)) {
+              return role === 'before' ? 'Fichier joint' : 'Nouveau fichier attaché';
+            }
+            return val;
+          };
+          return `« ${fmt(b, 'before')} » → « ${fmt(a, 'after')} »`;
+        }
+      );
+    })
+    .join('\n');
+};
+
 export const parseFactureLogs = (raw: unknown): FactureLogEntry[] => {
   if (!raw) return [];
 
@@ -246,8 +286,14 @@ export const buildFactureUpdateDetailedExplanation = (
     const after = asText(afterValues[key]);
     if (before === after) return;
     const label = labels[key] || key;
-    const de = before || '—';
-    const a = after || '—';
+    const de =
+      key === 'Facture attachée'
+        ? formatAttachedInvoiceForExchange(before, 'before')
+        : before || '—';
+    const a =
+      key === 'Facture attachée'
+        ? formatAttachedInvoiceForExchange(after, 'after')
+        : after || '—';
     lines.push(`${label} : « ${de} » → « ${a} »`);
   });
 

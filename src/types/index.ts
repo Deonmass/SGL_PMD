@@ -34,6 +34,7 @@ export interface Invoice {
   attachedInvoiceUrl?: string;
   comments?: string;
   created_by?: string;
+  rejectionReason?: string;
 }
 
 export interface User {

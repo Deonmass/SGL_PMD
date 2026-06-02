@@ -26,9 +26,10 @@ import { refreshAllData, useDataRefresh, REFRESH_EVENTS } from '../hooks/useData
 import * as XLSX from 'xlsx';
 import { downloadInvoiceDetailModalPdf, convertMoneyToUsd } from '../services/invoiceDetailPdfExport';
 import { formatTransportCompact } from '../constants/transportTitles';
+import { compareInvoicesByCreationDesc } from '../utils/invoiceSort';
 
 const FACTURES_DETAIL_SELECT =
-  'ID, "Numéro de facture", Fournisseur, Client, "Numéro de dossier", "Titre de transport", numero, Montant, "Statut", "Date de réception", "Région", "Catégorie de charge", "Niveau urgence", "Échéance", "Délais de paiement", "validation DR", "validation DOP", "validation DG", "Facture attachée", Devise, Rejet';
+  'ID, "Numéro de facture", Fournisseur, Client, "Numéro de dossier", "Titre de transport", numero, Montant, "Statut", "Date de réception", "Région", "Catégorie de charge", "Niveau urgence", "Échéance", "Délais de paiement", "validation DR", "validation DOP", "validation DG", "Facture attachée", Devise, Rejet, updated_at';
 
 const invoiceNumberCellClass =
   'py-2 px-2 text-xs align-top w-[11.5rem] max-w-[11.5rem] min-w-[8rem] whitespace-normal break-all leading-snug';
@@ -235,6 +236,28 @@ function InvoiceDetailModal({
     normalizedTitle.includes('factures paye') &&
     !normalizedTitle.includes('partiellement');
   const displayTitle = isPaidReportMode ? 'Relevé des factures payées' : title;
+  const isRejectedDetailMode = normalizedTitle.includes('rejet');
+  const isOverdueDetailMode = normalizedTitle.includes('echu');
+  const hidePaymentAmountColumns = isRejectedDetailMode || isOverdueDetailMode;
+
+  const extractLatestRejectionReason = (raw: unknown): string => {
+    const text = String(raw ?? '').trim();
+    if (!text) return '-';
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const last = parsed[parsed.length - 1] as Record<string, unknown>;
+        return String(last.raison || last.commentaire || last.commentaires || '-').trim() || '-';
+      }
+      if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>;
+        return String(obj.raison || obj.commentaire || obj.commentaires || '-').trim() || '-';
+      }
+    } catch {
+      // texte brut
+    }
+    return text;
+  };
 
   const sanitizeForFile = (raw: string, max: number): string => {
     const s = String(raw || '')
@@ -335,7 +358,7 @@ function InvoiceDetailModal({
       if (invoiceNumbersForDetails.length > 0) {
         const { data: detailRows, error: detailError } = await supabase
           .from('FACTURES')
-          .select('"Numéro de facture", Client, "Numéro de dossier", "Titre de transport", numero')
+          .select('"Numéro de facture", Client, "Numéro de dossier", "Titre de transport", numero, updated_at')
           .in('Numéro de facture', invoiceNumbersForDetails);
         if (!detailError && detailRows) {
           const detailMap = new Map(
@@ -358,6 +381,8 @@ function InvoiceDetailModal({
                 (detail['Titre de transport'] as string | null) ??
                 (inv as InvoiceWithPayments)['Titre de transport'],
               numero: (detail.numero as string | null) ?? (inv as InvoiceWithPayments).numero,
+              updated_at:
+                (detail.updated_at as string | null) ?? (inv as InvoiceWithPayments).updated_at,
             };
           });
         }
@@ -515,16 +540,30 @@ function InvoiceDetailModal({
         if (includeRegion) {
           row['Région'] = String(invoice['Région'] || 'N/A');
         }
-        const chargeBase = String(invoice['Catégorie de charge'] || 'N/A');
-        const compact = formatTransportCompact(invoice['Titre de transport'], invoice.numero);
-        row['Catégorie de charge'] = compact ? `${chargeBase} | ${compact}` : chargeBase;
-        row['Priorité de paiement'] = formatSingleWord(invoice['Niveau urgence']);
-        row['Échéance'] = due ? due.toLocaleDateString('fr-FR') : 'N/A';
+        if (!isRejectedDetailMode) {
+          const chargeBase = String(invoice['Catégorie de charge'] || 'N/A');
+          const compact = formatTransportCompact(invoice['Titre de transport'], invoice.numero);
+          row['Catégorie de charge'] = compact ? `${chargeBase} | ${compact}` : chargeBase;
+        }
+        if (isOverdueDetailMode) {
+          row['Date réception facture'] = new Date(invoice['Date de réception']).toLocaleDateString('fr-FR');
+        }
+        if (!isRejectedDetailMode && !isOverdueDetailMode) {
+          row['Priorité de paiement'] = formatSingleWord(invoice['Niveau urgence']);
+        }
+        if (!isRejectedDetailMode) {
+          row['Échéance'] = due ? due.toLocaleDateString('fr-FR') : 'N/A';
+        }
         row['Validation (%)'] = getValidationPercentage(invoice);
         row.Montant = parseFloat(invoice.Montant as any) || 0;
-        row['Montant Payé'] = invoice.totalPaid;
-        row['Solde à Payer'] = invoice.solde;
-        row['Lien facture (URL)'] = String(invoice['Facture attachée'] || '');
+        if (isRejectedDetailMode) {
+          row['Raison du rejet'] = extractLatestRejectionReason(invoice.Rejet);
+        }
+        if (!hidePaymentAmountColumns) {
+          row['Montant Payé'] = invoice.totalPaid;
+          row['Solde à Payer'] = invoice.solde;
+        }
+        row['PDF'] = invoice['Facture attachée'] ? 'Oui' : 'Non';
         return row;
       });
 
@@ -538,8 +577,8 @@ function InvoiceDetailModal({
       for (const k of keys) {
         if (k === 'Numéro Facture') totals[k] = 'TOTAUX';
         else if (k === 'Montant') totals[k] = displayTotals.totalAmount;
-        else if (k === 'Montant Payé') totals[k] = displayTotals.totalPaid;
-        else if (k === 'Solde à Payer') totals[k] = displayTotals.totalRemaining;
+        else if (k === 'Montant Payé' && !hidePaymentAmountColumns) totals[k] = displayTotals.totalPaid;
+        else if (k === 'Solde à Payer' && !hidePaymentAmountColumns) totals[k] = displayTotals.totalRemaining;
         else if (k === 'Validation (%)') totals[k] = '';
         else totals[k] = '';
       }
@@ -641,11 +680,12 @@ function InvoiceDetailModal({
     }
   };
 
-  const sortedInvoices = [...invoicesWithPayments].sort((a, b) => {
-    const montantA = parseFloat(a.Montant as any) || 0;
-    const montantB = parseFloat(b.Montant as any) || 0;
-    return montantB - montantA;
-  });
+  const sortedInvoices = [...invoicesWithPayments].sort((a, b) =>
+    compareInvoicesByCreationDesc(
+      a as unknown as Record<string, unknown>,
+      b as unknown as Record<string, unknown>
+    )
+  );
 
   const availableRegions = Array.from(
     new Set(invoicesWithPayments.map((inv) => String(inv['Région'] || '').trim()).filter(Boolean))
@@ -1142,7 +1182,11 @@ function InvoiceDetailModal({
 
           {/* Résumé sous le titre */}
           <div className="border-b p-4 bg-gray-100">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div
+              className={`grid gap-4 ${
+                hidePaymentAmountColumns ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'
+              }`}
+            >
               <div>
                 <p className="text-xs text-gray-600 mb-0.5">Total Facture ({filteredInvoices.length})</p>
                 <p className="text-base font-bold text-gray-900">
@@ -1151,22 +1195,26 @@ function InvoiceDetailModal({
                     : formatCurrency(displayTotals.totalAmount)}
                 </p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-0.5">Montant Payé</p>
-                <p className="text-base font-bold text-green-600">
-                  {currencyRows.length === 1
-                    ? formatMoney(displayTotals.totalPaid, currencyRows[0][0])
-                    : formatCurrency(displayTotals.totalPaid)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-0.5">Solde à Payer</p>
-                <p className="text-base font-bold text-red-600">
-                  {currencyRows.length === 1
-                    ? formatMoney(displayTotals.totalRemaining, currencyRows[0][0])
-                    : formatCurrency(displayTotals.totalRemaining)}
-                </p>
-              </div>
+              {!hidePaymentAmountColumns && (
+                <>
+                  <div>
+                    <p className="text-xs text-gray-600 mb-0.5">Montant Payé</p>
+                    <p className="text-base font-bold text-green-600">
+                      {currencyRows.length === 1
+                        ? formatMoney(displayTotals.totalPaid, currencyRows[0][0])
+                        : formatCurrency(displayTotals.totalPaid)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-600 mb-0.5">Solde à Payer</p>
+                    <p className="text-base font-bold text-red-600">
+                      {currencyRows.length === 1
+                        ? formatMoney(displayTotals.totalRemaining, currencyRows[0][0])
+                        : formatCurrency(displayTotals.totalRemaining)}
+                    </p>
+                  </div>
+                </>
+              )}
               <div>
                 <p className="text-xs text-gray-600 mb-0.5">Nombre de factures</p>
                 <p className="text-base font-bold text-gray-900">{filteredInvoices.length}</p>
@@ -1295,27 +1343,47 @@ function InvoiceDetailModal({
                             Région
                           </th>
                         )}
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-normal min-w-0">
-                          Catégorie de charge
-                        </th>
-                        <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
-                          Priorité de paiement
-                        </th>
-                        <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
-                          Échéance
-                        </th>
+                        {!isRejectedDetailMode && (
+                          <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-normal min-w-0">
+                            Catégorie de charge
+                          </th>
+                        )}
+                        {isOverdueDetailMode && (
+                          <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                            Date réception facture
+                          </th>
+                        )}
+                        {!isRejectedDetailMode && !isOverdueDetailMode && (
+                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                            Priorité de paiement
+                          </th>
+                        )}
+                        {!isRejectedDetailMode && (
+                          <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                            Échéance
+                          </th>
+                        )}
                         <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs w-16 min-w-[3.5rem]">
                           Validation
                         </th>
                         <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                           Montant
                         </th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
-                          Montant Payé
-                        </th>
-                        <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
-                          Solde à Payer
-                        </th>
+                        {isRejectedDetailMode && (
+                          <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                            Raison du rejet
+                          </th>
+                        )}
+                        {!hidePaymentAmountColumns && (
+                          <>
+                            <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                              Montant Payé
+                            </th>
+                            <th className="text-right py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
+                              Solde à Payer
+                            </th>
+                          </>
+                        )}
                         <th className={`font-semibold text-gray-900 text-[10px] ${pdfColumnCellClass}`}>
                           PDF
                         </th>
@@ -1447,22 +1515,33 @@ function InvoiceDetailModal({
                               })()}
                             </td>
                           )}
-                          <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
-                            <ChargeCategoryCell invoice={invoice} />
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            {formatSingleWord(invoice['Niveau urgence'])}
-                          </td>
-                          <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
-                            isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'
-                          }`}>
-                            {(() => {
-                              const dueDate = calculateDueDate(invoice);
-                              return dueDate 
-                                ? dueDate.toLocaleDateString('fr-FR')
-                                : 'N/A';
-                            })()}
-                          </td>
+                          {!isRejectedDetailMode && (
+                            <td className="py-2 px-3 text-xs text-gray-700 hover:text-gray-900 transition-colors">
+                              <ChargeCategoryCell invoice={invoice} />
+                            </td>
+                          )}
+                          {isOverdueDetailMode && (
+                            <td className="py-2 px-3 text-xs text-gray-700 whitespace-nowrap font-semibold">
+                              {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
+                            </td>
+                          )}
+                          {!isRejectedDetailMode && !isOverdueDetailMode && (
+                            <td className="py-2 px-3 text-center">
+                              {formatSingleWord(invoice['Niveau urgence'])}
+                            </td>
+                          )}
+                          {!isRejectedDetailMode && (
+                            <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
+                              isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'
+                            }`}>
+                              {(() => {
+                                const dueDate = calculateDueDate(invoice);
+                                return dueDate 
+                                  ? dueDate.toLocaleDateString('fr-FR')
+                                  : 'N/A';
+                              })()}
+                            </td>
+                          )}
                           <td className="py-2 px-3">
                             {(() => {
                               const percentage = getValidationPercentage(invoice);
@@ -1492,20 +1571,31 @@ function InvoiceDetailModal({
                           <td className="py-2 px-3 text-xs text-gray-900 text-right font-semibold hover:text-gray-950 transition-colors whitespace-nowrap">
                             {formatCurrency(invoice.Montant)} USD
                           </td>
-                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
-                            <span className={invoice.totalPaid > 0 ? 'text-green-600' : 'text-gray-700'}>
-                              {formatCurrency(invoice.totalPaid)} USD
-                            </span>
-                          </td>
-                          <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
-                            <span className={invoice.solde > 0 ? 'text-red-600' : 'text-green-600'}>
-                              {formatCurrency(invoice.solde)} USD
-                            </span>
-                          </td>
+                          {isRejectedDetailMode && (
+                            <td className="py-2 px-3 text-xs text-gray-700">
+                              <div className="max-w-[260px] break-words" title={extractLatestRejectionReason(invoice.Rejet)}>
+                                {extractLatestRejectionReason(invoice.Rejet)}
+                              </div>
+                            </td>
+                          )}
+                          {!hidePaymentAmountColumns && (
+                            <>
+                              <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
+                                <span className={invoice.totalPaid > 0 ? 'text-green-600' : 'text-gray-700'}>
+                                  {formatCurrency(invoice.totalPaid)} USD
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-xs text-right font-semibold bg-gray-100 hover:bg-gray-200 transition-colors whitespace-nowrap">
+                                <span className={invoice.solde > 0 ? 'text-red-600' : 'text-green-600'}>
+                                  {formatCurrency(invoice.solde)} USD
+                                </span>
+                              </td>
+                            </>
+                          )}
                           <td className={pdfColumnCellClass}>
                             {invoice['Facture attachée'] ? (
                               <button
-                                onClick={() => 
+                                onClick={() =>
                                   setPdfModal({
                                     isOpen: true,
                                     url: invoice['Facture attachée'],
@@ -1513,8 +1603,8 @@ function InvoiceDetailModal({
                                     summary: {
                                       totalAmount: parseFloat(invoice.Montant as any) || 0,
                                       totalPaid: invoice.totalPaid,
-                                      totalRemaining: invoice.solde
-                                    }
+                                      totalRemaining: invoice.solde,
+                                    },
                                   })
                                 }
                                 className="inline-flex items-center justify-center p-0.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"

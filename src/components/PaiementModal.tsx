@@ -5,6 +5,7 @@ import { supabase } from '../services/supabase';
 import { ordoPaiementService, caisseService, Caisse } from '../services/tableService';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
 import { refreshAllData } from '../hooks/useDataRefresh';
 import { appendFactureLogByInvoiceNumber, buildLogActor } from '../services/activityLogService';
 import { refreshLogs } from '../hooks/useDataRefresh';
@@ -14,6 +15,7 @@ import { cloudStorageService } from '../services/cloudStorage';
 import { sendInvoiceNotification } from '../services/notificationService';
 
 interface PaymentData {
+  paymentId?: string;
   datePaiement: string;
   typePaiement: 'Total' | 'Partiel';
   modePaiement: 'caisse' | 'banque' | 'cheque' | 'op' | '';
@@ -220,6 +222,11 @@ function CompteFournisseurSelect({
 function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew = false, readOnly = false, ordoPaiementId }: PaiementModalProps) {
   const { success, error: showError } = useToast();
   const { agent } = useAuth();
+  const { canEdit } = usePermission();
+  const paymentPermissionMenu = String(invoice.invoiceType || '').toLowerCase().includes('frais')
+    ? 'factures_ffg'
+    : 'factures';
+  const canEditSavedPayments = canEdit(paymentPermissionMenu);
   const [activeTab, setActiveTab] = useState(1);
   const [activeLeftTab, setActiveLeftTab] = useState<'visualization' | 'details'>('visualization');
   const [payments, setPayments] = useState<PaymentData[]>([]);
@@ -334,6 +341,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             montantFactureForPayment -= (data[i]?.montantPaye || 0);
           }
           return {
+            paymentId: payment.id,
             datePaiement: payment.datePaiement || '',
             typePaiement: payment.typePaiement || 'Total' as const,
             modePaiement: payment.modePaiement || '' as const,
@@ -394,6 +402,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
 
   const initializeFirstPayment = () => {
     const initialPayment: PaymentData = {
+      paymentId: undefined,
       datePaiement: new Date().toISOString().split('T')[0],
       typePaiement: 'Total',
       modePaiement: '',
@@ -500,7 +509,9 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
   };
 
   const isFieldDisabled = (tabIndex: number) => {
-    return readOnly || savedTabs.includes(tabIndex);
+    if (readOnly) return true;
+    if (!savedTabs.includes(tabIndex)) return false;
+    return !canEditSavedPayments;
   };
 
   const renderPaymentDocument = (payment?: PaymentData) => {
@@ -557,9 +568,13 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       return;
     }
 
-    // Montant payé doit être >= 0
+    // Montant payé doit être strictement > 0
     if (currentPayment?.montantPaye === undefined || currentPayment?.montantPaye === null) {
       showAlertError('Veuillez entrer un montant payé');
+      return;
+    }
+    if ((currentPayment.montantPaye || 0) <= 0) {
+      showAlertError('Le montant payé doit être supérieur à 0.');
       return;
     }
 
@@ -622,30 +637,36 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
         modePaiement: currentPayment.modePaiement
       });
 
-      // Enregistrer SEULEMENT l'onglet actuel
-      const { error } = await supabase
-        .from('PAIEMENTS')
-        .insert({
-          id: `${invoice.invoiceNumber}-${index + 1}-${Date.now()}`,
-          NumeroFacture: invoice.invoiceNumber,
-          datePaiement: currentPayment.datePaiement,
-          referencePaiement: currentPayment.referencePaiement,
-          modePaiement: currentPayment.modePaiement,
-          typePaiement: currentPayment.typePaiement,
-          montantFacture: montantFacture,
-          montantAutorise: Math.round((currentPayment.montantAutoriseé || 0) * 100) / 100,
-          montantPaye: Math.round((currentPayment.montantPaye || 0) * 100) / 100,
-          resteAPayer: resteAPayer,
-          devise: currentPayment.devise,
-          compteSGL: currentPayment.compteSGL || '',
-          compteFournisseur: currentPayment.compteFournisseur || '',
-          BanqueFournisseur: currentPayment.BanqueFournisseur || '',
-          BanqueSGL: currentPayment.BanqueSGL || '',
-          fichier: currentPayment.fichier || '',
-          commentaires: currentPayment.commentaires || '',
-          paiedby: agent?.email || null,
-          timestamp: new Date().toISOString()
-        });
+      const payload = {
+        NumeroFacture: invoice.invoiceNumber,
+        datePaiement: currentPayment.datePaiement,
+        referencePaiement: currentPayment.referencePaiement,
+        modePaiement: currentPayment.modePaiement,
+        typePaiement: currentPayment.typePaiement,
+        montantFacture: montantFacture,
+        montantAutorise: Math.round((currentPayment.montantAutoriseé || 0) * 100) / 100,
+        montantPaye: Math.round((currentPayment.montantPaye || 0) * 100) / 100,
+        resteAPayer: resteAPayer,
+        devise: currentPayment.devise,
+        compteSGL: currentPayment.compteSGL || '',
+        compteFournisseur: currentPayment.compteFournisseur || '',
+        BanqueFournisseur: currentPayment.BanqueFournisseur || '',
+        BanqueSGL: currentPayment.BanqueSGL || '',
+        fichier: currentPayment.fichier || '',
+        commentaires: currentPayment.commentaires || '',
+        paiedby: agent?.email || null,
+        timestamp: new Date().toISOString()
+      };
+
+      const isUpdate = Boolean(currentPayment.paymentId);
+      const { error } = isUpdate
+        ? await supabase.from('PAIEMENTS').update(payload).eq('id', currentPayment.paymentId as string)
+        : await supabase
+            .from('PAIEMENTS')
+            .insert({
+              id: `${invoice.invoiceNumber}-${index + 1}-${Date.now()}`,
+              ...payload,
+            });
 
       if (error) {
         console.error('Erreur Supabase:', error);
@@ -713,12 +734,22 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
       }
       
       // Marquer cet onglet comme enregistré
-      setSavedTabs([...savedTabs, index]);
-      
-      // Vérifier s'il y a encore du reste à payer
+      if (!savedTabs.includes(index)) {
+        setSavedTabs([...savedTabs, index]);
+      }
+
+      // En modification, recharger les paiements sans créer de nouvel onglet
+      if (isUpdate) {
+        await loadExistingPayments();
+        setActiveTab(index + 1);
+        return;
+      }
+
+      // Vérifier s'il y a encore du reste à payer (création seulement)
       if (resteAPayer > 0) {
         // Créer un nouvel onglet UNIQUEMENT après l'enregistrement réussi
         const newPayment: PaymentData = {
+          paymentId: undefined,
           datePaiement: new Date().toISOString().split('T')[0],
           typePaiement: 'Partiel',
           modePaiement: '',
@@ -1406,7 +1437,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
             </button>
             <button
               onClick={handleSubmit}
-              disabled={isSubmitting || readOnly || savedTabs.includes(activeTab - 1)}
+              disabled={isSubmitting || readOnly || (savedTabs.includes(activeTab - 1) && !canEditSavedPayments)}
               className="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {isSubmitting ? (
@@ -1417,7 +1448,7 @@ function PaiementModal({ invoice, onClose, onSuccess, showOnlyNew: _showOnlyNew 
               ) : readOnly ? (
                 'Lecture seule'
               ) : savedTabs.includes(activeTab - 1) ? (
-                'Déjà enregistré'
+                canEditSavedPayments ? 'Mettre à jour le paiement' : 'Déjà enregistré'
               ) : (
                 'Enregistrer le paiement'
               )}
