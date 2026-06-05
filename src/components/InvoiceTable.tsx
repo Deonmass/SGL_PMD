@@ -14,6 +14,7 @@ import { appendFactureDeletionAuditLog, appendFactureLogByInvoiceNumber, buildLo
 import { cloudStorageService } from '../services/cloudStorage';
 import { chargeProvisionService } from '../services/chargeProvisionService';
 import { formatTransportCodeNumero } from '../constants/transportTitles';
+import { resolveInvoiceUsdMontant } from '../utils/invoiceAmount';
 
 // Fonctions utilitaires pour formater les dates et données
 const formatDateFr = (dateStr: string | null): string => {
@@ -139,6 +140,8 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
   const fichierColClass = isValidatedMenu
     ? 'px-2 py-2 text-center w-[2.75rem] max-w-[2.75rem] min-w-[2.5rem]'
     : 'px-4 py-2 text-center';
+  /** Colonne OP : largeur minimale selon le contenu (case / étoile) dans un tableau table-fixed */
+  const opColClass = 'w-0 whitespace-nowrap px-2.5 py-2.5 text-center';
 
   const extractLatestRejectionReason = (raw: unknown): string => {
     const text = String(raw ?? '').trim();
@@ -305,23 +308,6 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
     }
   };
 
-  const getUrgencyBadge = (urgency: string) => {
-    switch (urgency?.toLowerCase()) {
-      case 'urgent':
-        return <span className="bg-red-100 text-red-800 px-2 py-1 rounded-full text-[10px] font-semibold">Urgent</span>;
-      case 'prioritaire':
-        return <span className="bg-orange-100 text-orange-800 px-2 py-1 rounded-full text-[10px] font-semibold">Prioritaire</span>;
-      case 'haute':
-        return <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-[10px] font-semibold">Haute</span>;
-      case 'moyenne':
-        return <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-[10px] font-semibold">Moyenne</span>;
-      case 'basse':
-        return <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full text-[10px] font-semibold">Basse</span>;
-      default:
-        return <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-[10px] font-semibold">Normal</span>;
-    }
-  };
-
   return (
     <>
       <div className="bg-white rounded-lg overflow-hidden p-0 m-4">
@@ -330,7 +316,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 {activeMenu === 'factures-validated' && (
-                  <th className="px-4 py-2 text-center text-[10px] font-bold text-gray-900 uppercase">OP</th>
+                  <th className={`${opColClass} text-[10px] font-bold text-gray-900 uppercase`}>OP</th>
                 )}
                 <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => handleSort('receptionDate')}>
                   Date réception {sortBy === 'receptionDate' && (sortOrder === 'asc' ? '↑' : '↓')}
@@ -363,9 +349,6 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                     Échéance {sortBy === 'dueDate' && (sortOrder === 'asc' ? '↑' : '↓')}
                   </th>
                 )}
-                {!isRejectedMenu && !isOverdueMenu && (
-                  <th className="px-4 py-2 text-left text-[10px] font-bold text-gray-900 uppercase">Priorité de paiement</th>
-                )}
                 {!isRejectedMenu && (
                   <th className={`${fichierColClass} text-[10px] font-bold text-gray-900 uppercase`}>
                     Fichier
@@ -380,7 +363,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
             <tbody className="divide-y divide-gray-200">
               {sortedInvoices.length === 0 ? (
                 <tr key="no-invoices">
-                  <td colSpan={agent?.REGION === 'TOUT' ? 12 : 11} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={agent?.REGION === 'TOUT' ? 11 : 10} className="px-6 py-8 text-center text-gray-500">
                     Aucune facture trouvée
                   </td>
                 </tr>
@@ -401,7 +384,7 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                       onContextMenu={(e) => handleContextMenu(e, invoice)}
                     >
                       {activeMenu === 'factures-validated' && (
-                        <td className="px-4 py-2 text-center">
+                        <td className={opColClass}>
                           {isInOrder ? (
                             <Star size={16} className="text-yellow-500 fill-yellow-500" title="Programmée" />
                           ) : (
@@ -455,7 +438,13 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                       )}
                       <td className="px-4 py-2 text-[11px] font-bold text-gray-900 hover:text-gray-700 transition-colors">
                         <span>{(() => {
-                          const amountInfo = formatAmount(invoice.amount || 0, invoice.currency || 'USD');
+                          const usdAmount = resolveInvoiceUsdMontant({
+                            Montant: invoice.amount,
+                            'montant facture': invoice.originalInvoiceAmount,
+                            Devise: invoice.currency,
+                            'Taux facture': invoice.exchangeRate,
+                          });
+                          const amountInfo = formatAmount(usdAmount, 'USD');
                           return amountInfo.formatted;
                         })()}$</span>
                       </td>
@@ -509,11 +498,6 @@ function InvoiceTable({ invoices, activeMenu, agent }: InvoiceTableProps) {
                               {daysInfo.text}
                             </div>
                           </div>
-                        </td>
-                      )}
-                      {!isRejectedMenu && !isOverdueMenu && (
-                        <td className="px-4 py-2 hover:transform hover:scale-105 transition-all duration-200">
-                          {getUrgencyBadge(invoice.urgencyLevel)}
                         </td>
                       )}
                       {!isRejectedMenu && (

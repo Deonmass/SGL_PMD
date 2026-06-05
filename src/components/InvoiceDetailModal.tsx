@@ -37,6 +37,9 @@ const invoiceNumberCellClass =
 const pdfColumnCellClass =
   'py-1 px-0.5 text-center align-middle w-[2.25rem] max-w-[2.25rem] min-w-[2.25rem]';
 
+const orderActionsColumnCellClass =
+  'py-1.5 px-1 text-center align-middle w-[6.75rem] max-w-[6.75rem] min-w-[6rem] whitespace-nowrap';
+
 function getInvoiceDossierNumber(invoice: {
   'Numéro de dossier'?: string | null;
   fileNumber?: string | null;
@@ -547,9 +550,6 @@ function InvoiceDetailModal({
         }
         if (isOverdueDetailMode) {
           row['Date réception facture'] = new Date(invoice['Date de réception']).toLocaleDateString('fr-FR');
-        }
-        if (!isRejectedDetailMode && !isOverdueDetailMode) {
-          row['Priorité de paiement'] = formatSingleWord(invoice['Niveau urgence']);
         }
         if (!isRejectedDetailMode) {
           row['Échéance'] = due ? due.toLocaleDateString('fr-FR') : 'N/A';
@@ -1353,11 +1353,6 @@ function InvoiceDetailModal({
                             Date réception facture
                           </th>
                         )}
-                        {!isRejectedDetailMode && !isOverdueDetailMode && (
-                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
-                            Priorité de paiement
-                          </th>
-                        )}
                         {!isRejectedDetailMode && (
                           <th className="text-left py-2 px-3 font-semibold text-gray-900 text-xs whitespace-nowrap">
                             Échéance
@@ -1384,17 +1379,15 @@ function InvoiceDetailModal({
                             </th>
                           </>
                         )}
-                        <th className={`font-semibold text-gray-900 text-[10px] ${pdfColumnCellClass}`}>
-                          PDF
-                        </th>
-                        {ordoPaiementId && (
-                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                            Payer
+                        {ordoPaiementId ? (
+                          <th
+                            className={`font-semibold text-gray-900 text-[10px] uppercase ${orderActionsColumnCellClass}`}
+                          >
+                            Actions
                           </th>
-                        )}
-                        {ordoPaiementId && (
-                          <th className="text-center py-2 px-3 font-semibold text-gray-900 text-xs">
-                            Retirer
+                        ) : (
+                          <th className={`font-semibold text-gray-900 text-[10px] ${pdfColumnCellClass}`}>
+                            PDF
                           </th>
                         )}
                       </>
@@ -1525,11 +1518,6 @@ function InvoiceDetailModal({
                               {new Date(invoice['Date de réception']).toLocaleDateString('fr-FR')}
                             </td>
                           )}
-                          {!isRejectedDetailMode && !isOverdueDetailMode && (
-                            <td className="py-2 px-3 text-center">
-                              {formatSingleWord(invoice['Niveau urgence'])}
-                            </td>
-                          )}
                           {!isRejectedDetailMode && (
                             <td className={`py-2 px-3 text-xs transition-colors font-semibold ${
                               isOverdue ? 'text-red-600 bg-red-50' : 'text-gray-700'
@@ -1592,55 +1580,89 @@ function InvoiceDetailModal({
                               </td>
                             </>
                           )}
-                          <td className={pdfColumnCellClass}>
-                            {invoice['Facture attachée'] ? (
-                              <button
-                                onClick={() =>
-                                  setPdfModal({
-                                    isOpen: true,
-                                    url: invoice['Facture attachée'],
-                                    title: `Facture ${invoice['Numéro de facture']}`,
-                                    summary: {
-                                      totalAmount: parseFloat(invoice.Montant as any) || 0,
-                                      totalPaid: invoice.totalPaid,
-                                      totalRemaining: invoice.solde,
-                                    },
-                                  })
-                                }
-                                className="inline-flex items-center justify-center p-0.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"
-                                title="Afficher le PDF"
-                              >
-                                <i className="fa fa-file-pdf-o text-sm leading-none"></i>
-                              </button>
-                            ) : (
-                              <span className="text-gray-400 text-[10px]">—</span>
-                            )}
-                          </td>
-                          {ordoPaiementId && (
-                            <td className="py-2 px-3 text-center hover:bg-green-100 rounded transition-all duration-200">
-                              <button
-                                onClick={() => handlePaymentButtonClick(invoice)}
-                                disabled={invoice.solde <= 0.01}
-                                className={`inline-flex items-center justify-center p-2 rounded-lg transition-all duration-200 transform hover:scale-110 ${
-                                  invoice.solde <= 0.01
-                                    ? 'text-gray-400 cursor-not-allowed opacity-50'
-                                    : 'text-green-700 hover:text-green-900 hover:bg-green-200'
-                                }`}
-                                title={invoice.solde <= 0.01 ? 'Facture entièrement payée' : 'Enregistrer un paiement'}
-                              >
-                                <CreditCard size={18} />
-                              </button>
+                          {ordoPaiementId ? (
+                            <td className={orderActionsColumnCellClass}>
+                              <div className="inline-flex items-center justify-center gap-0.5">
+                                {invoice['Facture attachée'] ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPdfModal({
+                                        isOpen: true,
+                                        url: invoice['Facture attachée'],
+                                        title: `Facture ${invoice['Numéro de facture']}`,
+                                        summary: {
+                                          totalAmount: parseFloat(invoice.Montant as any) || 0,
+                                          totalPaid: invoice.totalPaid,
+                                          totalRemaining: invoice.solde,
+                                        },
+                                      })
+                                    }
+                                    className="inline-flex items-center justify-center p-1 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"
+                                    title="Afficher le PDF"
+                                  >
+                                    <i className="fa fa-file-pdf-o text-sm leading-none" />
+                                  </button>
+                                ) : (
+                                  <span
+                                    className="inline-flex w-7 items-center justify-center text-gray-300 text-[10px]"
+                                    title="Aucun PDF"
+                                  >
+                                    —
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handlePaymentButtonClick(invoice)}
+                                  disabled={invoice.solde <= 0.01}
+                                  className={`inline-flex items-center justify-center p-1 rounded transition-colors ${
+                                    invoice.solde <= 0.01
+                                      ? 'text-gray-400 cursor-not-allowed opacity-50'
+                                      : 'text-green-700 hover:text-green-900 hover:bg-green-100'
+                                  }`}
+                                  title={
+                                    invoice.solde <= 0.01
+                                      ? 'Facture entièrement payée'
+                                      : 'Enregistrer un paiement'
+                                  }
+                                >
+                                  <CreditCard size={16} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveInvoice(invoice)}
+                                  className="inline-flex items-center justify-center p-1 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"
+                                  title="Retirer de l'ordre de paiement"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
                             </td>
-                          )}
-                          {ordoPaiementId && (
-                            <td className="py-2 px-3 text-center hover:bg-red-100 rounded transition-all duration-200">
-                              <button
-                                onClick={() => handleRemoveInvoice(invoice)}
-                                className="inline-flex items-center justify-center p-2 text-red-700 hover:text-red-900 hover:bg-red-100 rounded-lg transition-all duration-200 transform hover:scale-110"
-                                title="Retirer de l'ordre de paiement"
-                              >
-                                <Trash2 size={18} />
-                              </button>
+                          ) : (
+                            <td className={pdfColumnCellClass}>
+                              {invoice['Facture attachée'] ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPdfModal({
+                                      isOpen: true,
+                                      url: invoice['Facture attachée'],
+                                      title: `Facture ${invoice['Numéro de facture']}`,
+                                      summary: {
+                                        totalAmount: parseFloat(invoice.Montant as any) || 0,
+                                        totalPaid: invoice.totalPaid,
+                                        totalRemaining: invoice.solde,
+                                      },
+                                    })
+                                  }
+                                  className="inline-flex items-center justify-center p-0.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded transition-colors"
+                                  title="Afficher le PDF"
+                                >
+                                  <i className="fa fa-file-pdf-o text-sm leading-none" />
+                                </button>
+                              ) : (
+                                <span className="text-gray-400 text-[10px]">—</span>
+                              )}
                             </td>
                           )}
                         </>

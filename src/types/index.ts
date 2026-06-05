@@ -28,6 +28,8 @@ export interface Invoice {
   fileNumber?: string;
   motif?: string;
   exchangeRate?: number;
+  /** Montant dans la devise d'origine (`montant facture` en base). */
+  originalInvoiceAmount?: number;
   paymentDelay?: string | number;
   dueDate?: string;
   paymentMode?: string;
