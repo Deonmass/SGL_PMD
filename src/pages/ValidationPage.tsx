@@ -13,6 +13,7 @@ import { formatMoney } from '../utils/formatters';
 import { isInvoiceEffectivelyRejected } from '../utils/factureRejetHistory';
 import { sendInvoiceNotification } from '../services/notificationService';
 import { formatTransportCodeNumero } from '../constants/transportTitles';
+import { resolveInvoiceUsdMontant } from '../utils/invoiceAmount';
 
 interface Facture {
   ID: string;
@@ -41,6 +42,7 @@ interface Facture {
   "Numéro de dossier"?: string;
   "Motif / Description"?: string;
   "Taux facture"?: number;
+  "montant facture"?: number;
   "Délais de paiement"?: number;
   "Mode de paiement requis"?: string;
   "Facture attachée"?: string;
@@ -742,8 +744,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
 
     // Transformer les données Facture en Invoice pour InvoiceTable
     const transformedInvoices: Invoice[] = filtered.map(inv => {
-      const amountRaw = inv.Montant;
-      const amount = typeof amountRaw === 'string' ? parseFloat(amountRaw) : (amountRaw || 0);
+      const amount = resolveInvoiceUsdMontant(inv);
       const drValidated = inv["validation DR"] != null && String(inv["validation DR"]).trim() !== '';
       const dopValidated = inv["validation DOP"] != null && String(inv["validation DOP"]).trim() !== '';
       
@@ -787,6 +788,7 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
       fileNumber: inv["Numéro de dossier"],
       motif: inv["Motif / Description"],
       exchangeRate: inv["Taux facture"],
+      originalInvoiceAmount: inv["montant facture"],
       paymentDelay: inv["Délais de paiement"]?.toString(),
       dueDate: inv.Échéance,
       paymentMode: inv["Mode de paiement requis"],
@@ -899,15 +901,13 @@ function ValidationPage({ activeMenu, menuTitle = 'En attente validation', invoi
   };
 
   const getStatistics = () => {
+    // inv.amount = Montant USD (déjà converti via resolveInvoiceUsdMontant)
+    const totalInUsd = invoices.reduce((sum, inv) => sum + (inv.amount || 0), 0);
     const totalsByCurrency = invoices.reduce<Record<string, number>>((acc, inv) => {
       const currency = String(inv.currency || 'USD').toUpperCase();
       acc[currency] = (acc[currency] || 0) + (inv.amount || 0);
       return acc;
     }, {});
-    const totalInUsd =
-      (totalsByCurrency.USD || 0) +
-      ((totalsByCurrency.CDF || 0) / 2000) +
-      (totalsByCurrency.EUR || 0);
     const urgentCount = invoices.filter(inv => {
       const urgency = inv.urgencyLevel?.toLowerCase();
       return urgency === 'urgent'; // Uniquement les factures avec Priorité de paiement Urgent

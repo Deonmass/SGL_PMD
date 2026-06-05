@@ -22,6 +22,12 @@ import {
   shouldShowTransportNumero,
 } from '../constants/transportTitles';
 import ClientAutocompleteField from './fields/ClientAutocompleteField';
+import {
+  computeUsdAmount,
+  formatAmountInputValue,
+  parseAmountValue,
+  resolveInvoiceUsdMontant,
+} from '../utils/invoiceAmount';
 
 interface EditInvoiceFormProps {
   invoice: Invoice;
@@ -104,10 +110,11 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
     fileNumber: invoice.fileNumber || '',
     motif: invoice.motif || '',
     
-    // Données financières
-    invoiceAmount: invoice.amount?.toString() || '',
+    // Données financières — montant en devise chargé depuis la BDD (pas le Montant USD)
+    invoiceAmount:
+      invoice.currency === 'USD' ? formatAmountInputValue(invoice.amount, 'USD') : '',
     currency: invoice.currency || 'USD',
-    exchangeRate: invoice.exchangeRate?.toString() || '',
+    exchangeRate: invoice.currency === 'USD' ? '1' : invoice.exchangeRate?.toString() || '',
     paymentDelay: invoice.paymentDelay || 'immediate',
     urgencyLevel: invoice.urgencyLevel || 'normal',
     
@@ -153,6 +160,15 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
   
   const supplierInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [financialDataLoaded, setFinancialDataLoaded] = useState(false);
+  const [storedUsdAmount, setStoredUsdAmount] = useState<number | null>(null);
+  const [financialFieldsEdited, setFinancialFieldsEdited] = useState(false);
+  const originalFinancialRef = useRef({
+    montantFacture: 0,
+    taux: 1,
+    montantUsd: 0,
+    devise: 'USD',
+  });
 
   // Filtrer les centres de coût par région
   const filteredCostCenters = useMemo(() => {
@@ -251,7 +267,31 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
 
         if (!error && invoiceData) {
           const data = invoiceData as Record<string, any>;
-          // Mettre à jour emissionDate avec la valeur de la BDD
+          const devise = String(data['Devise'] || invoice.currency || 'USD').toUpperCase();
+          const parsedMontantFacture = parseAmountValue(data['montant facture']);
+          const parsedMontantUsd = resolveInvoiceUsdMontant(data);
+          const parsedTaux = parseAmountValue(data['Taux facture']);
+
+          const invoiceAmountStr =
+            parsedMontantFacture > 0
+              ? formatAmountInputValue(parsedMontantFacture, devise)
+              : devise === 'USD' && parsedMontantUsd > 0
+                ? formatAmountInputValue(parsedMontantUsd, 'USD')
+                : '';
+
+          const exchangeRateStr =
+            devise === 'USD' ? '1' : parsedTaux > 0 ? String(parsedTaux) : '';
+
+          originalFinancialRef.current = {
+            montantFacture: parsedMontantFacture,
+            taux: devise === 'USD' ? 1 : parsedTaux,
+            montantUsd: parsedMontantUsd,
+            devise,
+          };
+          setStoredUsdAmount(parsedMontantUsd);
+          setFinancialFieldsEdited(false);
+          setFinancialDataLoaded(true);
+
           setFormData(prev => ({
             ...prev,
             emissionDate: data["Date emission"] || prev.emissionDate,
@@ -260,6 +300,9 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
               String(data['Titre de transport'] || prev.transportTitle || ''),
             ),
             numero: data["numero"] || prev.numero,
+            currency: devise,
+            exchangeRate: exchangeRateStr,
+            invoiceAmount: invoiceAmountStr,
           }));
           
           // Charger le statut et les validations
@@ -269,9 +312,12 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
             dop: data["validation DOP"] || null,
             dg: data["validation DG"] || null
           });
+        } else {
+          setFinancialDataLoaded(true);
         }
       } catch (err) {
         console.error('Erreur chargement données facture:', err);
+        setFinancialDataLoaded(true);
       }
     };
 
@@ -476,6 +522,15 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
           updated.numero = '';
         }
       }
+
+      if (name === 'invoiceAmount' || name === 'exchangeRate' || name === 'currency') {
+        setFinancialFieldsEdited(true);
+        if (name === 'currency') {
+          if (value === 'USD') {
+            updated.exchangeRate = '1';
+          }
+        }
+      }
       
       // Recalculate dueDate if receptionDate or paymentDelay changes
       if (name === 'receptionDate' || name === 'paymentDelay') {
@@ -505,16 +560,32 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
   const showTransportNumero = shouldShowTransportNumero(formData.transportTitle);
   const transportNumeroLabel = getTransportNumeroLabel(formData.transportTitle);
 
-  // Calculate converted amount
   const convertedAmount = useMemo(() => {
-    const invoice = parseFloat(formData.invoiceAmount) || 0;
-    const rate = parseFloat(formData.exchangeRate) || 1;
-    
-    if (formData.currency === 'USD') return invoice;
-    if (formData.currency === 'CDF') return invoice / rate;
-    if (formData.currency === 'EUR') return invoice * rate;
-    return invoice;
-  }, [formData.invoiceAmount, formData.currency, formData.exchangeRate]);
+    if (!financialFieldsEdited && storedUsdAmount != null && financialDataLoaded) {
+      return storedUsdAmount;
+    }
+    const invoiceAmt = parseAmountValue(formData.invoiceAmount);
+    const rate = parseAmountValue(formData.exchangeRate);
+    return computeUsdAmount(invoiceAmt, formData.currency, rate);
+  }, [
+    financialFieldsEdited,
+    storedUsdAmount,
+    financialDataLoaded,
+    formData.invoiceAmount,
+    formData.currency,
+    formData.exchangeRate,
+  ]);
+
+  const montantFactureToSave = useMemo(() => {
+    const raw = parseAmountValue(formData.invoiceAmount);
+    return formData.currency === 'CDF' ? Math.round(raw) : raw;
+  }, [formData.invoiceAmount, formData.currency]);
+
+  const tauxToSave = useMemo(() => {
+    if (formData.currency === 'USD') return null;
+    const rate = parseAmountValue(formData.exchangeRate);
+    return rate > 0 ? rate : null;
+  }, [formData.currency, formData.exchangeRate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -587,9 +658,9 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
         'Catégorie de charge': invoice.chargeCategory,
         'Numéro de dossier': invoice.fileNumber,
         'Motif / Description': invoice.motif,
-        Devise: invoice.currency,
-        'Taux facture': invoice.exchangeRate,
-        Montant: invoice.amount,
+        Devise: originalFinancialRef.current.devise,
+        'Taux facture': originalFinancialRef.current.taux,
+        Montant: originalFinancialRef.current.montantUsd,
         'Niveau urgence': invoice.urgencyLevel,
         'Délais de paiement': invoice.paymentDelay,
         Échéance: invoice.dueDate,
@@ -616,8 +687,8 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
         "Numéro de dossier": formData.invoiceType === 'frais-generaux' ? null : formData.fileNumber,
         "Motif / Description": formData.motif,
         "Devise": formData.currency,
-        "Taux facture": parseFloat(formData.exchangeRate) || null,
-        "montant facture": parseFloat(formData.invoiceAmount) || 0,
+        "Taux facture": tauxToSave,
+        "montant facture": montantFactureToSave,
         "Montant": convertedAmount,
         "Niveau urgence": formData.urgencyLevel,
         "Délais de paiement": parseInt(formData.paymentDelay.replace('days-', '').replace('immediate', '0').replace('at-reception', '0')) || 0,
@@ -1099,69 +1170,73 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
           {/* Données financières */}
           <div>
             <SectionTitle title="Données financières" />
-            <div className="grid grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Devise *
-                </label>
-                <select
-                  name="currency"
-                  value={formData.currency}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="USD">USD</option>
-                  <option value="CDF">CDF</option>
-                  <option value="EUR">EUR</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Taux {formData.currency !== 'USD' ? '*' : ''}
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  name="exchangeRate"
-                  value={formData.exchangeRate}
-                  onChange={handleChange}
-                  disabled={formData.currency === 'USD'}
-                  placeholder={formData.currency === 'USD' ? '1.00' : 'Ex: 2500'}
-                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${
-                    formData.currency === 'USD' ? 'bg-gray-100 cursor-not-allowed' : ''
-                  }`}
-                  required={formData.currency !== 'USD'}
-                />
-              </div>
+            {!financialDataLoaded ? (
+              <p className="text-sm text-gray-500 py-2">Chargement des montants depuis la base…</p>
+            ) : (
+              <div className="grid grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Devise *
+                  </label>
+                  <select
+                    name="currency"
+                    value={formData.currency}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="USD">USD</option>
+                    <option value="CDF">CDF</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Montant facture ({formData.currency}) *
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  name="invoiceAmount"
-                  value={formData.invoiceAmount}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                  required
-                />
-              </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Taux {formData.currency !== 'USD' ? '*' : ''}
+                  </label>
+                  <input
+                    type="number"
+                    step={formData.currency === 'CDF' ? '1' : '0.0001'}
+                    name="exchangeRate"
+                    value={formData.exchangeRate}
+                    onChange={handleChange}
+                    disabled={formData.currency === 'USD'}
+                    placeholder={formData.currency === 'USD' ? '1' : 'Ex: 2500'}
+                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${
+                      formData.currency === 'USD' ? 'bg-gray-100 cursor-not-allowed' : ''
+                    }`}
+                    required={formData.currency !== 'USD'}
+                  />
+                </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Montant USD (convertis) :
-                </label>
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <p className="text-lg font-bold text-blue-600 font-mono">
-                    {convertedAmount.toFixed(2)} USD
-                  </p>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Montant facture ({formData.currency}) *
+                  </label>
+                  <input
+                    type="number"
+                    step={formData.currency === 'CDF' ? '1' : '0.01'}
+                    name="invoiceAmount"
+                    value={formData.invoiceAmount}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Montant USD {financialFieldsEdited ? '(converti)' : '(enregistré)'} :
+                  </label>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 min-h-[3.25rem] flex items-center">
+                    <p className="text-lg font-bold text-blue-600 font-mono tabular-nums">
+                      {convertedAmount.toFixed(2)} USD
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Conditions & paiement */}
@@ -1350,7 +1425,7 @@ function EditInvoiceForm({ invoice, onSubmit, onCancel }: EditInvoiceFormProps) 
             </button>
             <button
               type="submit"
-              disabled={formData.isSubmitting}
+              disabled={formData.isSubmitting || !financialDataLoaded}
               className="px-6 py-2 text-white font-medium rounded-lg bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500 hover:from-indigo-600 hover:via-blue-600 hover:to-cyan-600 shadow-md hover:shadow-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-all duration-300"
             >
               {formData.isSubmitting && (
